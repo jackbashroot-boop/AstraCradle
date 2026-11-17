@@ -1,8 +1,17 @@
-# AstraCradle (v1.0.0)
+# AstraCradle — Local PC Optimizer, System Diagnostics & Self-Healing Studio (v1.0.0)
 
-**Dyson-Core OS Equilibrium, Hardware Affinity Presets, ProBalance, Thermal SPC, Autoruns & Self-Healing Studio**
+**Free, 100% local cross-platform PC optimizer, system diagnostics monitor, CPU affinity manager, thermal & DPC latency analyzer, and safe cleaner for Windows 10/11, macOS, and Linux.**
 
-**AstraCradle** is a modular, 100% local native desktop studio (zero web UI) built for **Windows**, **macOS**, and **Linux**. Designed to be effortless for beginners and deeply capable for power users, AstraCradle v1.0.0 includes 1-click setup, responsive scaling up to **4K (`3840x2160`)**, smooth vertical-only scrolling, an explicit **first-load permission-gated Full PC Baseline Discovery**, an interactive 3-step **Easy Guide**, live **GPU/VRAM & thermal throttling** telemetry, a **multi-resolution telemetry history graph (`60s / 5m / 30m / 1hr / 30d`)**, **PC Component Library & savable CPU-affinity/I/O presets** (Intel Hybrid P/E cores & AMD dual-CCD X3D), **customizable multi-stage Optimization Pipelines + local file/CLI hook connectors**, **ProBalance Foreground Boost & Auto-Reverted App Profiles**, **Interrupt Affinity & DPC Latency Guard**, **Interactive Draft-vs-Applied GPU Fan Curve Editor**, **Workload-Aware Welford Thermal SPC Baselines**, **Autoruns Startup/Task/Service Audit + Ghost Driver Cleanup**, **Evidence & Confidence % diagnostic scoring**, **1-click Everyday PC Glitch troubleshooters**, **Dry-Run file diff previews + instant Toast Undo + optional zero-pass shredder**, **48h driver/update crash blame**, **`.astracradle-pack.json` SHA-256 pack sharing**, automated native installer generators (`.iss`/`.dmg`/`.AppImage`), and a zero-damage Clean Uninstaller.
+> **Supported Platforms:** Windows 10 / 11 · macOS (Apple Silicon & Intel) · Linux (Ubuntu, Debian, Fedora, Arch, Mint, CachyOS) · **100% Local Native Desktop GUI (Zero Cloud / Zero Web App)**
+
+**AstraCradle** is a modular, 100% local native desktop studio (zero web UI) built for **Windows**, **macOS**, and **Linux**. Designed to be effortless for beginners and deeply capable for power users, AstraCradle v1.0.0 includes 1-click setup, responsive scaling up to **4K (`3840x2160`)**, smooth vertical-only scrolling, an explicit **first-load permission-gated Full PC Baseline Discovery**, an interactive 3-step **Easy Guide**, live **GPU/VRAM & thermal throttling** telemetry, a **multi-resolution telemetry history graph (`60s / 5m / 30m / 1hr / 30d`)**, **PC Component Library & savable CPU-affinity/I/O presets** (Intel Hybrid P/E cores & AMD dual-CCD X3D), **customizable multi-stage Optimization Pipelines + local file/CLI hook connectors**, **ProBalance Foreground Boost & Auto-Reverted App Profiles**, **Interrupt Affinity & DPC Latency Guard**, **Interactive Draft-vs-Applied GPU Fan Curve Editor**, **Workload-Aware Welford Thermal SPC Baselines**, **Autoruns Startup/Task/Service Audit + Ghost Driver Cleanup**, **Evidence & Confidence % diagnostic scoring**, **1-click Everyday PC Glitch troubleshooters**, **Dry-Run file diff previews + instant Toast Undo + optional zero-pass shredder**, **48h driver/update crash blame**, **`.astracradle-pack.json` SHA-256 pack sharing**, automated native installer generators (`.iss`/`.dmg`/`.AppImage`), bottom-right system tray + minimize-to-tray support, and a zero-damage Clean Uninstaller.
+
+| Feature | Windows 10 / 11 | macOS | Linux |
+|---|---|---|---|
+| **1-Click Installer** | `Install_AstraCradle.bat` | `Install_AstraCradle.command` | `install_astracradle.sh` |
+| **App Menu / Start Menu GUI** | `.lnk` (`astracradle-gui.exe`, no console) | `~/Applications/AstraCradle.app` | `.desktop` + hicolor icon (`Terminal=false`) |
+| **System Tray & Minimize-to-Tray** | Bottom-right notification area | Top-right menu bar | Desktop panel / AppIndicator |
+| **Safe Uninstaller** | `Uninstall_AstraCradle.bat` | `Uninstall_AstraCradle.command` | `uninstall_astracradle.sh` |
 
 ---
 
