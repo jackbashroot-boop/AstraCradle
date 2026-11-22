@@ -14,6 +14,7 @@ from typing import Any
 import psutil
 
 from .config import AppConfig, ConfigManager
+from .elevation import ElevationRunner
 from .journal import ForensicJournal
 from .models import utc_now_iso
 
@@ -123,9 +124,15 @@ class AppNetworkRule:
 class NetworkFirewallController:
     """Manages per-app network bandwidth shaping & firewall rule generation with dry-run & rollback safety."""
 
-    def __init__(self, cfg_mgr: ConfigManager, journal: ForensicJournal) -> None:
+    def __init__(
+        self,
+        cfg_mgr: ConfigManager,
+        journal: ForensicJournal,
+        elevation: ElevationRunner | None = None,
+    ) -> None:
         self.cfg_mgr = cfg_mgr
         self.journal = journal
+        self.elevation = elevation
         self.rules_path = cfg_mgr.state_dir / "network_rules.json"
 
     def load_rules(self) -> list[AppNetworkRule]:
@@ -175,6 +182,7 @@ class NetworkFirewallController:
         action: str,
         rate_kbps: int = 1024,
         dry_run: bool = True,
+        enforce_os: bool = False,
     ) -> tuple[bool, str, AppNetworkRule]:
         clean_action = action if action in ("allow", "throttle", "block") else "throttle"
         cmd = self.build_os_rule_command(app_name, clean_action, rate_kbps)
@@ -190,9 +198,19 @@ class NetworkFirewallController:
         rules.insert(0, rule)
         if not dry_run:
             self.save_rules(rules)
+        enforced_note = ""
+        if not dry_run and enforce_os and self.elevation is not None and platform.system() == "Linux":
+            argv: list[str] | None = None
+            if clean_action == "throttle" and shutil.which("tc"):
+                argv = ["tc", "qdisc", "replace", "dev", "lo", "root", "tbf", "rate", f"{max(64, int(rate_kbps))}kbit", "burst", "32kbit", "latency", "400ms"]
+            elif clean_action == "allow" and shutil.which("tc"):
+                argv = ["tc", "qdisc", "del", "dev", "lo", "root"]
+            if argv is not None:
+                eres = self.elevation.run_privileged(argv, reason=f"Apply network rule '{clean_action}' for {app_name}")
+                enforced_note = f" | OS: {eres.message}"
         msg = (
             f"{'[DRY RUN] ' if dry_run else ''}Saved network rule '{clean_action.upper()}' for {app_name}. "
-            f"OS command prepared (requires elevation if enforced in kernel): {cmd}"
+            f"OS command: {cmd}{enforced_note}"
         )
         self.journal.log_event(
             "NetworkFirewall",
@@ -283,9 +301,15 @@ def default_gpu_thermal_profiles() -> list[GpuThermalProfile]:
 class GpuPowerAndFanController:
     """Inspects GPU power/fan capabilities and manages reversible thermal & fan-curve profiles."""
 
-    def __init__(self, cfg_mgr: ConfigManager, journal: ForensicJournal) -> None:
+    def __init__(
+        self,
+        cfg_mgr: ConfigManager,
+        journal: ForensicJournal,
+        elevation: ElevationRunner | None = None,
+    ) -> None:
         self.cfg_mgr = cfg_mgr
         self.journal = journal
+        self.elevation = elevation
         self.profiles_path = cfg_mgr.state_dir / "gpu_thermal_profiles.json"
         self.applied_curve_path = cfg_mgr.state_dir / "gpu_applied_curve.json"
 
@@ -428,10 +452,16 @@ class GpuPowerAndFanController:
             "temp_c": "N/A",
         }
 
-    def apply_profile(self, prof: GpuThermalProfile, dry_run: bool = True) -> tuple[bool, str, str]:
+    def apply_profile(
+        self,
+        prof: GpuThermalProfile,
+        dry_run: bool = True,
+        enforce_os: bool = False,
+    ) -> tuple[bool, str, str]:
         clamped_pwr = max(50, min(115, int(prof.power_limit_percent)))
         clamped_fan = max(25, min(100, int(prof.fan_target_percent)))
         live = self.probe_live_power_and_fan()
+        target_w: int | None = None
         if shutil.which("nvidia-smi") and live.get("default_limit_w") not in (None, "N/A", "hwmon"):
             try:
                 base_w = float(live["default_limit_w"])
@@ -448,7 +478,14 @@ class GpuPowerAndFanController:
             msg = f"[DRY RUN] Would apply GPU thermal profile '{prof.name}' (Power {clamped_pwr}%, Fan {clamped_fan}%)."
         else:
             self.apply_draft_curve(prof.curve_points, profile_id=prof.profile_id, dry_run=False)
-            msg = f"Saved active GPU thermal profile '{prof.name}' ({clamped_pwr}% power target, {clamped_fan}% fan curve)."
+            extra = ""
+            if enforce_os and target_w is not None and self.elevation is not None and shutil.which("nvidia-smi"):
+                eres = self.elevation.run_privileged(
+                    ["nvidia-smi", "-pl", str(target_w)],
+                    reason=f"Apply GPU power limit {target_w}W ({prof.name})",
+                )
+                extra = f" | {eres.message}"
+            msg = f"Saved active GPU thermal profile '{prof.name}' ({clamped_pwr}% power target, {clamped_fan}% fan curve).{extra}"
         self.journal.log_event("GpuPowerFan", f"apply_{prof.profile_id}", msg, prof.description, "ok")
         return True, msg, cmd
 

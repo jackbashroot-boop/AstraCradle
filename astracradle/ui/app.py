@@ -22,6 +22,7 @@ from ..core.bloat_analyzer import BloatAnalyzer, DuplicateGroup
 from ..core.config import AppConfig, ConfigManager, SITUATION_PROFILES
 from ..core.crash_analyzer import CrashAnalyzer
 from ..core.diagnostics import DiagnosticReport, DiagnosticsEngine
+from ..core.elevation import ElevationRunner
 from ..core.executor import GuardedExecutor
 from ..core.pc_extras import (
     BaselineDiffEngine,
@@ -112,6 +113,7 @@ from .modals import (
     HelpSearchDialog,
     PipelineEditorDialog,
     ProcessExplanationDialog,
+    SudoPasswordDialog,
     UninstallDialog,
 )
 from .tray import TrayController
@@ -145,9 +147,12 @@ class AstraCradleApp(ctk.CTk):
         self.journal = ForensicJournal(self.cfg_mgr)
         self.rollback_mgr = RollbackManager(self.cfg_mgr)
         self.executor = GuardedExecutor(self.cfg_mgr, self.rollback_mgr, self.journal)
+        self.elevation = ElevationRunner(password_prompt_cb=self._prompt_sudo_password)
         self.self_heal = SelfHealEngine(self.cfg_mgr, self.rollback_mgr, self.journal)
         self.crash_analyzer = CrashAnalyzer(self.cfg_mgr, self.journal)
-        self.scripts_engine = ScriptsEngine(self.cfg_mgr, self.executor, self.journal)
+        self.scripts_engine = ScriptsEngine(
+            self.cfg_mgr, self.executor, self.journal, elevation=self.elevation
+        )
         self.lifecycle = LifecycleManager(
             self.cfg_mgr, self.rollback_mgr, self.journal, self.scripts_engine
         )
@@ -173,14 +178,18 @@ class AstraCradleApp(ctk.CTk):
         self.hw_mgr = HardwareLibraryManager(self.cfg_mgr, self.journal)
         self.pipe_mgr = PipelineEngine(self.cfg_mgr, self.executor, self.scripts_engine, self.hw_mgr, self.journal)
         self.history_db = TelemetryHistoryDB(self.cfg_mgr)
-        self.net_fw = NetworkFirewallController(self.cfg_mgr, self.journal)
-        self.gpu_pwr = GpuPowerAndFanController(self.cfg_mgr, self.journal)
-        self.latency_guard = InterruptAndDpcGuard(self.cfg_mgr, self.journal)
+        self.net_fw = NetworkFirewallController(self.cfg_mgr, self.journal, elevation=self.elevation)
+        self.gpu_pwr = GpuPowerAndFanController(self.cfg_mgr, self.journal, elevation=self.elevation)
+        self.latency_guard = InterruptAndDpcGuard(self.cfg_mgr, self.journal, elevation=self.elevation)
         self.probalance = ProBalanceEngine(self.cfg_mgr, self.journal)
         self.thermal_spc = ThermalSpcMonitor(self.cfg_mgr, self.journal)
-        self.autoruns_auditor = AutorunsAndGhostAuditor(self.cfg_mgr, self.rollback_mgr, self.journal)
+        self.autoruns_auditor = AutorunsAndGhostAuditor(
+            self.cfg_mgr, self.rollback_mgr, self.journal, elevation=self.elevation
+        )
         self.full_discovery = FullSystemDiscoveryEngine(self.cfg_mgr, self.rollback_mgr, self.journal)
-        self.adblock_shield = AstraShieldManager(self.cfg_mgr, self.rollback_mgr, self.journal)
+        self.adblock_shield = AstraShieldManager(
+            self.cfg_mgr, self.rollback_mgr, self.journal, elevation=self.elevation
+        )
         self.baseline_diff = BaselineDiffEngine(self.cfg_mgr, self.journal)
         self.startup_file_delay = StartupFileDelayManager(self.cfg_mgr, self.rollback_mgr, self.journal)
         self.net_dns_inspector = NetworkAndDnsInspector(self.journal)
@@ -1997,7 +2006,11 @@ class AstraCradleApp(ctk.CTk):
             except ValueError:
                 kbps = 1024
             _, msg, _ = self.net_fw.add_or_update_rule(
-                aname, fw_act.get(), rate_kbps=kbps, dry_run=bool(self.dry_run_var.get())
+                aname,
+                fw_act.get(),
+                rate_kbps=kbps,
+                dry_run=bool(self.dry_run_var.get()),
+                enforce_os=not bool(self.dry_run_var.get()),
             )
             self.show_toast(msg)
             self._render_modules()
@@ -2581,9 +2594,29 @@ class AstraCradleApp(ctk.CTk):
             fg_color=p.accent_jade,
             text_color="#071510",
             font=self.fonts["caption"],
-            command=lambda: self.show_toast(self.ram_standby_mgr.trim_standby_ram(dry_run=bool(self.dry_run_var.get()))[1]),
+            command=lambda: self.show_toast(
+                self.ram_standby_mgr.trim_standby_ram(
+                    dry_run=bool(self.dry_run_var.get()),
+                    elevation=self.elevation,
+                )[1]
+            ),
         ).pack(side="right", padx=(6, 0))
         dns_preset_var = tk.StringVar(value="Cloudflare (1.1.1.1)")
+        ctk.CTkButton(
+            nhdr,
+            text="Apply Fast-DNS",
+            height=26,
+            fg_color=p.accent_cyan,
+            text_color="#071217",
+            font=self.fonts["caption"],
+            command=lambda: self.show_toast(
+                self.net_dns_inspector.apply_dns_preset(
+                    dns_preset_var.get(),
+                    dry_run=bool(self.dry_run_var.get()),
+                    elevation=self.elevation,
+                )[1]
+            ),
+        ).pack(side="right", padx=4)
         ctk.CTkButton(
             nhdr,
             text="Copy Fast-DNS Cmd",
@@ -3123,7 +3156,11 @@ class AstraCradleApp(ctk.CTk):
         ).pack(side="right")
 
     def _on_apply_gpu_profile(self, prof: GpuThermalProfile) -> None:
-        _, msg, cmd = self.gpu_pwr.apply_profile(prof, dry_run=bool(self.dry_run_var.get()))
+        _, msg, cmd = self.gpu_pwr.apply_profile(
+            prof,
+            dry_run=bool(self.dry_run_var.get()),
+            enforce_os=not bool(self.dry_run_var.get()),
+        )
         self._draft_fan_curve = clamp_fan_curve_points(prof.curve_points)
         self._copy_text(cmd)
         self.show_toast(f"{msg} (Command copied: {cmd})")
@@ -3475,7 +3512,11 @@ class AstraCradleApp(ctk.CTk):
         ctk.CTkFrame(icard, height=8, fg_color="transparent").pack()
 
     def _on_apply_irq_rule(self, rule) -> None:
-        _, msg, cmd = self.latency_guard.apply_rule(rule, dry_run=bool(self.dry_run_var.get()))
+        _, msg, cmd = self.latency_guard.apply_rule(
+            rule,
+            dry_run=bool(self.dry_run_var.get()),
+            enforce_os=not bool(self.dry_run_var.get()),
+        )
         self._copy_text(cmd)
         self.show_toast(f"{msg} (Command copied)")
 
@@ -5212,6 +5253,41 @@ class AstraCradleApp(ctk.CTk):
             _, msg = self.adblock_shield.stop_dns_sinkhole()
         self.show_toast(msg)
         self._render_modules()
+
+    def _prompt_sudo_password(self, title_text: str, reason_text: str) -> str | None:
+        """Show the native sudo/admin password prompt cleanly on the Tk main thread."""
+        if not self._show_startup_popups:
+            return None
+
+        def _open() -> str | None:
+            dlg = SudoPasswordDialog(
+                self,
+                self.palette,
+                self.fonts,
+                title_text=title_text,
+                reason_text=reason_text,
+                pkexec_available=(platform.system() == "Linux" and bool(shutil.which("pkexec"))),
+            )
+            self.wait_window(dlg)
+            return dlg.result
+
+        if threading.current_thread() is threading.main_thread():
+            return _open()
+        done = threading.Event()
+        holder: dict[str, str | None] = {"val": None}
+
+        def _dispatch() -> None:
+            try:
+                holder["val"] = _open()
+            finally:
+                done.set()
+
+        try:
+            self.after(0, _dispatch)
+            done.wait(timeout=180)
+        except Exception:
+            return None
+        return holder["val"]
 
     def _on_save_diff_snapshot(self) -> None:
         out = self.baseline_diff.capture_snapshot(

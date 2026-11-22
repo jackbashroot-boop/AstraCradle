@@ -187,6 +187,159 @@ def test_gui_renders_astrashield_and_new_settings() -> None:
             app.on_save_settings()
             assert app.cfg_mgr.load().start_minimized is True
             assert app.cfg_mgr.load().ram_guard_enabled is True
+            assert hasattr(app, "elevation") and callable(app.elevation.password_prompt_cb)
         finally:
             if app.winfo_exists():
                 app.destroy()
+
+
+def test_elevation_runner_sudo_retry_pkexec_and_file_write(monkeypatch) -> None:
+    from types import SimpleNamespace
+    import astracradle.core.elevation as elev_mod
+    from astracradle.core.elevation import ElevationRunner
+
+    monkeypatch.setattr(elev_mod, "is_elevated", lambda: False)
+    monkeypatch.setattr(elev_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(elev_mod.shutil, "which", lambda name: f"/usr/bin/{name}" if name in ("sudo", "pkexec", "install") else None)
+
+    calls: list[dict] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append({"argv": argv, "input": kwargs.get("input")})
+        if argv[0] == "sudo":
+            if kwargs.get("input") == "wrongpw\n":
+                return SimpleNamespace(returncode=1, stdout="", stderr="Sorry, try again.")
+            if kwargs.get("input") == "goodpw\n":
+                return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+        if argv[0] == "pkexec":
+            return SimpleNamespace(returncode=0, stdout="pkexec_ok", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="err")
+
+    monkeypatch.setattr(elev_mod.subprocess, "run", fake_run)
+
+    prompts: list[str] = []
+    answers = iter(["wrongpw", "goodpw"])
+    runner = ElevationRunner(password_prompt_cb=lambda title, detail: (prompts.append(detail), next(answers))[1])
+    res = runner.run_privileged(["echo", "hi"], reason="Test sudo prompt")
+    assert res.ok and res.method == "sudo" and len(prompts) == 2 and "Incorrect" in prompts[1]
+
+    # __PKEXEC__ sentinel triggers pkexec
+    pk_runner = ElevationRunner(password_prompt_cb=lambda _t, _d: "__PKEXEC__")
+    pk_res = pk_runner.run_privileged(["echo", "hi"], reason="Use pkexec")
+    assert pk_res.ok and pk_res.method == "pkexec"
+
+    # Cancelled prompt returns clean error without running command
+    cancel_runner = ElevationRunner(password_prompt_cb=lambda _t, _d: None)
+    c_res = cancel_runner.run_privileged(["echo", "hi"], reason="Cancelled")
+    assert not c_res.ok and "cancelled" in c_res.message.lower()
+
+    # Privileged file write via install -m
+    with tempfile.TemporaryDirectory() as td:
+        target = Path(td) / "hosts"
+        w_runner = ElevationRunner(password_prompt_cb=lambda _t, _d: "goodpw")
+        w_res = w_runner.write_privileged_file(target, "127.0.0.1 localhost\n", mode="644", reason="Update hosts")
+        assert w_res.ok and calls[-1]["argv"][:3] == ["sudo", "-S", "-k"]
+
+
+def test_privileged_toggles_use_elevation_on_permission_error(monkeypatch) -> None:
+    from astracradle.core.adblock_shield import AstraShieldManager
+    from astracradle.core.autoruns_audit import AutorunEntry, AutorunsAndGhostAuditor
+    from astracradle.core.config import ConfigManager
+    from astracradle.core.elevation import ElevationResult
+    from astracradle.core.executor import GuardedExecutor
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.os_adapters import get_os_adapter
+    from astracradle.core.pc_extras import MemoryStandbyManager, NetworkAndDnsInspector
+    from astracradle.core.rollback import RollbackManager
+    from astracradle.core.scripts_engine import ScriptsEngine
+
+    class FakeElevation:
+        def __init__(self) -> None:
+            self.cmds: list[list[str]] = []
+            self.writes: list[tuple[str, str]] = []
+
+        def run_privileged(self, argv, reason="", timeout=30):
+            self.cmds.append(list(argv))
+            return ElevationResult(True, 0, "ok", "", message=f"Executed via sudo ({reason})", method="sudo")
+
+        def write_privileged_file(self, target_path, content, mode="644", reason="", timeout=30):
+            self.writes.append((str(target_path), content))
+            return ElevationResult(True, 0, "", "", message=f"Written via sudo ({reason})", method="sudo")
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg_mgr = ConfigManager(base_dir=Path(td))
+        rb = RollbackManager(cfg_mgr)
+        j = ForensicJournal(cfg_mgr)
+        ex = GuardedExecutor(cfg_mgr, rb, j)
+        fe = FakeElevation()
+
+        # 1. AstraShield hosts write falls back to ElevationRunner on PermissionError
+        hosts_file = Path(td) / "etc_hosts"
+        hosts_file.write_text("127.0.0.1 localhost\n", encoding="utf-8")
+        shield = AstraShieldManager(cfg_mgr, rb, j, elevation=fe)
+        shield._hosts_path_override = hosts_file
+
+        orig_write_text = Path.write_text
+
+        def deny_hosts(self, *args, **kwargs):
+            if self == hosts_file:
+                raise PermissionError("read-only /etc/hosts")
+            return orig_write_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", deny_hosts)
+        ok_en, msg_en = shield.enable_hosts_sinkhole(["ads"], dry_run=False)
+        assert ok_en and fe.writes, msg_en
+
+        # 2. ScriptsEngine executes sudo custom script via ElevationRunner
+        se = ScriptsEngine(cfg_mgr, ex, j, elevation=fe)
+        sc = se.add_custom_script("Flush ARP", "Network", "Flush arp", "sudo ip -s -s neigh flush all", "Balanced Daily")
+        ok_sc, msg_sc = se.toggle_script(sc.script_id, True, get_os_adapter(), cfg_mgr.load(), [], dry_run=False)
+        assert ok_sc and any(c[0] == "ip" for c in fe.cmds), msg_sc
+
+        # 3. NetworkAndDnsInspector.apply_dns_preset & MemoryStandbyManager.trim_standby_ram
+        dns = NetworkAndDnsInspector(j)
+        import astracradle.core.pc_extras as pex
+        from types import SimpleNamespace
+        monkeypatch.setattr(pex.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(pex.shutil, "which", lambda n: f"/usr/bin/{n}" if n in ("nmcli", "sync") else None)
+        monkeypatch.setattr(
+            pex.subprocess,
+            "run",
+            lambda argv, **kw: SimpleNamespace(
+                returncode=(0 if argv[:2] == ["nmcli", "-t"] else 1),
+                stdout=("Wired connection 1\n" if argv[:2] == ["nmcli", "-t"] else ""),
+                stderr="not authorized",
+            ),
+        )
+        ok_dns, _ = dns.apply_dns_preset("Cloudflare (1.1.1.1)", dry_run=False, elevation=fe)
+        assert ok_dns and any("nmcli" in c[0] for c in fe.cmds)
+
+        drop_path = Path("/proc/sys/vm/drop_caches")
+        orig_exists = Path.exists
+
+        def fake_exists(self):
+            if self == drop_path:
+                return True
+            return orig_exists(self)
+
+        def deny_drop(self, *args, **kwargs):
+            if self in (hosts_file, drop_path):
+                raise PermissionError("permission denied")
+            return orig_write_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+        monkeypatch.setattr(Path, "write_text", deny_drop)
+        ram = MemoryStandbyManager(j)
+        ok_ram, _, _ = ram.trim_standby_ram(dry_run=False, elevation=fe)
+        assert ok_ram and any("/proc/sys/vm/drop_caches" in w[0] for w in fe.writes)
+
+        # 4. AutorunsAndGhostAuditor systemd service toggle
+        aa = AutorunsAndGhostAuditor(cfg_mgr, rb, j, elevation=fe)
+        import astracradle.core.autoruns_audit as aum
+        monkeypatch.setattr(aum.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(aum.shutil, "which", lambda n: "/usr/bin/systemctl" if n == "systemctl" else None)
+        svc = AutorunEntry("ar_svc_test", "service", "cups.service", "systemd", "cupsd", "Printer", "low", True, True, "/etc/systemd/system/cups.service")
+        ok_svc, _ = aa.toggle_autorun_entry(svc, False, get_os_adapter(), dry_run=False)
+        assert ok_svc and any(c[:2] == ["systemctl", "disable"] for c in fe.cmds)
+
+

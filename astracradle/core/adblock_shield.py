@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 from .config import ConfigManager
+from .elevation import ElevationRunner
 from .journal import ForensicJournal
 from .models import utc_now_iso
 from .rollback import RollbackManager
@@ -167,10 +168,12 @@ class AstraShieldManager:
         rollback_mgr: RollbackManager,
         journal: ForensicJournal,
         hosts_path: Path | None = None,
+        elevation: ElevationRunner | None = None,
     ) -> None:
         self.cfg_mgr = cfg_mgr
         self.rollback_mgr = rollback_mgr
         self.journal = journal
+        self.elevation = elevation
         self.rules_path = cfg_mgr.base_dir / "astrashield_rules.json"
         self.hosts_path = hosts_path or self.default_hosts_path()
 
@@ -330,6 +333,22 @@ class AstraShieldManager:
             )
             return True, f"AstraShield Hosts Sinkhole enabled ({len(sorted_doms)} domains blocked in {self.hosts_path})."
         except PermissionError:
+            if self.elevation is not None:
+                res = self.elevation.write_privileged_file(
+                    self.hosts_path,
+                    updated,
+                    reason=f"Write {len(sorted_doms)} AstraShield ad/tracker sinkhole entries to {self.hosts_path}",
+                )
+                if res.ok:
+                    self.journal.log_event(
+                        "AstraShield",
+                        "enable_hosts_sinkhole",
+                        f"Elevated write of {len(sorted_doms)} sinkhole domains to {self.hosts_path}",
+                        "System-wide Pi-hole-style blocking enabled via sudo prompt",
+                        "ok",
+                    )
+                    return True, f"AstraShield Hosts Sinkhole enabled ({len(sorted_doms)} domains blocked in {self.hosts_path})."
+                return False, res.message
             hint = (
                 f"Run AstraCradle elevated (sudo / Administrator) to write {self.hosts_path}, "
                 "or use AstraShield Local DNS Sinkhole (no admin needed for browsers/apps)."
@@ -363,6 +382,22 @@ class AstraShieldManager:
             )
             return True, f"AstraShield Hosts Sinkhole disabled and {self.hosts_path} restored cleanly."
         except PermissionError:
+            if self.elevation is not None:
+                res = self.elevation.write_privileged_file(
+                    self.hosts_path,
+                    cleaned,
+                    reason=f"Restore {self.hosts_path} by removing AstraShield sinkhole block",
+                )
+                if res.ok:
+                    self.journal.log_event(
+                        "AstraShield",
+                        "disable_hosts_sinkhole",
+                        f"Removed AstraShield block from {self.hosts_path} via sudo",
+                        "User toggled AstraShield Hosts Sinkhole OFF cleanly",
+                        "ok",
+                    )
+                    return True, f"AstraShield Hosts Sinkhole disabled and {self.hosts_path} restored cleanly."
+                return False, res.message
             return False, f"Permission denied restoring {self.hosts_path} (run elevated to remove system hosts entries)."
         except Exception as exc:
             return False, f"Failed to restore hosts file: {exc}"

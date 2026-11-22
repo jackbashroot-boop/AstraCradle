@@ -1114,4 +1114,125 @@ class PipelineEditorDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+class SudoPasswordDialog(ctk.CTkToplevel):
+    """Modal prompt asking for sudo password (or optional desktop Polkit) when a toggle needs root."""
+
+    def __init__(
+        self,
+        master,
+        palette: ThemePalette,
+        fonts: dict,
+        title_text: str,
+        reason_text: str,
+        pkexec_available: bool = False,
+    ) -> None:
+        super().__init__(master)
+        self.result: str | None = None
+        self.title(title_text or "Administrator / Sudo Password Required")
+        dw, dh = 520, 320
+        try:
+            master.update_idletasks()
+            mx, my = master.winfo_rootx(), master.winfo_rooty()
+            mw, mh = max(520, master.winfo_width() or 1000), max(320, master.winfo_height() or 700)
+            self.geometry(f"{dw}x{dh}+{max(20, mx + (mw - dw) // 2)}+{max(20, my + (mh - dh) // 2)}")
+        except Exception:
+            self.geometry(f"{dw}x{dh}")
+        self.minsize(440, 280)
+        self.configure(fg_color=palette.bg_canvas)
+        self.transient(master)
+
+        card = ctk.CTkFrame(
+            self, fg_color=palette.bg_card, border_width=1, border_color=palette.accent_brass, corner_radius=12
+        )
+        card.pack(fill="both", expand=True, padx=16, pady=16)
+
+        ctk.CTkLabel(
+            card,
+            text=title_text or "Administrator / Sudo Password Required",
+            font=fonts["section"],
+            text_color=palette.accent_brass,
+            wraplength=460,
+            justify="left",
+        ).pack(anchor="w", padx=18, pady=(16, 6))
+
+        ctk.CTkLabel(
+            card,
+            text=reason_text,
+            font=fonts["small"],
+            text_color=palette.text_secondary,
+            wraplength=460,
+            justify="left",
+        ).pack(anchor="w", padx=18, pady=(0, 12))
+
+        ctk.CTkLabel(
+            card,
+            text="Enter sudo password (never saved or logged):",
+            font=fonts["caption"],
+            text_color=palette.text_muted,
+        ).pack(anchor="w", padx=18, pady=(0, 4))
+
+        self.pwd_entry = ctk.CTkEntry(card, show="•", height=34, font=fonts["body"])
+        self.pwd_entry.pack(fill="x", padx=18, pady=(0, 14))
+        self.pwd_entry.bind("<Return>", lambda _e: self._submit())
+
+        btns = ctk.CTkFrame(card, fg_color="transparent")
+        btns.pack(fill="x", padx=18, pady=(0, 14))
+
+        ctk.CTkButton(
+            btns,
+            text="Run with Sudo",
+            height=32,
+            fg_color=palette.accent_jade,
+            text_color="#071510",
+            font=fonts["body_bold"],
+            command=self._submit,
+        ).pack(side="right", padx=(6, 0))
+
+        if pkexec_available:
+            ctk.CTkButton(
+                btns,
+                text="Use System Prompt",
+                height=32,
+                fg_color=palette.bg_elevated,
+                font=fonts["small"],
+                command=self._use_pkexec,
+            ).pack(side="right", padx=6)
+
+        ctk.CTkButton(
+            btns,
+            text="Cancel",
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=palette.border_strong,
+            text_color=palette.text_secondary,
+            font=fonts["small"],
+            command=self._cancel,
+        ).pack(side="left")
+
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        try:
+            self.grab_set()
+            self.pwd_entry.focus_set()
+        except Exception:
+            pass
+
+    def _submit(self) -> None:
+        val = self.pwd_entry.get()
+        self.pwd_entry.delete(0, "end")
+        self.result = val if val else None
+        self.destroy()
+
+    def _use_pkexec(self) -> None:
+        self.pwd_entry.delete(0, "end")
+        self.result = "__PKEXEC__"
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self.pwd_entry.delete(0, "end")
+        self.result = None
+        self.destroy()
+
+
+
 

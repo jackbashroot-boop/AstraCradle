@@ -20,6 +20,7 @@ import psutil
 
 from .autoruns_audit import AutorunsAndGhostAuditor
 from .config import AppConfig, ConfigManager
+from .elevation import ElevationRunner
 from .executor import GuardedExecutor
 from .journal import ForensicJournal
 from .models import utc_now_iso
@@ -307,14 +308,80 @@ class NetworkAndDnsInspector:
             return "nmcli con mod \"$(nmcli -t -f NAME con show --active | head -n1)\" ipv4.ignore-auto-dns no ipv4.dns \"\""
         return f'nmcli con mod "$(nmcli -t -f NAME con show --active | head -n1)" ipv4.ignore-auto-dns yes ipv4.dns "{dns[0]} {dns[1]}"'
 
+    def apply_dns_preset(
+        self,
+        preset_name: str,
+        dry_run: bool = False,
+        elevation: ElevationRunner | None = None,
+    ) -> tuple[bool, str]:
+        dns = self.DNS_PRESETS.get(preset_name, ("1.1.1.1", "1.0.0.1"))
+        if dry_run:
+            return True, f"[DRY RUN] Would apply DNS preset '{preset_name}' ({dns[0]} / {dns[1]})."
+        sys_name = platform.system()
+        argv: list[str] = []
+        if sys_name == "Linux" and shutil.which("nmcli"):
+            try:
+                p = subprocess.run(
+                    ["nmcli", "-t", "-f", "NAME", "con", "show", "--active"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                )
+                con_name = next((ln.strip() for ln in (p.stdout or "").splitlines() if ln.strip()), "")
+                if con_name:
+                    if dns[0] == "auto":
+                        argv = ["nmcli", "con", "mod", con_name, "ipv4.ignore-auto-dns", "no", "ipv4.dns", ""]
+                    else:
+                        argv = ["nmcli", "con", "mod", con_name, "ipv4.ignore-auto-dns", "yes", "ipv4.dns", f"{dns[0]} {dns[1]}"]
+            except Exception:
+                pass
+        if sys_name == "Linux" and not argv and shutil.which("resolvectl"):
+            ifaces = [n for n in psutil.net_if_addrs().keys() if n != "lo" and not n.startswith("docker") and not n.startswith("veth")]
+            iface = ifaces[0] if ifaces else ""
+            if iface:
+                if dns[0] == "auto":
+                    argv = ["resolvectl", "revert", iface]
+                else:
+                    argv = ["resolvectl", "dns", iface, dns[0], dns[1]]
+        elif sys_name == "Darwin" and shutil.which("networksetup"):
+            argv = ["networksetup", "-setdnsservers", "Wi-Fi"] + (["Empty"] if dns[0] == "auto" else [dns[0], dns[1]])
+        elif sys_name == "Windows":
+            argv = (
+                ["netsh", "interface", "ip", "set", "dns", "name=Ethernet", "source=dhcp"]
+                if dns[0] == "auto"
+                else ["netsh", "interface", "ip", "set", "dns", "name=Ethernet", "static", dns[0]]
+            )
+
+        if not argv:
+            return False, f"Network manager CLI unavailable; copy command: {self.apply_dns_preset_command(preset_name)}"
+
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=6, check=False)
+            if proc.returncode == 0:
+                self.journal.log_event("NetworkDNS", "apply_dns", f"Applied DNS preset {preset_name}", "User switched DNS", "ok")
+                return True, f"Applied DNS preset '{preset_name}'."
+        except Exception:
+            pass
+
+        if elevation is not None:
+            eres = elevation.run_privileged(argv, reason=f"Switch system DNS to {preset_name} ({dns[0]}, {dns[1]})")
+            if eres.ok:
+                self.journal.log_event("NetworkDNS", "apply_dns", f"Applied DNS preset {preset_name} via elevation", "User switched DNS", "ok")
+                return True, f"Applied DNS preset '{preset_name}'."
+            return False, eres.message
+        return False, "Elevation required to modify system DNS."
+
 
 class MemoryStandbyManager:
     """Safe cross-OS standby/working-set RAM trim & memory pressure guard."""
 
-    def __init__(self, journal: ForensicJournal) -> None:
+    def __init__(self, journal: ForensicJournal, elevation: ElevationRunner | None = None) -> None:
         self.journal = journal
+        self.elevation = elevation
 
-    def trim_standby_ram(self, dry_run: bool = False) -> tuple[bool, str, float]:
+    def trim_standby_ram(self, dry_run: bool = False, elevation: ElevationRunner | None = None) -> tuple[bool, str, float]:
+        elev = elevation or self.elevation
         vm_before = psutil.virtual_memory()
         avail_before_mb = vm_before.available / (1024 * 1024)
         sys_name = platform.system()
@@ -354,7 +421,14 @@ class MemoryStandbyManager:
                         drop.write_text("1\n", encoding="utf-8")
                         trimmed += 1
                     except PermissionError:
-                        pass
+                        if elev is not None:
+                            eres = elev.write_privileged_file(
+                                drop,
+                                "1\n",
+                                reason="Drop reclaimable Linux kernel pagecache to free standby RAM",
+                            )
+                            if eres.ok:
+                                trimmed += 1
             except Exception:
                 pass
         elif sys_name == "Darwin":

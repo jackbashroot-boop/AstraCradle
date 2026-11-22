@@ -11,6 +11,7 @@ import subprocess
 import uuid
 
 from .config import ConfigManager
+from .elevation import ElevationRunner
 from .journal import ForensicJournal
 from .models import RollbackEntry, utc_now_iso
 from .os_adapters import BaseOSAdapter
@@ -82,10 +83,12 @@ class AutorunsAndGhostAuditor:
         cfg_mgr: ConfigManager,
         rollback_mgr: RollbackManager,
         journal: ForensicJournal,
+        elevation: ElevationRunner | None = None,
     ) -> None:
         self.cfg_mgr = cfg_mgr
         self.rollback_mgr = rollback_mgr
         self.journal = journal
+        self.elevation = elevation
 
     def scan_autoruns(self, adapter: BaseOSAdapter, include_system: bool = False) -> list[AutorunEntry]:
         entries: list[AutorunEntry] = []
@@ -238,6 +241,17 @@ class AutorunsAndGhostAuditor:
         dry_run: bool = True,
     ) -> tuple[bool, str]:
         loc = Path(entry.location)
+        if entry.category == "service" and platform.system() == "Linux" and shutil.which("systemctl"):
+            if dry_run:
+                return True, f"[DRY RUN] Would {'enable' if enable else 'disable'} service '{entry.name}' via systemctl."
+            action_verb = "enable" if enable else "disable"
+            argv = ["systemctl", action_verb, "--now", entry.name]
+            if self.elevation is not None:
+                eres = self.elevation.run_privileged(argv, reason=f"{action_verb.title()} systemd service '{entry.name}'")
+                if eres.ok:
+                    self.journal.log_event("AutorunsAudit", f"{action_verb}_{entry.entry_id}", f"{action_verb}d service '{entry.name}' via sudo", "User toggled service", "ok")
+                    return True, f"{action_verb.title()}d '{entry.name}'."
+                return False, eres.message
         if not entry.can_toggle or adapter.is_path_protected(loc) or loc.is_symlink():
             return False, f"'{entry.name}' is system-scoped or protected; inspect via OS administrative tools."
         if not loc.exists() and enable:
@@ -245,7 +259,18 @@ class AutorunsAndGhostAuditor:
             if disabled_sidecar.exists():
                 if dry_run:
                     return True, f"[DRY RUN] Would re-enable '{entry.name}' from {disabled_sidecar.name}."
-                os.replace(disabled_sidecar, loc)
+                try:
+                    os.replace(disabled_sidecar, loc)
+                except PermissionError:
+                    if self.elevation is not None:
+                        eres = self.elevation.run_privileged(
+                            ["mv", str(disabled_sidecar), str(loc)],
+                            reason=f"Restore autorun entry '{entry.name}'",
+                        )
+                        if not eres.ok:
+                            return False, eres.message
+                    else:
+                        return False, f"Permission denied restoring '{entry.name}'."
                 self.journal.log_event(
                     "AutorunsAudit", f"enable_{entry.entry_id}", f"Re-enabled {entry.name}", "User restored autorun entry", "ok"
                 )
@@ -256,7 +281,18 @@ class AutorunsAndGhostAuditor:
             disabled_sidecar = loc.with_suffix(loc.suffix + ".astracradle_disabled")
             if dry_run:
                 return True, f"[DRY RUN] Would safely disable '{entry.name}' (reversible sidecar {disabled_sidecar.name})."
-            os.replace(loc, disabled_sidecar)
+            try:
+                os.replace(loc, disabled_sidecar)
+            except PermissionError:
+                if self.elevation is not None:
+                    eres = self.elevation.run_privileged(
+                        ["mv", str(loc), str(disabled_sidecar)],
+                        reason=f"Safely disable autorun entry '{entry.name}'",
+                    )
+                    if not eres.ok:
+                        return False, eres.message
+                else:
+                    return False, f"Permission denied disabling '{entry.name}'."
             rb_entry = RollbackEntry(
                 entry_id=f"act-{uuid.uuid4().hex[:8]}",
                 timestamp=utc_now_iso(),
@@ -405,7 +441,18 @@ class AutorunsAndGhostAuditor:
                 return True, f"[DRY RUN] Would quarantine orphaned driver artifact {art.name}."
             if art.exists() or art.is_symlink():
                 q_dest = self.cfg_mgr.quarantine_dir / f"ghost_{uuid.uuid4().hex[:6]}_{art.name}"
-                shutil.move(str(art), str(q_dest))
+                try:
+                    shutil.move(str(art), str(q_dest))
+                except PermissionError:
+                    if self.elevation is not None:
+                        eres = self.elevation.run_privileged(
+                            ["mv", str(art), str(q_dest)],
+                            reason=f"Quarantine orphaned driver artifact '{entry.name}'",
+                        )
+                        if not eres.ok:
+                            return False, eres.message
+                    else:
+                        return False, f"Permission denied quarantining '{entry.name}'."
                 rb = RollbackEntry(
                     entry_id=f"act-{uuid.uuid4().hex[:8]}",
                     timestamp=utc_now_iso(),

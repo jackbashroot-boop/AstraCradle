@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from .config import ConfigManager
+from .elevation import ElevationRunner
 from .journal import ForensicJournal
 from .models import utc_now_iso
 
@@ -88,9 +89,15 @@ def default_interrupt_rules() -> list[InterruptAffinityRule]:
 class InterruptAndDpcGuard:
     """Measures timer/DPC jitter, inspects IRQ distributions, and manages safe interrupt affinity rules."""
 
-    def __init__(self, cfg_mgr: ConfigManager, journal: ForensicJournal) -> None:
+    def __init__(
+        self,
+        cfg_mgr: ConfigManager,
+        journal: ForensicJournal,
+        elevation: ElevationRunner | None = None,
+    ) -> None:
         self.cfg_mgr = cfg_mgr
         self.journal = journal
+        self.elevation = elevation
         self.rules_path = cfg_mgr.state_dir / "interrupt_rules.json"
 
     @staticmethod
@@ -182,7 +189,12 @@ class InterruptAndDpcGuard:
         )
         return True, f"Deleted custom interrupt rule '{rule_id}'."
 
-    def apply_rule(self, rule: InterruptAffinityRule, dry_run: bool = True) -> tuple[bool, str, str]:
+    def apply_rule(
+        self,
+        rule: InterruptAffinityRule,
+        dry_run: bool = True,
+        enforce_os: bool = False,
+    ) -> tuple[bool, str, str]:
         cmd = self.build_os_affinity_command(rule.irq_or_bus, rule.target_core_mask)
         rules = self.load_rules()
         for r in rules:
@@ -192,9 +204,29 @@ class InterruptAndDpcGuard:
                 r.updated_at = utc_now_iso()
         if not dry_run:
             self.save_rules(rules)
+        enforced_note = ""
+        if not dry_run and enforce_os and self.elevation is not None and platform.system() == "Linux":
+            matching_irqs = [s.irq for s in self.list_irq_sources(limit=24) if s.bus_hint == rule.irq_or_bus and s.irq.isdigit()]
+            if matching_irqs:
+                applied = 0
+                for irq_id in matching_irqs[:4]:
+                    aff_path = Path(f"/proc/irq/{irq_id}/smp_affinity_list")
+                    if aff_path.exists():
+                        eres = self.elevation.write_privileged_file(
+                            aff_path,
+                            rule.target_core_mask + "\n",
+                            reason=f"Set IRQ {irq_id} ({rule.device_label}) affinity to cores {rule.target_core_mask}",
+                        )
+                        if eres.ok:
+                            applied += 1
+                        elif "cancelled" in eres.message.lower():
+                            enforced_note = f" | {eres.message}"
+                            break
+                if applied:
+                    enforced_note = f" | Applied to {applied} kernel IRQ(s) via sudo."
         msg = (
             f"{'[DRY RUN] ' if dry_run else ''}Prepared Interrupt Affinity Policy for {rule.device_label} "
-            f"(target cores {rule.target_core_mask})."
+            f"(target cores {rule.target_core_mask}).{enforced_note}"
         )
         self.journal.log_event("InterruptDpcGuard", f"apply_{rule.rule_id}", msg, rule.reason, "ok")
         return True, msg, cmd

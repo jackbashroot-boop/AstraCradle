@@ -12,6 +12,7 @@ import subprocess
 import uuid
 
 from .config import AppConfig, ConfigManager
+from .elevation import ElevationRunner
 from .executor import GuardedExecutor
 from .journal import ForensicJournal
 from .models import OptimizationScript, ProcessInfo, utc_now_iso
@@ -154,10 +155,12 @@ class ScriptsEngine:
         cfg_mgr: ConfigManager,
         executor: GuardedExecutor,
         journal: ForensicJournal,
+        elevation: ElevationRunner | None = None,
     ) -> None:
         self.cfg_mgr = cfg_mgr
         self.executor = executor
         self.journal = journal
+        self.elevation = elevation
 
     DANGEROUS_PATTERNS = (
         "rm -rf /",
@@ -333,7 +336,25 @@ class ScriptsEngine:
             elif atype == "os_power_hint":
                 sys_cmd = act.get(platform.system())
                 if sys_cmd:
-                    notes.append(f"OS power command ready: {sys_cmd}")
+                    if not is_dry and self.elevation is not None and self.elevation.password_prompt_cb is not None:
+                        try:
+                            argv = shlex.split(str(sys_cmd), posix=(os.name != "nt"))
+                            if argv and argv[0] == "sudo":
+                                argv = argv[1:]
+                            if argv:
+                                proc = subprocess.run(argv, shell=False, capture_output=True, text=True, timeout=6)
+                                if proc.returncode != 0:
+                                    eres = self.elevation.run_privileged(
+                                        argv,
+                                        reason=f"Apply OS power setting for '{target.name}'",
+                                    )
+                                    notes.append(eres.message)
+                                else:
+                                    notes.append(f"Applied OS power setting ({argv[0]})")
+                        except Exception:
+                            notes.append(f"OS power command ready: {sys_cmd}")
+                    else:
+                        notes.append(f"OS power command ready: {sys_cmd}")
             elif atype == "custom_shell":
                 cmd = str(act.get("command", "")).strip()
                 if cmd:
@@ -350,8 +371,32 @@ class ScriptsEngine:
                     if not is_dry:
                         try:
                             argv = shlex.split(cmd, posix=(os.name != "nt"))
-                            proc = subprocess.run(argv, shell=False, capture_output=True, text=True, timeout=10)
-                            notes.append(f"Command exit={proc.returncode}")
+                            needs_sudo = bool(argv and argv[0] == "sudo")
+                            if needs_sudo:
+                                argv = argv[1:]
+                            if needs_sudo and self.elevation is not None:
+                                eres = self.elevation.run_privileged(
+                                    argv, reason=f"Run privileged script '{target.name}'"
+                                )
+                                if eres.cancelled:
+                                    return False, eres.message
+                                notes.append(f"Sudo command exit={eres.returncode}")
+                            else:
+                                proc = subprocess.run(argv, shell=False, capture_output=True, text=True, timeout=10)
+                                err_low = (proc.stderr or "").lower()
+                                if (
+                                    proc.returncode != 0
+                                    and self.elevation is not None
+                                    and any(k in err_low for k in ("permission denied", "operation not permitted", "must be root", "access is denied"))
+                                ):
+                                    eres = self.elevation.run_privileged(
+                                        argv, reason=f"Elevate script '{target.name}' after permission denial"
+                                    )
+                                    if eres.cancelled:
+                                        return False, eres.message
+                                    notes.append(f"Sudo command exit={eres.returncode}")
+                                else:
+                                    notes.append(f"Command exit={proc.returncode}")
                         except Exception as exc:
                             notes.append(f"Command error: {exc}")
                     else:
