@@ -219,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--diagnose", action="store_true", help="Run CLI 8-subsystem diagnostics & print playbook.")
     parser.add_argument("--full-discovery", action="store_true", help="Run comprehensive local PC discovery across all subsystems.")
     parser.add_argument("--fix-safe", action="store_true", help="Run 1-Click 'Fix Everything Safe' reversible optimization pass.")
-    parser.add_argument("--battery-report", action="store_true", help="Inspect laptop battery wear %, cycle count, watts & wake-locks.")
+    parser.add_argument("--battery-report", action="store_true", help="Inspect laptop battery wear percent, cycle count, watts & wake-locks.")
     parser.add_argument("--diff-snapshots", action="store_true", help="Compare latest 2 'What Changed' PC snapshots.")
     parser.add_argument("--astrashield", choices=["on", "off", "status"], default=None, help="Toggle or inspect AstraShield local Pi-hole blocker.")
     parser.add_argument("--minimized", action="store_true", help="Start AstraCradle minimized in the bottom-right system tray.")

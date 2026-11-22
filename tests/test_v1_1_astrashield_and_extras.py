@@ -163,6 +163,15 @@ def test_login_autostart_tray_menu_and_workflows(monkeypatch) -> None:
     assert callable(t.on_fix_safe) and callable(t.on_toggle_astrashield)
 
 
+def test_cli_help_parses_cleanly() -> None:
+    import pytest
+    from astracradle.__main__ import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+    assert exc.value.code == 0
+
+
 def test_gui_renders_astrashield_and_new_settings() -> None:
     with tempfile.TemporaryDirectory() as td:
         app = AstraCradleApp(base_dir=Path(td), show_startup_popups=False)
