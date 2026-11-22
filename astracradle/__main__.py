@@ -42,8 +42,10 @@ def run_cli(args: argparse.Namespace) -> int:
     self_heal = SelfHealEngine(cfg_mgr, rollback_mgr, journal)
 
     if args.install_shortcuts:
+        pkg_root = Path(__file__).resolve().parent
         repo_root = Path(__file__).resolve().parents[1]
-        created = lifecycle.install_shortcuts(repo_root)
+        base_root = repo_root if (repo_root / "assets").exists() else pkg_root
+        created = lifecycle.install_shortcuts(base_root)
         print(f"Created {len(created)} AstraCradle shortcut(s):")
         for c in created:
             print(f"  - {c}")

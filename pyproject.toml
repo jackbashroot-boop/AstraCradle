@@ -28,3 +28,6 @@ astracradle-gui = "astracradle.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["astracradle*"]
+
+[tool.setuptools.package-data]
+astracradle = ["assets/*"]

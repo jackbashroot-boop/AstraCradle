@@ -223,11 +223,16 @@ class AstraCradleApp(ctk.CTk):
         self._resize_after_id: str | None = None
         self._show_startup_popups = show_startup_popups
 
-        self.assets_dir = (
-            Path(assets_dir)
-            if assets_dir
-            else Path(__file__).resolve().parents[2] / "assets"
-        )
+        if assets_dir:
+            self.assets_dir = Path(assets_dir)
+        else:
+            pkg_assets = Path(__file__).resolve().parents[1] / "assets"
+            repo_assets = Path(__file__).resolve().parents[2] / "assets"
+            self.assets_dir = (
+                pkg_assets
+                if pkg_assets.exists()
+                else (repo_assets if repo_assets.exists() else Path.cwd() / "assets")
+            )
 
         self.palette: ThemePalette = get_palette(self.config_obj.theme)
         self.fonts = get_ui_fonts(self._scale_float())
@@ -268,6 +273,7 @@ class AstraCradleApp(ctk.CTk):
         self.maxsize(max(3840, scr_w), max(2160, scr_h))
         self.configure(fg_color=self.palette.bg_canvas)
         self._set_window_icon()
+        self.after(80, self._set_window_icon)
 
         self.current_nav = "dashboard"
         self.current_hw_tab = "Component Library & Presets"

@@ -98,9 +98,14 @@ class LifecycleManager:
         sys_name = os_override or platform.system()
         home = Path.home()
         created: list[Path] = []
-        icon_png = repo_root / "assets" / "astracradle_emblem_256.png"
-        icon_ico = repo_root / "assets" / "astracradle.ico"
-        icon_icns = repo_root / "assets" / "astracradle.icns"
+        assets_base = repo_root / "assets"
+        if not assets_base.exists():
+            pkg_assets = Path(__file__).resolve().parents[1] / "assets"
+            if pkg_assets.exists():
+                assets_base = pkg_assets
+        icon_png = assets_base / "astracradle_emblem_256.png"
+        icon_ico = assets_base / "astracradle.ico"
+        icon_icns = assets_base / "astracradle.icns"
 
         if sys_name == "Linux":
             # Install multi-size XDG hicolor & pixmaps icons so KDE/GNOME/CachyOS menus & taskbars render crisp AstraCradle artwork
@@ -111,7 +116,7 @@ class LifecycleManager:
                 ("128x128", "astracradle_emblem_128.png"),
                 ("256x256", "astracradle_emblem_256.png"),
             ):
-                src_icon = repo_root / "assets" / fname
+                src_icon = assets_base / fname
                 if src_icon.exists():
                     for app_icon_name in ("astracradle.png", "Astracradle.png"):
                         dest_icon = hicolor_base / sz / "apps" / app_icon_name
@@ -120,13 +125,13 @@ class LifecycleManager:
                             shutil.copy2(src_icon, dest_icon)
                         except OSError:
                             pass
-            pixmaps_dir = home / ".local" / "share" / "pixmaps"
-            if icon_png.exists():
-                try:
-                    pixmaps_dir.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(icon_png, pixmaps_dir / "astracradle.png")
-                except OSError:
-                    pass
+            for extra_icon_dir in (home / ".local" / "share" / "pixmaps", home / ".local" / "share" / "icons"):
+                if icon_png.exists():
+                    try:
+                        extra_icon_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(icon_png, extra_icon_dir / "astracradle.png")
+                    except OSError:
+                        pass
 
             standalone_bin = repo_root / "dist" / "AstraCradle" / "AstraCradle"
             gui_bin = Path(sys.executable).parent / "astracradle-gui"
