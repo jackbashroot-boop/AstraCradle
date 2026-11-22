@@ -30,4 +30,4 @@ astracradle-gui = "astracradle.__main__:main"
 include = ["astracradle*"]
 
 [tool.setuptools.package-data]
-astracradle = ["assets/*"]
+astracradle = ["assets/*", "_build_info.json"]

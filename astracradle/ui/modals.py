@@ -46,6 +46,11 @@ class ConsentAutomationDialog(ctk.CTkToplevel):
         self.minsize(560, 460)
         self.configure(fg_color=palette.bg_canvas)
         self.transient(master)
+        try:
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
 
         scroll = ctk.CTkScrollableFrame(
             self, fg_color=palette.bg_card, border_width=1, border_color=palette.accent_cyan, corner_radius=12
@@ -139,7 +144,7 @@ class ConsentAutomationDialog(ctk.CTkToplevel):
         self.v_bloat.set(True)
         self.v_crash.set(True)
         self.v_auto.set(True)
-        self._save_selected(run_full_scan=True)
+        self._save_selected(run_full_scan=True, grant_privacy=True)
 
     def _decline_minimal(self) -> None:
         self.v_tel.set(False)
@@ -148,23 +153,24 @@ class ConsentAutomationDialog(ctk.CTkToplevel):
         self.v_bloat.set(False)
         self.v_crash.set(False)
         self.v_auto.set(False)
-        self._save_selected(run_full_scan=False)
+        self._save_selected(run_full_scan=False, grant_privacy=False)
 
-    def _save_selected(self, run_full_scan: bool | None = None) -> None:
+    def _save_selected(self, run_full_scan: bool | None = None, grant_privacy: bool | None = None) -> None:
         should_scan = run_full_scan if run_full_scan is not None else any(
             (self.v_tel.get(), self.v_proc.get(), self.v_apps.get(), self.v_bloat.get())
         )
-        self.on_save(
-            {
-                "consent_telemetry": bool(self.v_tel.get()),
-                "consent_process_scan": bool(self.v_proc.get()),
-                "consent_installed_apps": bool(self.v_apps.get()),
-                "consent_bloat_scan": bool(self.v_bloat.get()),
-                "consent_crash_diagnostics": bool(self.v_crash.get()),
-                "consent_auto_remediate": bool(self.v_auto.get()),
-                "_trigger_full_discovery": bool(should_scan),
-            }
-        )
+        payload = {
+            "consent_telemetry": bool(self.v_tel.get()),
+            "consent_process_scan": bool(self.v_proc.get()),
+            "consent_installed_apps": bool(self.v_apps.get()),
+            "consent_bloat_scan": bool(self.v_bloat.get()),
+            "consent_crash_diagnostics": bool(self.v_crash.get()),
+            "consent_auto_remediate": bool(self.v_auto.get()),
+            "_trigger_full_discovery": bool(should_scan),
+        }
+        if grant_privacy is not None:
+            payload["consent_privacy_scan"] = bool(grant_privacy)
+        self.on_save(payload)
         self.destroy()
 
 

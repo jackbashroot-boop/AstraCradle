@@ -34,7 +34,7 @@ class AnimatedGifLabel(tk.Label):
                 im = Image.open(gif_path)
                 for frame in ImageSequence.Iterator(im):
                     fr = frame.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
-                    self._frames.append(ImageTk.PhotoImage(fr))
+                    self._frames.append(ImageTk.PhotoImage(fr, master=self))
                     self._delays.append(max(35, int(frame.info.get("duration", 55))))
             except Exception:
                 self._frames = []

@@ -178,6 +178,7 @@ class AppConfig:
     theme: str = "Obsidian Horology"
     ui_scale: str = "100%"
     language: str = "en"
+    simple_mode: bool = True
     active_profile: str = "Balanced Daily"
     os_adapter_override: str = "auto"
     dry_run_default: bool = False

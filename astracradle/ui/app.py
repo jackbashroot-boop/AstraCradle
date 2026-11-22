@@ -336,11 +336,13 @@ class AstraCradleApp(ctk.CTk):
                 text=(
                     "AstraCradle only collects full computer diagnostics locally with your explicit consent. "
                     "Click 'Grant & Run Full PC Scan' in the permission prompt (or 'Permissions' above) to inspect "
-                    "hardware, SMART disks, installed apps, autoruns, DPC latency, and system health."
+                    "hardware, temperatures, SMART disks, installed apps, autoruns, USB peripherals, DPC latency, and system health."
                 )
             )
             self.topbar_status.configure(text="Awaiting scan permission")
         else:
+            if show_startup_popups and self.config_obj.consent_telemetry and not self.config_obj.first_run_scan_completed:
+                self.after(200, lambda: self.run_full_pc_discovery_async(show_dialog=False))
             self.refresh_telemetry_async(include_dns=True, also_scan=True)
             self._schedule_telemetry_poll()
 
@@ -588,12 +590,76 @@ class AstraCradleApp(ctk.CTk):
                 setattr(self, attr, None)
         super().destroy()
 
-    def _apply_ui_scale(self) -> None:
+    def _capture_window_state(self) -> dict[str, object]:
+        is_fs = False
+        is_zoomed = False
+        geom = ""
+        try:
+            is_fs = bool(self.attributes("-fullscreen"))
+        except Exception:
+            pass
+        try:
+            is_zoomed = str(self.state()) == "zoomed"
+        except Exception:
+            pass
+        if not is_zoomed:
+            try:
+                is_zoomed = bool(self.attributes("-zoomed"))
+            except Exception:
+                pass
+        try:
+            geom = str(self.geometry())
+        except Exception:
+            pass
+        return {"fullscreen": is_fs, "zoomed": is_zoomed, "geometry": geom}
+
+    def _restore_window_state(self, st: dict[str, object]) -> None:
+        if not self.winfo_exists():
+            return
+        try:
+            sw = max(1920, int(self.winfo_screenwidth() or 1920))
+            sh = max(1080, int(self.winfo_screenheight() or 1080))
+            self.minsize(1060, 700)
+            self.maxsize(sw * 2, sh * 2)
+        except Exception:
+            pass
+        if st.get("fullscreen"):
+            try:
+                self.attributes("-fullscreen", True)
+                return
+            except Exception:
+                pass
+        if st.get("zoomed"):
+            for fn in (
+                lambda: self.state("zoomed"),
+                lambda: self.attributes("-zoomed", True),
+            ):
+                try:
+                    fn()
+                    return
+                except Exception:
+                    pass
+        geom = str(st.get("geometry") or "")
+        if geom:
+            try:
+                self.geometry(geom)
+            except Exception:
+                pass
+
+    def _apply_ui_scale(self, preserve_window: bool = False) -> None:
+        st = self._capture_window_state() if preserve_window else None
         try:
             pct = self._scale_float()
             ctk.set_widget_scaling(max(0.85, min(1.75, pct)))
         except Exception:
             pass
+        if st is not None:
+            self._restore_window_state(st)
+            try:
+                self.after(50, lambda s=st: self._restore_window_state(s))
+                self.after(1060, lambda s=st: self._restore_window_state(s))
+            except Exception:
+                pass
 
     def _active_adapter(self):
         return get_os_adapter(
@@ -691,12 +757,14 @@ class AstraCradleApp(ctk.CTk):
             ("hunter", "AI & Process Hunter", "Spot idle AI chatbots (Ollama, LM Studio) & dormant helpers holding RAM (Ctrl+3)."),
             ("scripts", self.i18n.t("nav.scripts", "Toggleable Scripts"), "One-click workload modes (Gaming, 3D Render, Compile) with OS hardware snapshots (Ctrl+4)."),
             ("hardware", self.i18n.t("nav.hardware", "Hardware & Pipelines"), "PC Component Library, Presets, Visual Pipeline Editor & Interactive Fan Curve (Ctrl+5)."),
-            ("modules", self.i18n.t("nav.modules", "System Modules"), "Storage cleanup, Startup items, Processes & Firewall, Duplicates, Privacy & Glitch Fixes (Ctrl+6)."),
+            ("modules", self.i18n.t("nav.modules", "System Modules"), "Storage cleanup, Startup items, Privacy & AdBlocker Shield, YouTube Safe Ad-Prune & BadUSB Guard (Ctrl+6)."),
             ("probalance", self.i18n.t("nav.probalance", "ProBalance & Latency"), "ProBalance Foreground Boost, Auto-Reverted App Profiles & Interrupt/DPC Guard (Ctrl+9)."),
             ("autoruns", self.i18n.t("nav.autoruns", "Autoruns & Baselines"), "Autoruns Startup/Task/Service Audit, Ghost Driver Cleanup & Welford Thermal SPC (Ctrl+0)."),
             ("safeguards", self.i18n.t("nav.safeguards", "Forensic, Crash & Vault"), "7-invariant Self-Heal, hash-chained WHAT/HOW/WHY log, Crash Post-Mortem & Undo Vault (Ctrl+7)."),
-            ("settings", self.i18n.t("nav.settings", "Settings & Updates"), "Theme, High Contrast, Language, Background Scheduler, Packaging & Uninstall (Ctrl+8)."),
+            ("settings", self.i18n.t("nav.settings", "Settings & Updates"), "Theme, Simple Mode, GitHub Auto-Updater, Packaging & Uninstall (Ctrl+8)."),
         ]
+        self._nav_order: list[str] = [k for k, _, _ in nav_items]
+        self._advanced_nav_keys: tuple[str, ...] = ("scripts", "hardware", "probalance", "autoruns", "safeguards")
         for key, label, tip_txt in nav_items:
             btn = ctk.CTkButton(
                 self.sidebar,
@@ -716,6 +784,7 @@ class AstraCradleApp(ctk.CTk):
 
         spacer = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         spacer.pack(fill="both", expand=True)
+        self._sidebar_spacer = spacer
 
         self.footer_card = ctk.CTkFrame(
             self.sidebar, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=10
@@ -824,6 +893,23 @@ class AstraCradleApp(ctk.CTk):
         self.perm_btn.pack(side="right", padx=3)
         attach_tooltip(self.perm_btn, "Review local diagnostic consent gates & 1-click automation rules.", p)
 
+        self.simple_mode_var = tk.BooleanVar(value=bool(self.config_obj.simple_mode))
+        self.simple_mode_switch = ctk.CTkSwitch(
+            self.topbar,
+            text="Simple Mode",
+            variable=self.simple_mode_var,
+            font=self.fonts["small"],
+            text_color=p.accent_jade,
+            progress_color=p.accent_jade,
+            command=self._on_toggle_simple_mode,
+        )
+        self.simple_mode_switch.pack(side="right", padx=6)
+        attach_tooltip(
+            self.simple_mode_switch,
+            "Simple Mode hides advanced power-user studios & technical switches. Turn OFF anytime for all 10 tabs.",
+            p,
+        )
+
         self.dry_run_var = tk.BooleanVar(value=self.config_obj.dry_run_default)
         self.dry_run_switch = ctk.CTkSwitch(
             self.topbar,
@@ -914,7 +1000,9 @@ class AstraCradleApp(ctk.CTk):
             text_color="#120E06",
             font=self.fonts["caption"],
         )
+        self._apply_simple_mode(initial=True)
         self.switch_nav("dashboard")
+        self._refresh_github_version_badge_async()
 
     def show_toast(self, msg: str, color: str | None = None, undo_entry_id: str | None = None) -> None:
         p = self.palette
@@ -985,6 +1073,53 @@ class AstraCradleApp(ctk.CTk):
             self._render_autoruns_page()
         elif key == "safeguards":
             self._render_safeguards()
+
+    def _on_toggle_simple_mode(self) -> None:
+        val = bool(self.simple_mode_var.get())
+        self.config_obj.simple_mode = val
+        if hasattr(self, "set_simple_mode_var"):
+            self.set_simple_mode_var.set(val)
+        self.cfg_mgr.save(self.config_obj)
+        self._apply_simple_mode(initial=False)
+        self.show_toast(
+            "Simple Mode ON — showing beginner-friendly essentials."
+            if val
+            else "Advanced Mode ON — all 10 studio tools & technical switches visible."
+        )
+
+    def _apply_simple_mode(self, initial: bool = False) -> None:
+        simple = bool(getattr(self.config_obj, "simple_mode", True))
+        if hasattr(self, "simple_mode_var") and bool(self.simple_mode_var.get()) != simple:
+            self.simple_mode_var.set(simple)
+        if hasattr(self, "nav_buttons") and hasattr(self, "_nav_order") and hasattr(self, "_sidebar_spacer"):
+            for k in self._nav_order:
+                btn = self.nav_buttons.get(k)
+                if btn is not None:
+                    btn.pack_forget()
+            for k in self._nav_order:
+                btn = self.nav_buttons.get(k)
+                if btn is None:
+                    continue
+                if simple and k in getattr(self, "_advanced_nav_keys", ()):
+                    continue
+                if k == "modules":
+                    btn.configure(text=("  Privacy, Shield & Cleanup" if simple else f"  {self.i18n.t('nav.modules', 'System Modules')}"))
+                btn.pack(fill="x", padx=12, pady=1, before=self._sidebar_spacer)
+
+        if hasattr(self, "dry_run_switch"):
+            if simple:
+                self.dry_run_switch.pack_forget()
+            elif not self.dry_run_switch.winfo_ismapped():
+                self.dry_run_switch.pack(side="right", padx=6)
+
+        if hasattr(self, "dash_tools_card"):
+            if simple:
+                self.dash_tools_card.grid_remove()
+            else:
+                self.dash_tools_card.grid()
+
+        if not initial and simple and self.current_nav in getattr(self, "_advanced_nav_keys", ()):
+            self.switch_nav("dashboard")
 
     def _on_toggle_dry_run(self) -> None:
         self.config_obj.dry_run_default = bool(self.dry_run_var.get())
@@ -1088,10 +1223,14 @@ class AstraCradleApp(ctk.CTk):
 
         def worker() -> None:
             try:
-                out = self.full_discovery.run_full_discovery(self._active_adapter(), self.config_obj)
+                adapter = self._active_adapter()
+                out = self.full_discovery.run_full_discovery(adapter, self.config_obj)
+                sensors = TelemetryCollector.collect_detailed_sensors() if self.config_obj.consent_telemetry else {}
+                conflicts = self.conflict_detector.scan_conflicts() if self.config_obj.consent_process_scan else []
+                peripherals = self.usb_guard.scan_all_peripherals() if self.config_obj.consent_telemetry else []
                 self.config_obj.first_run_scan_completed = True
                 self.cfg_mgr.save(self.config_obj)
-                self._ui_queue.put(("full_discovery_done", out, show_dialog))
+                self._ui_queue.put(("full_discovery_done", out, show_dialog, sensors, conflicts, peripherals))
             except Exception as exc:
                 self._ui_queue.put(("full_discovery_err", str(exc), None))
 
@@ -1293,16 +1432,23 @@ class AstraCradleApp(ctk.CTk):
         self.history_chart.resolution = self.config_obj.telemetry_resolution
         self.history_chart.pack(fill="both", expand=True, padx=12, pady=(0, 8))
 
+        # Row 4: Live Thermals, Fans, Clocks & Peripherals (always visible right under the 6 cards!)
+        self.dash_diag_panel = ctk.CTkFrame(
+            page, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
+        )
+        self.dash_diag_panel.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 6))
+
         self.dash_findings_frame = ctk.CTkFrame(
             page, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
         )
-        self.dash_findings_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 6))
+        self.dash_findings_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(4, 6))
 
-        # Quick Power Tools Strip: Micro-Benchmark, App Auto-Detector, Recovery Bundle, Weekly Digest
+        # Quick Power Tools Strip (Hidden in Simple Mode for beginner clarity)
         tools = ctk.CTkFrame(
             page, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
         )
-        tools.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(4, 6))
+        tools.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(4, 6))
+        self.dash_tools_card = tools
         thdr = ctk.CTkFrame(tools, fg_color="transparent")
         thdr.pack(fill="x", padx=16, pady=(10, 4))
         ctk.CTkLabel(thdr, text="Benchmark, App Auto-Detector & Portable Reports", font=self.fonts["body_bold"]).pack(
@@ -1386,11 +1532,6 @@ class AstraCradleApp(ctk.CTk):
             p,
         )
 
-        # Live System Diagnostics, Temperatures, Fans, Power & Conflicts Panel (Command Deck)
-        self.dash_diag_panel = ctk.CTkFrame(
-            page, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
-        )
-        self.dash_diag_panel.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(4, 6))
         self.dash_conflicts_frame = ctk.CTkFrame(
             page, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
         )
@@ -4379,10 +4520,23 @@ class AstraCradleApp(ctk.CTk):
             self.about_gif.pack(side="left", padx=16, pady=12)
         ab_txt = ctk.CTkFrame(about, fg_color="transparent")
         ab_txt.pack(side="left", fill="x", expand=True, pady=12)
-        ctk.CTkLabel(ab_txt, text=f"{__app_name__} v{__version__}", font=self.fonts["section"]).pack(anchor="w")
+        build_info = self.updater.get_local_build_info()
+        self.settings_ver_lbl = ctk.CTkLabel(
+            ab_txt,
+            text=f"{__app_name__} · {build_info['display_version']}",
+            font=self.fonts["section"],
+        )
+        self.settings_ver_lbl.pack(anchor="w")
+        self.settings_gh_ver_lbl = ctk.CTkLabel(
+            ab_txt,
+            text="GitHub Sync: Checking latest pushed version automatically...",
+            font=self.fonts["mono_small"],
+            text_color=p.accent_cyan,
+        )
+        self.settings_gh_ver_lbl.pack(anchor="w", pady=(2, 2))
         ctk.CTkLabel(
             ab_txt,
-            text=f"{__tagline__} · Local Workspace: {self.cfg_mgr.base_dir}",
+            text=f"{__tagline__} · Workspace: {self.cfg_mgr.base_dir}",
             font=self.fonts["small"],
             text_color=p.text_secondary,
         ).pack(anchor="w")
@@ -4394,7 +4548,7 @@ class AstraCradleApp(ctk.CTk):
         upd_card.pack(fill="x", pady=(0, 10))
         uhdr = ctk.CTkFrame(upd_card, fg_color="transparent")
         uhdr.pack(fill="x", padx=16, pady=(12, 6))
-        ctk.CTkLabel(uhdr, text="Seamless Auto-Updater & Modular Plugin Registry", font=self.fonts["section"]).pack(
+        ctk.CTkLabel(uhdr, text="Seamless Auto-Updater & GitHub Version Sync", font=self.fonts["section"]).pack(
             side="left"
         )
         ctk.CTkButton(
@@ -4407,16 +4561,17 @@ class AstraCradleApp(ctk.CTk):
             font=self.fonts["caption"],
             command=self.on_install_update_bundle,
         ).pack(side="right", padx=(6, 0))
-        ctk.CTkButton(
+        self.upd_btn = ctk.CTkButton(
             uhdr,
-            text="Check Updates Now",
+            text="Check & Update Now",
             height=28,
             corner_radius=7,
             fg_color=p.accent_cyan,
             text_color="#071217",
-            font=self.fonts["caption"],
+            font=self.fonts["body_bold"],
             command=self.on_check_updates,
-        ).pack(side="right")
+        )
+        self.upd_btn.pack(side="right")
 
         self.upd_status_lbl = ctk.CTkLabel(
             upd_card,
@@ -4497,6 +4652,7 @@ class AstraCradleApp(ctk.CTk):
         self.set_theme_var = tk.StringVar(value=self.config_obj.theme)
         self.set_scale_var = tk.StringVar(value=self.config_obj.ui_scale)
         self.set_lang_var = tk.StringVar(value=self.config_obj.language)
+        self.set_simple_mode_var = tk.BooleanVar(value=bool(self.config_obj.simple_mode))
         self.set_os_var = tk.StringVar(value=self.config_obj.os_adapter_override)
         self.set_upd_var = tk.StringVar(value=self.config_obj.auto_update_mode)
         self.set_q_enabled = tk.BooleanVar(value=self.config_obj.quarantine_enabled)
@@ -4530,6 +4686,11 @@ class AstraCradleApp(ctk.CTk):
         self.sched_btn = sched_btn
 
         rows = [
+            (
+                "Simple Mode (Beginner-Friendly)",
+                ctk.CTkSwitch(form, text="Hide advanced power-user studios & knobs", variable=self.set_simple_mode_var),
+                "Recommended for everyday users: hides complex expert tabs and keeps 1-click safe fixes front and center.",
+            ),
             (
                 "Visual Theme Scheme",
                 ctk.CTkOptionMenu(form, values=["Obsidian Horology", "Atelier Alabaster", "High Contrast"], variable=self.set_theme_var),
@@ -4764,6 +4925,10 @@ class AstraCradleApp(ctk.CTk):
                     return
                 if first == "full_discovery_done":
                     out, show_dlg = item[1], bool(item[2])
+                    if len(item) >= 6:
+                        self._latest_sensors = item[3] or {}
+                        self._latest_conflicts = item[4] or []
+                        self._latest_peripherals = item[5] or []
                     self._last_baseline = out.baseline
                     self.latest_snapshot = out.snapshot
                     self.latest_report = out.report
@@ -4778,6 +4943,7 @@ class AstraCradleApp(ctk.CTk):
                     self.show_toast(
                         f"Full PC Discovery complete ({len(out.baseline.subsystems_checked)} local subsystems baselined)!"
                     )
+                    self.refresh_telemetry_async(include_dns=True, also_scan=False)
                     if show_dlg:
                         FullDiscoveryResultDialog(self, self.palette, self.fonts, out.baseline)
                     continue
@@ -4880,12 +5046,14 @@ class AstraCradleApp(ctk.CTk):
 
     def refresh_telemetry_async(self, include_dns: bool = False, also_scan: bool = False) -> None:
         dry_now = bool(self.dry_run_var.get()) if hasattr(self, "dry_run_var") else bool(self.config_obj.dry_run_default)
+        probe_dns = bool(include_dns or not getattr(self, "_initial_dns_probed", False))
+        self._initial_dns_probed = True
 
         def worker():
             adapter = self._active_adapter()
             snap = self.telemetry.collect(
                 adapter,
-                include_dns=include_dns,
+                include_dns=probe_dns,
                 consent_telemetry=self.config_obj.consent_telemetry,
                 consent_processes=self.config_obj.consent_process_scan,
             )
@@ -4904,10 +5072,26 @@ class AstraCradleApp(ctk.CTk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    @staticmethod
+    def _num_or_none(val: object) -> float | None:
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return float(val)
+        return None
+
     def _update_telemetry_cards(self, snap: SystemSnapshot, gpu=None) -> None:
-        self.cpu_val_lbl.configure(text=f"{snap.cpu_percent:.1f}%")
+        sensors = self._latest_sensors or {}
+        cpu_temp = self._num_or_none(sensors.get("cpu_temp_c")) or self._num_or_none(snap.temperature_c)
+        gpu_live = sensors.get("gpu_live") or GpuPowerAndFanController.probe_live_power_and_fan()
+        gpu_temp = self._num_or_none(sensors.get("gpu_temp_c")) or self._num_or_none(gpu_live.get("temp_c"))
+        nvme_temp = self._num_or_none(sensors.get("nvme_temp_c"))
+
+        cpu_temp_tag = f" · {cpu_temp:.0f}°C" if cpu_temp is not None else ""
+        self.cpu_val_lbl.configure(text=f"{snap.cpu_percent:.1f}%{cpu_temp_tag}")
         freq_txt = f"{snap.cpu_freq_mhz:.0f} MHz" if snap.cpu_freq_mhz else "Adaptive"
-        self.cpu_sub_lbl.configure(text=f"{snap.cpu_count_logical} logical cores · {freq_txt}")
+        self.cpu_sub_lbl.configure(
+            text=f"{snap.cpu_count_logical} logical cores · {freq_txt}"
+            + (f" · Temp {cpu_temp:.1f}°C" if cpu_temp is not None else "")
+        )
         self.cpu_spark.push(snap.cpu_percent)
 
         self.ram_val_lbl.configure(text=f"{snap.mem_percent:.1f}%")
@@ -4918,13 +5102,19 @@ class AstraCradleApp(ctk.CTk):
 
         if snap.partitions:
             rp = snap.partitions[0]
-            self.disk_val_lbl.configure(text=f"{rp.percent:.1f}%")
-            self.disk_sub_lbl.configure(text=f"{rp.mountpoint}: {format_bytes(rp.free_bytes)} free of {format_bytes(rp.total_bytes)}")
+            nvme_tag = f" · {nvme_temp:.0f}°C" if nvme_temp is not None else ""
+            self.disk_val_lbl.configure(text=f"{rp.percent:.1f}%{nvme_tag}")
+            self.disk_sub_lbl.configure(
+                text=f"{rp.mountpoint}: {format_bytes(rp.free_bytes)} free of {format_bytes(rp.total_bytes)}"
+                + (f" · NVMe {nvme_temp:.0f}°C" if nvme_temp is not None else "")
+            )
             self.disk_spark.push(rp.percent)
 
-        dns_txt = f"{snap.dns_latency_ms:.0f} ms" if snap.dns_latency_ms is not None else "Probed on Scan"
+        dns_txt = f"{snap.dns_latency_ms:.0f} ms" if snap.dns_latency_ms is not None else "Online"
         self.net_val_lbl.configure(text=dns_txt)
-        self.net_sub_lbl.configure(text=f"RX {format_bytes(snap.net_bytes_recv)} / TX {format_bytes(snap.net_bytes_sent)}")
+        fans_list = sensors.get("fans") or []
+        fan_txt = f" · Fan {fans_list[0].get('rpm')} RPM" if fans_list else ""
+        self.net_sub_lbl.configure(text=f"RX {format_bytes(snap.net_bytes_recv)} / TX {format_bytes(snap.net_bytes_sent)}{fan_txt}")
         self.net_spark.push(min(100.0, (snap.dns_latency_ms or 35.0) / 3.0))
 
         gpu = gpu if gpu is not None else GpuTelemetryCollector.collect()
@@ -4935,12 +5125,15 @@ class AstraCradleApp(ctk.CTk):
                 if gpu.vram_used_mb is not None and gpu.vram_total_mb is not None
                 else "VRAM N/A"
             )
-            throt = f" · {gpu.throttling_reason}" if gpu.throttling_reason else " · No Thermal Throttling"
-            self.gpu_val_lbl.configure(text=f"{util:.0f}%")
-            self.gpu_sub_lbl.configure(text=f"{gpu.name[:24]} · {vram_txt}{throt}")
+            pwr_txt = f" · {gpu_live.get('power_draw_w')}W" if gpu_live.get("power_draw_w") is not None else ""
+            fan_g = f" · Fan {gpu_live.get('fan_percent')}%" if gpu_live.get("fan_percent") is not None else ""
+            gtemp_tag = f" · {gpu_temp:.0f}°C" if gpu_temp is not None else ""
+            throt = f" · {gpu.throttling_reason}" if gpu.throttling_reason else " · Optimal"
+            self.gpu_val_lbl.configure(text=f"{util:.0f}%{gtemp_tag}")
+            self.gpu_sub_lbl.configure(text=f"{gpu.name[:22]} · {vram_txt}{pwr_txt}{fan_g}{throt}")
             self.gpu_spark.push(util)
         else:
-            self.gpu_val_lbl.configure(text="Integrated")
+            self.gpu_val_lbl.configure(text=("Integrated" + (f" · {gpu_temp:.0f}°C" if gpu_temp is not None else "")))
             self.gpu_sub_lbl.configure(text=gpu.name)
             self.gpu_spark.push(snap.cpu_percent * 0.35)
 
@@ -5179,6 +5372,41 @@ class AstraCradleApp(ctk.CTk):
             out = self.playbook_builder.export(self.latest_playbook, self.cfg_mgr.playbooks_dir, fmt=fmt)
             self.show_toast(f"Exported Playbook -> {out}")
 
+    def _refresh_github_version_badge_async(self) -> None:
+        if not self._show_startup_popups:
+            return
+
+        def _worker() -> None:
+            repo_root = Path(__file__).resolve().parents[2]
+            res = self.updater.check_for_updates(self.config_obj, check_remote=True, repo_dir=repo_root)
+            build_info = self.updater.get_local_build_info(repo_dir=repo_root)
+
+            def _apply() -> None:
+                if not self.winfo_exists():
+                    return
+                if hasattr(self, "settings_ver_lbl") and self.settings_ver_lbl.winfo_exists():
+                    self.settings_ver_lbl.configure(text=f"{__app_name__} · {build_info['display_version']}")
+                if hasattr(self, "settings_gh_ver_lbl") and self.settings_gh_ver_lbl.winfo_exists():
+                    if res.update_available:
+                        self.settings_gh_ver_lbl.configure(
+                            text=f"GitHub Sync: Update available ({res.latest_version}) — click 'Check & Update Now'",
+                            text_color=self.palette.accent_brass,
+                        )
+                    else:
+                        self.settings_gh_ver_lbl.configure(
+                            text=f"GitHub Sync: Latest version installed ({build_info['display_version']})",
+                            text_color=self.palette.accent_jade,
+                        )
+                if hasattr(self, "upd_status_lbl") and self.upd_status_lbl.winfo_exists():
+                    self.upd_status_lbl.configure(text=res.status_message)
+
+            try:
+                self.after(0, _apply)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def on_check_updates(self) -> None:
         if hasattr(self, "set_update_repo_var"):
             repo_txt = self.set_update_repo_var.get().strip()
@@ -5188,26 +5416,36 @@ class AstraCradleApp(ctk.CTk):
 
         repo_root = Path(__file__).resolve().parents[2]
         res = self.updater.check_for_updates(self.config_obj, check_remote=True, repo_dir=repo_root)
+        build_info = self.updater.get_local_build_info(repo_dir=repo_root)
         if res.update_available:
             if res.release_notes.startswith("https://"):
-                if messagebox.askyesno(
-                    f"AstraCradle GitHub Update Ready (v{res.latest_version})",
-                    f"Found newer release on GitHub:\n{res.release_notes}\n\n"
-                    "Pull and install this update now (your settings, profiles & rollback vault stay intact)?",
+                if not self._show_startup_popups or messagebox.askyesno(
+                    f"AstraCradle Update Ready ({res.latest_version})",
+                    f"A newer version is live on GitHub:\n{res.status_message}\n\n"
+                    "Download and install it automatically now? (Your settings & rollback vault stay untouched.)",
                 ):
                     ok, msg = self.updater.pull_from_github_and_update(self.config_obj, repo_dir=repo_root)
                     if ok:
                         self.lifecycle.install_shortcuts(repo_root)
+                        new_info = self.updater.get_local_build_info(repo_dir=repo_root)
+                        if hasattr(self, "settings_ver_lbl") and self.settings_ver_lbl.winfo_exists():
+                            self.settings_ver_lbl.configure(text=f"{__app_name__} · {new_info['display_version']}")
+                        if hasattr(self, "settings_gh_ver_lbl") and self.settings_gh_ver_lbl.winfo_exists():
+                            self.settings_gh_ver_lbl.configure(
+                                text=f"GitHub Sync: Updated to {res.latest_version} — restart to apply",
+                                text_color=self.palette.accent_jade,
+                            )
                     self.upd_status_lbl.configure(text=msg)
                     self.show_toast(msg)
+                    if ok and self._show_startup_popups:
+                        messagebox.showinfo("AstraCradle Updated!", msg)
                     return
             bundle_cand = Path(res.release_notes) if res.release_notes and Path(res.release_notes).exists() else None
             if bundle_cand is not None:
-                if messagebox.askyesno(
+                if not self._show_startup_popups or messagebox.askyesno(
                     f"AstraCradle Update Ready (v{res.latest_version})",
                     f"Found update package:\n{bundle_cand}\n\n"
-                    f"SHA-256: {res.package_hash[:24]}...\n\n"
-                    "Apply this update now (your settings, profiles & rollback vault are preserved)?",
+                    "Apply this update now (your settings & rollback vault stay intact)?",
                 ):
                     ok, msg = self.updater.install_update_bundle(bundle_cand, self.config_obj)
                     if ok:
@@ -5223,8 +5461,17 @@ class AstraCradleApp(ctk.CTk):
                 self.upd_status_lbl.configure(text=msg)
                 self.show_toast(msg)
                 return
-        self.upd_status_lbl.configure(text=res.status_message)
-        self.show_toast(res.status_message)
+
+        up_msg = f"You are fully updated with the latest version! ({build_info['display_version']})"
+        self.upd_status_lbl.configure(text=res.status_message or up_msg)
+        if hasattr(self, "settings_gh_ver_lbl") and self.settings_gh_ver_lbl.winfo_exists():
+            self.settings_gh_ver_lbl.configure(
+                text=f"GitHub Sync: Fully updated ({build_info['display_version']})",
+                text_color=self.palette.accent_jade,
+            )
+        self.show_toast(up_msg)
+        if self._show_startup_popups:
+            messagebox.showinfo("AstraCradle is Up to Date", f"{up_msg}\n\n{res.status_message}")
 
     def on_install_update_bundle(self) -> None:
         picked = filedialog.askopenfilename(
@@ -5335,12 +5582,17 @@ class AstraCradleApp(ctk.CTk):
         self._render_modules()
 
     def on_save_settings(self) -> None:
+        win_state = self._capture_window_state()
         theme_changed = self.set_theme_var.get() != self.config_obj.theme
         lang_changed = self.set_lang_var.get() != self.config_obj.language
+        scale_changed = self.set_scale_var.get() != getattr(self, "_applied_scale", self.config_obj.ui_scale)
         self.config_obj.theme = self.set_theme_var.get()
         self.config_obj.ui_scale = self.set_scale_var.get()
         self.config_obj.language = self.set_lang_var.get()
         self.i18n.set_language(self.config_obj.language)
+        if hasattr(self, "set_simple_mode_var"):
+            self.config_obj.simple_mode = bool(self.set_simple_mode_var.get())
+            self._apply_simple_mode(initial=False)
         self.config_obj.os_adapter_override = self.set_os_var.get()
         self.config_obj.auto_update_mode = self.set_upd_var.get()
         if hasattr(self, "set_update_repo_var"):
@@ -5388,17 +5640,20 @@ class AstraCradleApp(ctk.CTk):
             "User updated system configuration",
             "ok",
         )
-        self._apply_ui_scale()
-        if theme_changed or lang_changed or self.set_scale_var.get() != getattr(self, "_applied_scale", self.config_obj.ui_scale):
-            self._hot_reload_ui()
+        if scale_changed:
+            self._apply_ui_scale(preserve_window=True)
+        if theme_changed or lang_changed or scale_changed:
+            self._hot_reload_ui(win_state=win_state)
             self.refresh_telemetry_async(include_dns=True, also_scan=True)
             self.show_toast("Theme, scale & language applied live!")
         else:
+            self._restore_window_state(win_state)
             self.refresh_telemetry_async(include_dns=True, also_scan=True)
             self.show_toast("Universal Settings saved & applied.")
 
-    def _hot_reload_ui(self) -> None:
+    def _hot_reload_ui(self, win_state: dict[str, object] | None = None) -> None:
         """Rebuilds sidebar & workspace live when theme, contrast, scale, or language changes."""
+        st = win_state or self._capture_window_state()
         active_nav = self.current_nav
         active_hw = self.current_hw_tab
         active_mod = self.current_module_tab
@@ -5416,6 +5671,7 @@ class AstraCradleApp(ctk.CTk):
                 except Exception:
                     pass
         self._build_layout()
+        self._apply_simple_mode(initial=True)
         self.current_hw_tab = active_hw
         self.current_module_tab = active_mod
         self.current_pb_tab = active_pb
@@ -5425,6 +5681,11 @@ class AstraCradleApp(ctk.CTk):
             self._update_telemetry_cards(self.latest_snapshot)
         if self.latest_report and self.latest_playbook:
             self._update_diagnosis_overview(self.latest_report, self.latest_playbook)
+        self._restore_window_state(st)
+        try:
+            self.after(40, lambda s=st: self._restore_window_state(s))
+        except Exception:
+            pass
 
     def on_export_config(self) -> None:
         dest = filedialog.asksaveasfilename(
@@ -5749,6 +6010,31 @@ class AstraCradleApp(ctk.CTk):
         fans = sensors.get("fans") or []
         bat = sensors.get("battery")
         freq = sensors.get("cpu_freq") or {}
+        gpu_live = sensors.get("gpu_live") or GpuPowerAndFanController.probe_live_power_and_fan()
+
+        # Quick-Glance Temperature & Fan Summary Strip (always crisp & unmistakable)
+        strip = ctk.CTkFrame(self.dash_diag_panel, fg_color="transparent")
+        strip.pack(fill="x", padx=14, pady=(2, 6))
+        strip.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        cpu_t = self._num_or_none(sensors.get("cpu_temp_c")) or self._num_or_none(snap.temperature_c)
+        gpu_t = self._num_or_none(sensors.get("gpu_temp_c")) or self._num_or_none(gpu_live.get("temp_c"))
+        nvme_t = self._num_or_none(sensors.get("nvme_temp_c"))
+        pwr_w = self._num_or_none(gpu_live.get("power_draw_w"))
+        fan_pct = self._num_or_none(gpu_live.get("fan_percent"))
+        fan_rpm = f"{fans[0].get('rpm')} RPM" if fans else (f"{fan_pct:.0f}%" if fan_pct is not None else "Auto")
+
+        for idx, (lbl_t, val_t, col_t) in enumerate(
+            [
+                ("CPU TEMP", f"{cpu_t:.1f}°C" if cpu_t is not None else "N/A", p.accent_coral if (cpu_t and cpu_t >= 85) else p.accent_jade),
+                ("GPU TEMP / PWR", (f"{gpu_t:.1f}°C" if gpu_t is not None else "N/A") + (f" · {pwr_w:.0f}W" if pwr_w is not None else ""), p.accent_coral if (gpu_t and gpu_t >= 85) else p.accent_cyan),
+                ("NVME / SSD TEMP", f"{nvme_t:.1f}°C" if nvme_t is not None else "N/A", p.accent_brass if (nvme_t and nvme_t >= 70) else p.accent_jade),
+                ("FAN / CLOCK", f"{fan_rpm} · {int(freq.get('current_mhz') or snap.cpu_freq_mhz or 0)} MHz", p.text_primary),
+            ]
+        ):
+            pill = ctk.CTkFrame(strip, fg_color=p.bg_elevated, corner_radius=8)
+            pill.grid(row=0, column=idx, sticky="ew", padx=3)
+            ctk.CTkLabel(pill, text=lbl_t, font=self.fonts["caption"], text_color=p.text_muted).pack(anchor="w", padx=10, pady=(4, 0))
+            ctk.CTkLabel(pill, text=val_t, font=self.fonts["body_bold"], text_color=col_t).pack(anchor="w", padx=10, pady=(0, 5))
 
         grid = ctk.CTkFrame(self.dash_diag_panel, fg_color="transparent")
         grid.pack(fill="x", padx=14, pady=(0, 8))
@@ -5757,16 +6043,18 @@ class AstraCradleApp(ctk.CTk):
         # Left column: Temperatures, Fans, GPU & Power
         left = ctk.CTkFrame(grid, fg_color=p.bg_elevated, corner_radius=8)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=2)
-        ctk.CTkLabel(left, text="Thermals, Fans & GPU Power", font=self.fonts["body_bold"], text_color=p.accent_brass).pack(
+        ctk.CTkLabel(left, text="Detailed Thermals, Fans & GPU Sensors", font=self.fonts["body_bold"], text_color=p.accent_brass).pack(
             anchor="w", padx=10, pady=(8, 4)
         )
         if temps:
-            for t in temps[:10]:
+            for t in temps[:12]:
                 st = str(t.get("status", "ok")).upper()
+                cat = str(t.get("category", "board")).upper()
                 col = p.accent_coral if st == "CRIT" else (p.accent_brass if st == "WARN" else p.accent_jade)
+                high_txt = f" (warn {t.get('high_c')}°C)" if t.get("high_c") else ""
                 ctk.CTkLabel(
                     left,
-                    text=f"  • {t.get('chip')}:{t.get('label')}: {t.get('current_c')}°C [{st}]",
+                    text=f"  • [{cat}] {t.get('chip')}:{t.get('label')}: {t.get('current_c')}°C [{st}]{high_txt}",
                     font=self.fonts["mono_small"],
                     text_color=col,
                     anchor="w",
@@ -5788,7 +6076,6 @@ class AstraCradleApp(ctk.CTk):
                     text_color=p.text_secondary,
                     anchor="w",
                 ).pack(fill="x", padx=10, pady=1)
-        gpu_live = GpuPowerAndFanController.probe_live_power_and_fan()
         ctk.CTkLabel(
             left,
             text=f"  • GPU: {gpu_live.get('name', 'Integrated')} · Temp {gpu_live.get('temp_c')}°C · Power {gpu_live.get('power_draw_w')}W · Fan {gpu_live.get('fan_percent')}%",

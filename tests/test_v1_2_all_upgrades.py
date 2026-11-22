@@ -240,3 +240,105 @@ def test_desktop_icon_sensors_full_discovery_and_command_deck_deploy(monkeypatch
         finally:
             if app.winfo_exists():
                 app.destroy()
+
+
+def test_github_commit_version_tracking_simple_mode_and_command_deck_temps(monkeypatch) -> None:
+    from astracradle.core.updater import ModuleAndUpdateManager
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg_mgr = ConfigManager(base_dir=Path(td))
+        cfg = cfg_mgr.load()
+        cfg.update_repo_url = "https://github.com/ExampleOwner/AstraCradle"
+        cfg_mgr.save(cfg)
+        j = ForensicJournal(cfg_mgr)
+        upd = ModuleAndUpdateManager(cfg_mgr, j)
+
+        info = upd.get_local_build_info()
+        assert info["version"] == "1.0.0"
+        assert "display_version" in info
+
+        # Commit-matching GitHub push -> reports fully updated
+        monkeypatch.setattr(upd, "_query_github_latest", lambda owner, repo, timeout=3.5: (None, None, "GitHub ok"))
+        monkeypatch.setattr(
+            upd,
+            "_query_github_head_commit",
+            lambda owner, repo, timeout=3.5: {
+                "sha": info["commit_full"] or "abc1234567890",
+                "short_sha": info["short_sha"] or "abc1234",
+                "date": "2026-11-16",
+                "message": "latest push",
+                "zip_url": "https://github.com/ExampleOwner/AstraCradle/archive/abc1234567890.zip",
+            },
+        )
+        res_same = upd.check_for_updates(cfg, check_remote=True)
+        assert res_same.update_available is False
+        assert "fully updated" in res_same.status_message.lower()
+
+        # Newer commit pushed on GitHub -> offers update even on same 1.0.0 tag
+        monkeypatch.setattr(
+            upd,
+            "_query_github_head_commit",
+            lambda owner, repo, timeout=3.5: {
+                "sha": "deadbeef1234567",
+                "short_sha": "deadbee",
+                "date": "2026-11-16",
+                "message": "new feature push",
+                "zip_url": "https://github.com/ExampleOwner/AstraCradle/archive/deadbeef1234567.zip",
+            },
+        )
+        if info["short_sha"]:
+            res_newer = upd.check_for_updates(cfg, check_remote=True)
+            assert res_newer.update_available is True
+            assert "deadbee" in res_newer.latest_version
+
+        # Simple Mode hides advanced nav tabs & toggles cleanly to Advanced Mode; Settings shows live version badge
+        app = AstraCradleApp(base_dir=Path(td) / "gui", show_startup_popups=False)
+        try:
+            app.update()
+            assert app.config_obj.simple_mode is True
+            assert not app.nav_buttons["hardware"].winfo_ismapped()
+            assert app.nav_buttons["dashboard"].winfo_ismapped()
+            assert app.nav_buttons["settings"].winfo_ismapped()
+
+            app.simple_mode_var.set(False)
+            app._on_toggle_simple_mode()
+            app.update()
+            assert app.config_obj.simple_mode is False
+            assert app.nav_buttons["hardware"].winfo_ismapped()
+
+            app.switch_nav("settings")
+            app.update()
+            assert hasattr(app, "settings_ver_lbl") and "v1.0.0" in app.settings_ver_lbl.cget("text")
+            assert hasattr(app, "settings_gh_ver_lbl")
+
+            # Applying settings must preserve custom geometry, maximized & fullscreen state
+            app.geometry("1520x900+10+10")
+            app.update()
+            pre_w, pre_h = app.winfo_width(), app.winfo_height()
+            app.set_theme_var.set("Atelier Alabaster")
+            app.set_scale_var.set("125%")
+            app.on_save_settings()
+            app.update()
+            assert abs(app.winfo_width() - pre_w) <= 8
+            assert abs(app.winfo_height() - pre_h) <= 8
+            assert app.config_obj.simple_mode is False
+
+            # Also verify _restore_window_state re-applies fullscreen flag when set
+            fs_calls: list[tuple[str, bool]] = []
+            orig_attrs = app.attributes
+            def _fake_attrs(opt=None, val=None):
+                if opt == "-fullscreen" and val is None:
+                    return 1
+                if opt == "-fullscreen" and val is not None:
+                    fs_calls.append((opt, bool(val)))
+                    return None
+                return orig_attrs(opt) if val is None else orig_attrs(opt, val)
+            monkeypatch.setattr(app, "attributes", _fake_attrs)
+            app.set_theme_var.set("Obsidian Horology")
+            app.on_save_settings()
+            app.update()
+            assert ("-fullscreen", True) in fs_calls
+        finally:
+            if app.winfo_exists():
+                app.destroy()
+

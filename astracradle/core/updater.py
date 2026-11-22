@@ -121,7 +121,120 @@ class ModuleAndUpdateManager:
                 parts.append(0)
         return tuple(parts)
 
-    DEFAULT_GITHUB_REPO = "https://github.com/AstraCradle/AstraCradle"
+    DEFAULT_GITHUB_REPO = "https://github.com/jackbashroot-boop/AstraCradle"
+
+    @classmethod
+    def get_local_build_info(cls, repo_dir: Path | None = None) -> dict[str, str]:
+        """Returns exact local version + git commit build metadata (live git or packaged _build_info.json)."""
+        info: dict[str, str] = {
+            "version": __version__,
+            "short_sha": "",
+            "commit_full": "",
+            "commit_count": "",
+            "branch": "main",
+            "commit_date": "",
+            "display_version": f"v{__version__}",
+        }
+        pkg_build_file = Path(__file__).resolve().parents[1] / "_build_info.json"
+        if pkg_build_file.exists():
+            try:
+                raw = json.loads(pkg_build_file.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    for k in ("version", "short_sha", "commit_full", "commit_count", "branch", "commit_date"):
+                        if raw.get(k):
+                            info[k] = str(raw[k])
+            except Exception:
+                pass
+
+        base_dir = repo_dir or Path(__file__).resolve().parents[2]
+        if (base_dir / ".git").exists() and shutil.which("git"):
+            try:
+                proc = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(base_dir),
+                        "log",
+                        "-1",
+                        "--format=%h|%H|%cs",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                line = (proc.stdout or "").strip()
+                if proc.returncode == 0 and "|" in line:
+                    s_sha, f_sha, cdate = line.split("|", 2)
+                    info["short_sha"] = s_sha.strip()
+                    info["commit_full"] = f_sha.strip()
+                    info["commit_date"] = cdate.strip()
+                cnt_p = subprocess.run(
+                    ["git", "-C", str(base_dir), "rev-list", "--count", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                if cnt_p.returncode == 0 and (cnt_p.stdout or "").strip().isdigit():
+                    info["commit_count"] = (cnt_p.stdout or "").strip()
+                br_p = subprocess.run(
+                    ["git", "-C", str(base_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                if br_p.returncode == 0 and (br_p.stdout or "").strip():
+                    info["branch"] = (br_p.stdout or "").strip()
+            except Exception:
+                pass
+
+        parts = [f"v{info['version']}"]
+        if info["commit_count"] and info["short_sha"]:
+            parts.append(f"build #{info['commit_count']} · {info['short_sha']}")
+        elif info["short_sha"]:
+            parts.append(f"commit {info['short_sha']}")
+        if info["commit_date"]:
+            parts.append(info["commit_date"])
+        info["display_version"] = " · ".join(parts)
+        return info
+
+    @staticmethod
+    def write_build_info_file(target_pkg_dir: Path, info: dict[str, str]) -> None:
+        try:
+            out = target_pkg_dir / "_build_info.json"
+            out.write_text(json.dumps(info, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _query_github_head_commit(self, owner: str, repo: str, timeout: float = 3.5) -> dict[str, str] | None:
+        """Fetches the latest commit pushed to the GitHub repository's default branch."""
+        headers = {"Accept": "application/vnd.github+json", "User-Agent": "AstraCradle-Updater/1.0"}
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/commits?per_page=1"
+        try:
+            req = urllib.request.Request(api_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                commits = json.loads(resp.read().decode("utf-8"))
+            if isinstance(commits, list) and commits:
+                c0 = commits[0]
+                full_sha = str(c0.get("sha") or "").strip()
+                if not full_sha:
+                    return None
+                cmeta = c0.get("commit") or {}
+                committer = cmeta.get("committer") or cmeta.get("author") or {}
+                cdate = str(committer.get("date") or "")[:10]
+                cmsg = str(cmeta.get("message") or "").splitlines()[0][:80]
+                return {
+                    "sha": full_sha,
+                    "short_sha": full_sha[:7],
+                    "date": cdate,
+                    "message": cmsg,
+                    "zip_url": f"https://github.com/{owner}/{repo}/archive/{full_sha}.zip",
+                }
+        except Exception:
+            return None
+        return None
 
     @staticmethod
     def _parse_github_slug(repo_url: str) -> tuple[str, str] | None:
@@ -234,6 +347,8 @@ class ModuleAndUpdateManager:
         repo_dir: Path | None = None,
     ) -> UpdateCheckResult:
         """Checks GitHub repo first (when check_remote=True), then checks local manifest & bundles."""
+        local_info = self.get_local_build_info(repo_dir=repo_dir)
+        local_display = local_info["display_version"]
         github_note = ""
         if check_remote:
             slug = self.resolve_github_repo(config, repo_dir=repo_dir)
@@ -243,13 +358,53 @@ class ModuleAndUpdateManager:
                 github_note = note
                 if gh_ver and self._parse_ver(gh_ver) > self._parse_ver(__version__):
                     return UpdateCheckResult(
-                        current_version=__version__,
+                        current_version=local_display,
                         latest_version=gh_ver,
                         update_available=True,
                         channel=config.update_channel,
                         release_notes=gh_url or f"https://github.com/{owner}/{repo}",
                         status_message=f"GitHub update v{gh_ver} available from {owner}/{repo}.",
                     )
+
+                # Check latest GitHub push commit when release tag is same/absent and GitHub was reachable
+                unreachable = ("unreachable" in note.lower()) or ("http " in note.lower())
+                if not unreachable:
+                    head = self._query_github_head_commit(owner, repo)
+                    if head and head.get("short_sha"):
+                        local_sha = local_info.get("short_sha", "")
+                        if local_sha and head["short_sha"] == local_sha:
+                            return UpdateCheckResult(
+                                current_version=local_display,
+                                latest_version=local_display,
+                                update_available=False,
+                                channel=config.update_channel,
+                                release_notes=f"https://github.com/{owner}/{repo}",
+                                status_message=(
+                                    f"You are fully updated with the latest version from GitHub ({local_display})."
+                                ),
+                            )
+                        if local_sha and head["short_sha"] != local_sha:
+                            return UpdateCheckResult(
+                                current_version=local_display,
+                                latest_version=f"{__version__} ({head['short_sha']})",
+                                update_available=True,
+                                channel=config.update_channel,
+                                release_notes=head["zip_url"],
+                                status_message=(
+                                    f"Newer GitHub push ready ({head['short_sha']} · {head['date']}: {head['message']})."
+                                ),
+                            )
+                        if not local_sha:
+                            return UpdateCheckResult(
+                                current_version=local_display,
+                                latest_version=f"{__version__} ({head['short_sha']})",
+                                update_available=False,
+                                channel=config.update_channel,
+                                release_notes=f"https://github.com/{owner}/{repo}",
+                                status_message=(
+                                    f"You are fully updated ({local_display} · GitHub latest push {head['short_sha']})."
+                                ),
+                            )
 
         local_manifest = self.cfg_mgr.updates_dir / "manifest.json"
         prefix = f"{github_note} · " if github_note else ""
@@ -260,7 +415,7 @@ class ModuleAndUpdateManager:
                     latest = str(data.get("version") or __version__)
                     avail = self._parse_ver(latest) > self._parse_ver(__version__)
                     return UpdateCheckResult(
-                        current_version=__version__,
+                        current_version=local_display,
                         latest_version=latest,
                         update_available=avail,
                         channel=config.update_channel,
@@ -269,13 +424,13 @@ class ModuleAndUpdateManager:
                         status_message=(
                             f"{prefix}Update v{latest} staged locally and ready for seamless apply."
                             if avail
-                            else f"{prefix}AstraCradle is up to date (v{__version__})."
+                            else f"{prefix}You are fully updated with the latest version ({local_display})."
                         ),
                     )
                 except Exception as exc:
                     return UpdateCheckResult(
-                        current_version=__version__,
-                        latest_version=__version__,
+                        current_version=local_display,
+                        latest_version=local_display,
                         update_available=False,
                         channel=config.update_channel,
                         release_notes="",
@@ -285,32 +440,32 @@ class ModuleAndUpdateManager:
             for ver, bpath in self.find_local_update_bundles():
                 if self._parse_ver(ver) > self._parse_ver(__version__):
                     return UpdateCheckResult(
-                        current_version=__version__,
+                        current_version=local_display,
                         latest_version=ver,
                         update_available=True,
                         channel=config.update_channel,
                         release_notes=str(bpath),
                         package_hash=hashlib.sha256(bpath.read_bytes()).hexdigest(),
-                        status_message=f"{prefix}Local update v{ver} found ({bpath.name}). Click Check Updates Now or Install Update Bundle to apply.",
+                        status_message=f"{prefix}Local update v{ver} found ({bpath.name}). Click Update to apply.",
                     )
 
             return UpdateCheckResult(
-                current_version=__version__,
-                latest_version=__version__,
+                current_version=local_display,
+                latest_version=local_display,
                 update_available=False,
                 channel=config.update_channel,
                 release_notes="Checked GitHub repo first, then local ~/.astracradle/updates and ~/Downloads.",
-                status_message=f"{prefix}Up to date (v{__version__} · {config.update_channel} channel).",
+                status_message=f"{prefix}You are fully updated with the latest version ({local_display}).",
             )
 
         # Offline-safe fallback when network endpoint is unreachable
         return UpdateCheckResult(
-            current_version=__version__,
-            latest_version=__version__,
+            current_version=local_display,
+            latest_version=local_display,
             update_available=False,
             channel=config.update_channel,
             release_notes="No external update required.",
-            status_message=f"{prefix}Up to date (v{__version__}).",
+            status_message=f"{prefix}You are fully updated with the latest version ({local_display}).",
         )
 
     def pull_from_github_and_update(
@@ -325,11 +480,19 @@ class ModuleAndUpdateManager:
             dl_url = res.release_notes
             try:
                 with tempfile.TemporaryDirectory() as td:
-                    out_zip = Path(td) / f"AstraCradle-v{res.latest_version}-github.zip"
+                    out_zip = Path(td) / f"AstraCradle-github-update.zip"
                     req = urllib.request.Request(dl_url, headers={"User-Agent": "AstraCradle-Updater/1.0"})
-                    with urllib.request.urlopen(req, timeout=30) as resp:
+                    with urllib.request.urlopen(req, timeout=45) as resp:
                         out_zip.write_bytes(resp.read())
-                    return self.install_update_bundle(out_zip, config, allow_same_version=False, run_pip=run_pip)
+                    m_sha = re.search(r"/archive/([0-9a-f]{7,40})\.zip$", dl_url)
+                    commit_sha = m_sha.group(1)[:7] if m_sha else ""
+                    return self.install_update_bundle(
+                        out_zip,
+                        config,
+                        allow_same_version=True,
+                        run_pip=run_pip,
+                        commit_sha=commit_sha,
+                    )
             except Exception as exc:
                 self.journal.log_event(
                     "Updater",
@@ -351,15 +514,17 @@ class ModuleAndUpdateManager:
                     check=False,
                 )
                 if pull.returncode == 0 and "Already up to date." not in (pull.stdout or ""):
+                    info = self.get_local_build_info(repo_dir=base_dir)
+                    self.write_build_info_file(base_dir / "astracradle", info)
                     if run_pip:
                         subprocess.run(
-                            [sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", "-e", str(base_dir)],
+                            [sys.executable, "-m", "pip", "install", "--quiet", "--force-reinstall", "--no-deps", str(base_dir)],
                             capture_output=True,
                             text=True,
                             timeout=120,
                             check=False,
                         )
-                    return True, f"Pulled latest updates from GitHub into {base_dir.name}."
+                    return True, f"Updated from GitHub to {info['display_version']}! Restart AstraCradle to load changes."
             except Exception:
                 pass
 
@@ -474,6 +639,7 @@ class ModuleAndUpdateManager:
         config: AppConfig,
         allow_same_version: bool = True,
         run_pip: bool = True,
+        commit_sha: str = "",
     ) -> tuple[bool, str]:
         """Verifies and installs an AstraCradle-vX.Y.Z-bundle (.zip / .tar.gz) cleanly."""
         bundle = bundle_path.expanduser().resolve()
@@ -500,9 +666,26 @@ class ModuleAndUpdateManager:
                 if new_t < cur_t or (new_t == cur_t and not allow_same_version):
                     return False, f"Bundle version v{new_ver} is older than installed v{__version__}."
 
+                if commit_sha:
+                    self.write_build_info_file(
+                        pkg_root / "astracradle",
+                        {
+                            "version": new_ver,
+                            "short_sha": commit_sha[:7],
+                            "commit_full": commit_sha,
+                            "commit_count": "",
+                            "branch": "main",
+                            "commit_date": "",
+                        },
+                    )
+
                 if run_pip:
+                    pip_cmd = [sys.executable, "-m", "pip", "install", "--quiet", "--upgrade"]
+                    if allow_same_version and new_t == cur_t:
+                        pip_cmd = [sys.executable, "-m", "pip", "install", "--quiet", "--force-reinstall", "--no-deps"]
+                    pip_cmd.append(str(pkg_root))
                     proc = subprocess.run(
-                        [sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", str(pkg_root)],
+                        pip_cmd,
                         capture_output=True,
                         text=True,
                         timeout=120,
@@ -515,15 +698,16 @@ class ModuleAndUpdateManager:
                 applied_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(bundle, applied_dir / bundle.name)
 
+            ver_lbl = f"v{new_ver}" + (f" · commit {commit_sha[:7]}" if commit_sha else "")
             self.journal.log_event(
                 component="Updater",
                 action="install_update_bundle",
-                how=f"Verified SHA-256 ({sha256[:12]}...) and installed {bundle.name} -> v{new_ver}",
-                why="User initiated local verified update bundle upgrade",
+                how=f"Verified SHA-256 ({sha256[:12]}...) and installed {bundle.name} -> {ver_lbl}",
+                why="User initiated update upgrade",
                 outcome="ok",
                 details=f"channel={config.update_channel}",
             )
-            return True, f"Updated to AstraCradle v{new_ver} (SHA-256 {sha256[:12]}...). Restart AstraCradle to load the new version."
+            return True, f"Updated to AstraCradle {ver_lbl} (SHA-256 {sha256[:12]}...). Restart AstraCradle to load the new version."
         except Exception as exc:
             self.journal.log_event(
                 component="Updater",

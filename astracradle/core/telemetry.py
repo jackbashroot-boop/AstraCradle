@@ -262,21 +262,42 @@ class TelemetryCollector:
 
     @staticmethod
     def collect_detailed_sensors() -> dict[str, object]:
-        """Collects all available hardware temperatures, fan RPMs, CPU frequency bounds & battery sensors."""
+        """Collects all available hardware temperatures, fan RPMs, GPU thermals, CPU frequency bounds & battery sensors."""
+        import shutil
+        import subprocess
+        from pathlib import Path
+
+        def _classify_chip(chip_name: str, lbl: str) -> str:
+            low = f"{chip_name} {lbl}".lower()
+            if any(k in low for k in ("k10temp", "coretemp", "zenpower", "cpu", "tctl", "tdie", "tccd", "package")):
+                return "cpu"
+            if any(k in low for k in ("amdgpu", "nvidia", "radeon", "nouveau", "gpu", "edge", "junction", "mem")):
+                return "gpu"
+            if any(k in low for k in ("nvme", "drivetemp", "ssd", "hdd", "composite", "sensor 1", "sensor 2")):
+                return "storage"
+            return "board"
+
         temps_out: list[dict[str, object]] = []
         try:
             temps = psutil.sensors_temperatures() or {}  # type: ignore[attr-defined]
             for chip, entries in sorted(temps.items()):
                 for idx, ent in enumerate(entries):
                     cur = round(float(ent.current), 1)
+                    if cur <= -40.0 or cur > 150.0:
+                        continue
                     high = round(float(ent.high), 1) if ent.high else None
                     crit = round(float(ent.critical), 1) if ent.critical else None
                     label = (ent.label or f"sensor_{idx + 1}").strip()
-                    status = "crit" if (crit and cur >= crit) or cur >= 95.0 else ("warn" if (high and cur >= high) or cur >= 82.0 else "ok")
+                    status = (
+                        "crit"
+                        if (crit and cur >= crit) or cur >= 95.0
+                        else ("warn" if (high and cur >= high) or cur >= 82.0 else "ok")
+                    )
                     temps_out.append(
                         {
                             "chip": chip,
                             "label": label,
+                            "category": _classify_chip(chip, label),
                             "current_c": cur,
                             "high_c": high,
                             "critical_c": crit,
@@ -285,6 +306,76 @@ class TelemetryCollector:
                     )
         except Exception:
             pass
+
+        # Ensure NVIDIA GPU temp/fan/power are included even when nvidia kernel module isn't in hwmon
+        gpu_live: dict[str, object] = {}
+        nvsmi = shutil.which("nvidia-smi")
+        if nvsmi:
+            try:
+                proc = subprocess.run(
+                    [
+                        nvsmi,
+                        "--query-gpu=name,temperature.gpu,fan.speed,power.draw,clocks.current.graphics,clocks.current.memory,memory.used,memory.total",
+                        "--format=csv,noheader,nounits",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=1.5,
+                    check=False,
+                )
+                line = (proc.stdout or "").strip().splitlines()[0] if proc.stdout and proc.stdout.strip() else ""
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 8:
+                    gtemp = float(parts[1])
+                    gpu_live = {
+                        "name": parts[0],
+                        "temp_c": round(gtemp, 1),
+                        "fan_percent": None if parts[2].startswith("[") else float(parts[2]),
+                        "power_draw_w": None if parts[3].startswith("[") else round(float(parts[3]), 1),
+                        "gpu_clock_mhz": None if parts[4].startswith("[") else float(parts[4]),
+                        "mem_clock_mhz": None if parts[5].startswith("[") else float(parts[5]),
+                        "vram_used_mb": float(parts[6]),
+                        "vram_total_mb": float(parts[7]),
+                    }
+                    if not any(t.get("category") == "gpu" for t in temps_out):
+                        temps_out.append(
+                            {
+                                "chip": "nvidia",
+                                "label": f"{parts[0]} Core",
+                                "category": "gpu",
+                                "current_c": round(gtemp, 1),
+                                "high_c": 83.0,
+                                "critical_c": 93.0,
+                                "status": "crit" if gtemp >= 90 else ("warn" if gtemp >= 80 else "ok"),
+                            }
+                        )
+            except Exception:
+                pass
+
+        # Also check Linux /sys/class/thermal/thermal_zone* if hwmon sensors were empty
+        if not temps_out and Path("/sys/class/thermal").exists():
+            try:
+                for tz in sorted(Path("/sys/class/thermal").glob("thermal_zone*"))[:8]:
+                    tfile = tz / "temp"
+                    if not tfile.exists():
+                        continue
+                    raw = float(tfile.read_text(encoding="utf-8").strip())
+                    cur = round(raw / 1000.0 if raw > 200 else raw, 1)
+                    if -20 < cur < 140:
+                        ztype = (tz / "type").read_text(encoding="utf-8").strip() if (tz / "type").exists() else tz.name
+                        temps_out.append(
+                            {
+                                "chip": tz.name,
+                                "label": ztype,
+                                "category": _classify_chip(tz.name, ztype),
+                                "current_c": cur,
+                                "high_c": None,
+                                "critical_c": None,
+                                "status": "warn" if cur >= 82.0 else "ok",
+                            }
+                        )
+            except Exception:
+                pass
 
         fans_out: list[dict[str, object]] = []
         try:
@@ -325,11 +416,22 @@ class TelemetryCollector:
         except Exception:
             pass
 
+        cpu_temps = [t["current_c"] for t in temps_out if t.get("category") == "cpu"]
+        gpu_temps = [t["current_c"] for t in temps_out if t.get("category") == "gpu"]
+        nvme_temps = [t["current_c"] for t in temps_out if t.get("category") == "storage"]
+        primary_cpu = max(cpu_temps) if cpu_temps else (temps_out[0]["current_c"] if temps_out else None)
+        primary_gpu = max(gpu_temps) if gpu_temps else gpu_live.get("temp_c")
+        primary_nvme = max(nvme_temps) if nvme_temps else None
+
         return {
             "temperatures": temps_out,
             "fans": fans_out,
             "cpu_freq": freq_info,
             "battery": bat_info,
+            "gpu_live": gpu_live,
+            "cpu_temp_c": primary_cpu,
+            "gpu_temp_c": primary_gpu,
+            "nvme_temp_c": primary_nvme,
             "boot_time": psutil.boot_time(),
         }
 
