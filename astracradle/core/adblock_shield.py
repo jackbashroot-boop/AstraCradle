@@ -79,6 +79,7 @@ YOUTUBE_PLAYBACK_ALLOWLIST: frozenset[str] = frozenset(
         "youtube.com",
         "www.youtube.com",
         "m.youtube.com",
+        "tv.youtube.com",
         "music.youtube.com",
         "youtu.be",
         "s.youtube.com",
@@ -208,6 +209,35 @@ DEFAULT_BLOCK_CATEGORIES: dict[str, list[str]] = {
         "adclick.g.doubleclick.net",
         "cm.g.doubleclick.net",
         "stats.g.doubleclick.net",
+    ],
+    "smart_tv_ads": [
+        "samsungads.com",
+        "ads.samsung.com",
+        "samsungacr.com",
+        "config.samsungads.com",
+        "gpm.samsungqbe.com",
+        "osb-apps.samsungqbe.com",
+        "ad.lgappstv.com",
+        "us.info.lgsmartad.com",
+        "lgad.cjpowercast.com",
+        "smartshare.lgtvsdp.com",
+        "ibs.lgappstv.com",
+        "ngfts.lge.com",
+        "ads.roku.com",
+        "scribe.logs.roku.com",
+        "cooper.logs.roku.com",
+        "austin.logs.roku.com",
+        "liberty.logs.roku.com",
+        "p.ads.roku.com",
+        "mads.amazon.com",
+        "mads.amazon-adsystem.com",
+        "arcus-uswest.amazon.com",
+        "fls-na.amazon.com",
+        "tv.samba.tv",
+        "ads.vizio.com",
+        "api.vizio.com",
+        "logs.vizio.com",
+        "androidtvchannels-pa.googleapis.com",
     ],
     "trackers": [
         "www.google-analytics.com",
@@ -460,6 +490,8 @@ class AstraShieldManager:
         self.total_queries = 0
         self.blocked_queries = 0
         self._top_blocked: Counter[str] = Counter()
+        self._client_queries: Counter[str] = Counter()
+        self._client_blocked: Counter[str] = Counter()
         self._recent: deque[DnsQueryEvent] = deque(maxlen=60)
 
     @staticmethod
@@ -471,7 +503,7 @@ class AstraShieldManager:
 
     def load_rules(self) -> dict[str, Any]:
         default = {
-            "categories": ["ads", "youtube_ads", "trackers", "telemetry", "malware"],
+            "categories": ["ads", "youtube_ads", "smart_tv_ads", "trackers", "telemetry", "malware"],
             "custom_block": [],
             "custom_allow": [],
             "upstream_dns": "1.1.1.1",
@@ -983,7 +1015,12 @@ youtube.com##ytd-ad-slot-renderer, ytd-banner-promo-renderer, ytd-in-feed-ad-lay
             )
         return True, "AstraShield DNS Sinkhole stopped."
 
-    def handle_dns_packet(self, packet: bytes, allow_upstream: bool = True) -> bytes | None:
+    def handle_dns_packet(
+        self,
+        packet: bytes,
+        allow_upstream: bool = True,
+        client_ip: str = "",
+    ) -> bytes | None:
         """Processes one raw UDP DNS packet, recording Pi-hole telemetry and returning reply bytes."""
         parsed = _parse_dns_qname(packet)
         if parsed is None:
@@ -992,9 +1029,13 @@ youtube.com##ytd-ad-slot-renderer, ytd-banner-promo-renderer, ytd-in-feed-ad-lay
         blocked, reason = self.is_domain_blocked(qname)
         with self._lock:
             self.total_queries += 1
+            if client_ip:
+                self._client_queries[client_ip] += 1
             if blocked:
                 self.blocked_queries += 1
                 self._top_blocked[qname] += 1
+                if client_ip:
+                    self._client_blocked[client_ip] += 1
                 self._recent.appendleft(DnsQueryEvent(utc_now_iso(), qname, "blocked", reason))
             else:
                 self._recent.appendleft(
@@ -1026,12 +1067,90 @@ youtube.com##ytd-ad-slot-renderer, ytd-banner-promo-renderer, ytd-in-feed-ad-lay
                 continue
             except OSError:
                 break
-            reply = self.handle_dns_packet(data, allow_upstream=True)
+            cip = str(client[0]) if client else ""
+            reply = self.handle_dns_packet(data, allow_upstream=True, client_ip=cip)
             if reply:
                 try:
                     sock.sendto(reply, client)
                 except OSError:
                     pass
+
+    def get_client_stats(self) -> dict[str, dict[str, int]]:
+        with self._lock:
+            ips = set(self._client_queries.keys()) | set(self._client_blocked.keys())
+            return {
+                ip: {
+                    "queries": int(self._client_queries.get(ip, 0)),
+                    "blocked": int(self._client_blocked.get(ip, 0)),
+                }
+                for ip in sorted(ips)
+            }
+
+    @staticmethod
+    def get_lan_ipv4() -> str:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("1.1.1.1", 80))
+                ip = s.getsockname()[0]
+                if ip and not ip.startswith("127."):
+                    return str(ip)
+        except OSError:
+            pass
+        try:
+            host_ip = socket.gethostbyname(socket.gethostname())
+            if host_ip and not host_ip.startswith("127."):
+                return host_ip
+        except OSError:
+            pass
+        return "127.0.0.1"
+
+    def start_lan_dns_sinkhole(
+        self,
+        port: int = 53,
+        fallback_port: int = 5353,
+        upstream: str = "1.1.1.1",
+    ) -> tuple[bool, str]:
+        """Starts LAN-reachable (0.0.0.0) DNS sinkhole for Smart TVs & network devices."""
+        if self.dns_running and self._listen_addr.startswith("0.0.0.0:"):
+            return True, f"LAN AstraShield DNS already listening on {self._listen_addr} (TV DNS: {self.get_lan_ipv4()})."
+        if self.dns_running:
+            self.stop_dns_sinkhole()
+
+        ok, msg = self.start_dns_sinkhole(host="0.0.0.0", port=port, upstream=upstream)
+        lan_ip = self.get_lan_ipv4()
+        if ok:
+            return True, f"LAN AstraShield DNS active on {lan_ip}:{port}! Point your Smart TV or router DNS to {lan_ip}."
+
+        # Port 53 requires root/CAP_NET_BIND_SERVICE — try binding fallback_port + optional Linux redirect
+        ok_fb, msg_fb = self.start_dns_sinkhole(host="0.0.0.0", port=fallback_port, upstream=upstream)
+        if not ok_fb:
+            return False, msg_fb
+        if platform.system() == "Linux" and self.elevation is not None and port == 53 and fallback_port != 53:
+            if shutil.which("iptables"):
+                res = self.elevation.run_privileged(
+                    [
+                        "iptables",
+                        "-t",
+                        "nat",
+                        "-A",
+                        "PREROUTING",
+                        "-p",
+                        "udp",
+                        "--dport",
+                        "53",
+                        "-j",
+                        "REDIRECT",
+                        "--to-ports",
+                        str(fallback_port),
+                    ],
+                    reason=f"Forward LAN DNS port 53 to AstraShield on {lan_ip}:{fallback_port} for Smart TVs",
+                )
+                if res.ok:
+                    return True, f"LAN AstraShield DNS active on {lan_ip}:53 (forwarded -> :{fallback_port})! Set TV DNS to {lan_ip}."
+        return True, (
+            f"LAN AstraShield DNS listening on 0.0.0.0:{fallback_port} (LAN IP {lan_ip}). "
+            f"For TVs that require port 53, run elevated or forward UDP 53 -> {fallback_port}."
+        )
 
     def test_query_domain(self, domain: str) -> tuple[bool, str]:
         """Simulates a DNS lookup through AstraShield (works offline & in tests)."""

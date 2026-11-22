@@ -103,6 +103,7 @@ from ..core.telemetry_history import (
     TelemetryHistoryDB,
 )
 from ..core.thermal_spc import ThermalSpcMonitor
+from ..core.lan_tv_shield import LanTvAdShield
 from ..core.usb_guard import UsbAndPeripheralGuard
 from ..core.updater import ModuleAndUpdateManager
 from ..theme import ThemePalette, get_palette, get_ui_fonts
@@ -197,6 +198,8 @@ class AstraCradleApp(ctk.CTk):
         )
         self.conflict_detector = ConflictProgramDetector(self.journal, elevation=self.elevation)
         self.usb_guard = UsbAndPeripheralGuard(self.cfg_mgr, self.journal, elevation=self.elevation)
+        self.lan_tv_shield = LanTvAdShield(self.journal)
+        self._latest_lan_devices: list = []
         self.baseline_diff = BaselineDiffEngine(self.cfg_mgr, self.journal)
         self.startup_file_delay = StartupFileDelayManager(self.cfg_mgr, self.rollback_mgr, self.journal)
         self.net_dns_inspector = NetworkAndDnsInspector(self.journal)
@@ -2825,6 +2828,86 @@ class AstraCradleApp(ctk.CTk):
                 ).pack(side="right", padx=8, pady=4)
         ctk.CTkFrame(ucard, height=4, fg_color="transparent").pack()
 
+        # 0c. Smart TV & Network Devices YouTube Ad-Shield (LAN DNS + TV Setup)
+        tvcard = ctk.CTkFrame(
+            self.mod_body, fg_color=p.bg_card, border_width=1, border_color=p.accent_cyan, corner_radius=12
+        )
+        tvcard.pack(fill="x", pady=(0, 8))
+        tvhdr = ctk.CTkFrame(tvcard, fg_color="transparent")
+        tvhdr.pack(fill="x", padx=14, pady=(10, 4))
+        ctk.CTkLabel(
+            tvhdr,
+            text="Smart TV & Network Devices YouTube Ad-Shield (Zero Stream Breakage)",
+            font=self.fonts["body_bold"],
+            text_color=p.accent_cyan,
+        ).pack(side="left")
+
+        lan_tv_var = tk.BooleanVar(value=bool(getattr(self.config_obj, "astrashield_lan_tv_mode", False)))
+        ctk.CTkSwitch(
+            tvhdr,
+            text="LAN TV DNS",
+            variable=lan_tv_var,
+            font=self.fonts["caption"],
+            progress_color=p.accent_jade,
+            command=lambda: self._on_toggle_lan_tv_dns(bool(lan_tv_var.get())),
+        ).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(
+            tvhdr,
+            text="Scan Network for TVs",
+            height=26,
+            fg_color=p.accent_cyan,
+            text_color="#071217",
+            font=self.fonts["caption"],
+            command=self._on_scan_lan_tvs,
+        ).pack(side="right", padx=4)
+
+        lan_ip = self.adblock_shield.get_lan_ipv4()
+        dns_listen = self.adblock_shield.dns_listen_addr or "stopped"
+        ctk.CTkLabel(
+            tvcard,
+            text=(
+                f"PC LAN IP: {lan_ip} · DNS Sinkhole: {dns_listen}\n"
+                "Point any Smart TV (LG, Samsung, Roku, Android/Google TV, Fire TV, Apple TV) or router DNS to "
+                f"{lan_ip} to strip TV ads & YouTube ad-networks while protecting *.googlevideo.com streams."
+            ),
+            font=self.fonts["small"],
+            text_color=p.text_secondary,
+            justify="left",
+            wraplength=820,
+        ).pack(anchor="w", padx=14, pady=(0, 6))
+
+        tv_devs = self._latest_lan_devices
+        if not tv_devs:
+            ctk.CTkLabel(
+                tvcard,
+                text="Click 'Scan Network for TVs' to discover Smart TVs, streaming sticks & LAN devices.",
+                font=self.fonts["small"],
+                text_color=p.text_muted,
+            ).pack(anchor="w", padx=14, pady=(0, 10))
+        else:
+            for dev in tv_devs[:12]:
+                trow = ctk.CTkFrame(tvcard, fg_color=p.bg_elevated, corner_radius=8)
+                trow.pack(fill="x", padx=14, pady=2)
+                tcol = p.accent_jade if dev.dns_queries > 0 else (p.accent_cyan if dev.device_type in ("smart_tv", "streaming_box") else p.text_secondary)
+                ctk.CTkLabel(
+                    trow,
+                    text=f"[{dev.brand}] {dev.ip} ({dev.mac}) — {dev.protection_status}",
+                    font=self.fonts["mono_small"],
+                    text_color=tcol,
+                    anchor="w",
+                ).pack(side="left", padx=10, pady=5)
+                ctk.CTkButton(
+                    trow,
+                    text="TV YouTube Setup",
+                    width=118,
+                    height=22,
+                    fg_color=p.accent_jade,
+                    text_color="#071510",
+                    font=self.fonts["caption"],
+                    command=lambda d=dev: self._on_show_tv_setup(d),
+                ).pack(side="right", padx=8, pady=4)
+        ctk.CTkFrame(tvcard, height=4, fg_color="transparent").pack()
+
         # 1. Privacy Trace Sweeper (Consent-Gated)
         pcard = ctk.CTkFrame(
             self.mod_body, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
@@ -4960,6 +5043,14 @@ class AstraCradleApp(ctk.CTk):
                         self._render_modules()
                     continue
 
+                if first == "lan_tv_scanned":
+                    devs = item[1] or []
+                    self._latest_lan_devices = devs
+                    self.show_toast(f"Found {len(devs)} network device(s) / Smart TV(s) on LAN.")
+                    if self.current_nav == "modules":
+                        self._render_modules()
+                    continue
+
                 if len(item) >= 4 and isinstance(item[0], SystemSnapshot):
                     snap, report, pb, gpu = item[0], item[1], item[2], item[3]
                     if len(item) >= 6:
@@ -5845,6 +5936,7 @@ class AstraCradleApp(ctk.CTk):
         self._deploy_vars: dict[str, tk.BooleanVar] = {}
         items = [
             ("astrashield_yt", "AstraShield Ad/Tracker Blocker + YouTube Safe Ad-Prune", True),
+            ("lan_tv_shield", "LAN Smart TV & Network Device YouTube Ad-Shield DNS", bool(getattr(self.config_obj, "astrashield_lan_tv_mode", False))),
             ("pihole_sync", "Download & Sync Standard Pi-hole Blocklists", True),
             ("stop_conflicts", "Turn Off Conflicting Background Tools (DNS/Fan/Optimizer)", True),
             ("badusb_guard", "BadUSB Pre-Connection Gate + Active Peripheral Ping (Default ON)", bool(self.config_obj.badusb_guard_enabled)),
@@ -5894,6 +5986,20 @@ class AstraCradleApp(ctk.CTk):
             if not quiet:
                 self.show_toast(res_msg)
             return ok_h or ok_d, res_msg
+
+        if key == "lan_tv_shield":
+            self.config_obj.astrashield_lan_tv_mode = True
+            self.cfg_mgr.save(self.config_obj)
+            ok_tv, msg_tv = self.adblock_shield.start_lan_dns_sinkhole(
+                port=53,
+                fallback_port=self.config_obj.astrashield_dns_port,
+                upstream=self.config_obj.astrashield_upstream_dns,
+            )
+            self._latest_lan_devices = self.lan_tv_shield.scan_lan_devices(self.adblock_shield, ssdp_timeout=0.5)
+            full_tv_msg = f"{msg_tv} (Found {len(self._latest_lan_devices)} LAN device(s))"
+            if not quiet:
+                self.show_toast(full_tv_msg)
+            return ok_tv, full_tv_msg
 
         if key == "pihole_sync":
             ok_p, msg_p, _ = self.adblock_shield.download_pihole_blocklists(timeout=10.0)
@@ -6300,6 +6406,48 @@ class AstraCradleApp(ctk.CTk):
         _, msg = self.usb_guard.set_strict_precheck_gate(enable, dry_run=bool(self.dry_run_var.get()))
         self.show_toast(msg)
         self._render_modules()
+
+    def _on_toggle_lan_tv_dns(self, enable: bool) -> None:
+        self.config_obj.astrashield_lan_tv_mode = bool(enable)
+        self.cfg_mgr.save(self.config_obj)
+        if enable:
+            ok, msg = self.adblock_shield.start_lan_dns_sinkhole(
+                port=53,
+                fallback_port=self.config_obj.astrashield_dns_port,
+                upstream=self.config_obj.astrashield_upstream_dns,
+            )
+            self.show_toast(msg)
+        else:
+            _, msg = self.adblock_shield.stop_dns_sinkhole()
+            self.show_toast(msg)
+        self._render_modules()
+
+    def _on_scan_lan_tvs(self) -> None:
+        self.show_toast("Scanning local Wi-Fi/LAN for Smart TVs & network devices...")
+
+        def _worker() -> None:
+            devs = self.lan_tv_shield.scan_lan_devices(self.adblock_shield, ssdp_timeout=0.8)
+            self._ui_queue.put(("lan_tv_scanned", devs, None))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_show_tv_setup(self, dev) -> None:
+        lan_ip = self.adblock_shield.get_lan_ipv4()
+        listen_addr = self.adblock_shield.dns_listen_addr or ""
+        port = 53
+        if ":" in listen_addr:
+            try:
+                port = int(listen_addr.rsplit(":", 1)[-1])
+            except Exception:
+                port = 53
+        plan = self.lan_tv_shield.generate_tv_setup_plan(dev, lan_ip=lan_ip, dns_port=port)
+        body = "\n\n".join(plan["steps"])
+        self._copy_text(plan["dns_instruction"])
+        if self._show_startup_popups:
+            messagebox.showinfo(
+                f"Smart TV YouTube Ad-Shield — {dev.brand} ({dev.ip})",
+                f"Mode: {plan['companion_mode']}\n\n{body}\n\n(DNS address '{lan_ip}' copied to clipboard!)",
+            )
 
 
 def launch_gui(base_dir: Path | str | None = None, start_minimized: bool = False) -> None:

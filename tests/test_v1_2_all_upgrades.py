@@ -342,3 +342,73 @@ def test_github_commit_version_tracking_simple_mode_and_command_deck_temps(monke
             if app.winfo_exists():
                 app.destroy()
 
+
+def test_lan_tv_discovery_smart_tv_youtube_ad_shield_and_stream_safety(monkeypatch) -> None:
+    import struct
+    from astracradle.core.adblock_shield import AstraShieldManager
+    from astracradle.core.lan_tv_shield import LanTvAdShield
+
+    def _make_dns_query(domain: str) -> bytes:
+        q = b"".join(bytes([len(p)]) + p.encode("ascii") for p in domain.split(".")) + b"\x00"
+        return struct.pack("!HHHHHH", 0x4321, 0x0100, 1, 0, 0, 0) + q + struct.pack("!HH", 1, 1)
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg_mgr = ConfigManager(base_dir=Path(td))
+        rb = RollbackManager(cfg_mgr)
+        j = ForensicJournal(cfg_mgr)
+        sh = AstraShieldManager(cfg_mgr, rb, j, hosts_path=Path(td) / "hosts")
+        tv_shield = LanTvAdShield(j)
+
+        # Simulate Smart TV sending DNS queries through LAN AstraShield DNS
+        # 1) TV YouTube & Smart TV ad domains MUST be blocked
+        for ad_dom in ("ads.youtube.com", "googleads.g.doubleclick.net", "ad.lgappstv.com", "samsungads.com", "ads.roku.com"):
+            resp = sh.handle_dns_packet(_make_dns_query(ad_dom), allow_upstream=False, client_ip="192.168.1.85")
+            assert resp is not None, f"Expected sinkhole reply for {ad_dom}"
+
+        # 2) Video streaming & Smart TV YouTube playback endpoints MUST NEVER be blocked
+        for stream_dom in (
+            "tv.youtube.com",
+            "www.youtube.com",
+            "youtubei.googleapis.com",
+            "rr3---sn-a5mlrn7z.googlevideo.com",
+            "manifest.googlevideo.com",
+            "i.ytimg.com",
+        ):
+            blocked, reason = sh.is_domain_blocked(stream_dom)
+            assert blocked is False, f"{stream_dom} must stay unblocked ({reason})"
+            sh.handle_dns_packet(_make_dns_query(stream_dom), allow_upstream=False, client_ip="192.168.1.85")
+
+        stats = sh.get_client_stats()
+        assert stats["192.168.1.85"]["queries"] == 11
+        assert stats["192.168.1.85"]["blocked"] == 5
+
+        # 3) LAN Smart TV discovery merges ARP + SSDP + live DNS ad-block counts
+        monkeypatch.setattr(
+            LanTvAdShield,
+            "_read_arp_table",
+            staticmethod(lambda: {"192.168.1.85": "00:e0:91:11:22:33", "192.168.1.92": "54:60:09:aa:bb:cc"}),
+        )
+        monkeypatch.setattr(
+            LanTvAdShield,
+            "_probe_ssdp",
+            staticmethod(lambda timeout=0.6: {"192.168.1.92": "Linux/Android Chromecast DIAL"}),
+        )
+        devs = tv_shield.scan_lan_devices(sh, ssdp_timeout=0.1)
+        assert len(devs) == 2
+        lg_tv = next(d for d in devs if d.ip == "192.168.1.85")
+        assert "LG" in lg_tv.brand and lg_tv.ads_blocked == 5
+        cc_tv = next(d for d in devs if d.ip == "192.168.1.92")
+        assert "Chromecast" in cc_tv.brand or "Google" in cc_tv.brand
+
+        plan = tv_shield.generate_tv_setup_plan(cc_tv, lan_ip="192.168.1.10", dns_port=5353)
+        assert "192.168.1.10" in plan["dns_instruction"]
+        assert "SmartTube" in plan["companion_mode"]
+
+        # 4) Reject invalid IPv4 in ADB helper & bind LAN ephemeral port cleanly
+        ok_bad, _ = tv_shield.adb_connect_tv("not-an-ip;rm -rf /")
+        assert ok_bad is False
+        ok_lan, msg_lan = sh.start_dns_sinkhole(host="127.0.0.1", port=0)
+        assert ok_lan and "listening" in msg_lan.lower()
+        sh.stop_dns_sinkhole()
+
+

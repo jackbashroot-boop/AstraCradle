@@ -192,11 +192,12 @@ class AppConfig:
     ram_guard_enabled: bool = False
     ram_guard_threshold: float = 85.0
     astrashield_enabled: bool = False
+    astrashield_lan_tv_mode: bool = False
     astrashield_dns_port: int = 5353
     astrashield_upstream_dns: str = "1.1.1.1"
     astrashield_youtube_safe_prune: bool = True
     astrashield_categories: list[str] = field(
-        default_factory=lambda: ["ads", "youtube_ads", "trackers", "telemetry", "malware"]
+        default_factory=lambda: ["ads", "youtube_ads", "smart_tv_ads", "trackers", "telemetry", "malware"]
     )
     badusb_guard_enabled: bool = True
     usb_strict_gate: bool = True

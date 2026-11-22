@@ -224,6 +224,19 @@ def run_cli(args: argparse.Namespace) -> int:
             print(f"  [{d.bus.upper()}] {d.vendor} {d.name} ({d.plain_description}) -> {verdict}")
         return 0
 
+    if args.scan_tv:
+        from .core.adblock_shield import AstraShieldManager
+        from .core.lan_tv_shield import LanTvAdShield
+
+        sh = AstraShieldManager(cfg_mgr, rollback_mgr, journal)
+        tv = LanTvAdShield(journal)
+        lan_ip = sh.get_lan_ipv4()
+        devs = tv.scan_lan_devices(sh, ssdp_timeout=0.6)
+        print(f"LAN AstraShield TV DNS Target: {lan_ip} | Discovered {len(devs)} network device(s):")
+        for dev in devs:
+            print(f"  [{dev.brand}] {dev.ip} ({dev.mac}) — {dev.protection_status}")
+        return 0
+
     if args.conflicts:
         from .core.pc_extras import ConflictProgramDetector
 
@@ -291,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Toggle, sync Pi-hole lists, export YouTube ad-pruner, or inspect AstraShield.",
     )
     parser.add_argument("--scan-usb", action="store_true", help="List all USB & peripheral hardware and run BadUSB check.")
+    parser.add_argument("--scan-tv", action="store_true", help="Discover Smart TVs & network devices for LAN YouTube Ad-Shield.")
     parser.add_argument("--conflicts", action="store_true", help="Check for overlapping DNS, fan, or optimizer tools.")
     parser.add_argument("--export-ai-bundle", action="store_true", help="Consolidate old logs and export an AI-ready diagnostic report.")
     parser.add_argument("--minimized", action="store_true", help="Start AstraCradle minimized in the bottom-right system tray.")
@@ -324,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
         or args.diff_snapshots
         or args.astrashield
         or args.scan_usb
+        or args.scan_tv
         or args.conflicts
         or args.export_ai_bundle
         or args.self_check
