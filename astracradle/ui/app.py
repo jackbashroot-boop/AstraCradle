@@ -16,12 +16,21 @@ import customtkinter as ctk
 from PIL import Image, ImageTk
 
 from .. import __app_name__, __tagline__, __version__
+from ..core.adblock_shield import AstraShieldManager
 from ..core.autopilot import AutopilotEngine
 from ..core.bloat_analyzer import BloatAnalyzer, DuplicateGroup
 from ..core.config import AppConfig, ConfigManager, SITUATION_PROFILES
 from ..core.crash_analyzer import CrashAnalyzer
 from ..core.diagnostics import DiagnosticReport, DiagnosticsEngine
 from ..core.executor import GuardedExecutor
+from ..core.pc_extras import (
+    BaselineDiffEngine,
+    BatteryAndPowerInspector,
+    MemoryStandbyManager,
+    NetworkAndDnsInspector,
+    SafeBeginnerFixer,
+    StartupDelayManager as StartupFileDelayManager,
+)
 from ..core.advanced_controls import (
     FullscreenFocusDetector,
     GpuPowerAndFanController,
@@ -127,6 +136,7 @@ class AstraCradleApp(ctk.CTk):
         base_dir: Path | str | None = None,
         assets_dir: Path | str | None = None,
         show_startup_popups: bool = True,
+        start_minimized: bool = False,
     ) -> None:
         super().__init__()
 
@@ -170,6 +180,13 @@ class AstraCradleApp(ctk.CTk):
         self.thermal_spc = ThermalSpcMonitor(self.cfg_mgr, self.journal)
         self.autoruns_auditor = AutorunsAndGhostAuditor(self.cfg_mgr, self.rollback_mgr, self.journal)
         self.full_discovery = FullSystemDiscoveryEngine(self.cfg_mgr, self.rollback_mgr, self.journal)
+        self.adblock_shield = AstraShieldManager(self.cfg_mgr, self.rollback_mgr, self.journal)
+        self.baseline_diff = BaselineDiffEngine(self.cfg_mgr, self.journal)
+        self.startup_file_delay = StartupFileDelayManager(self.cfg_mgr, self.rollback_mgr, self.journal)
+        self.net_dns_inspector = NetworkAndDnsInspector(self.journal)
+        self.ram_standby_mgr = MemoryStandbyManager(self.journal)
+        self.battery_inspector = BatteryAndPowerInspector()
+        self.safe_fixer = SafeBeginnerFixer(self.cfg_mgr, self.executor, self.rollback_mgr, self.journal)
         self.i18n = Translator(self.config_obj.language)
         self._last_duplicate_groups: list[DuplicateGroup] = []
         self._last_dup_scan_dir: str = str(Path.home() / "Downloads")
@@ -202,9 +219,18 @@ class AstraCradleApp(ctk.CTk):
             on_show=lambda: self._ui_queue.put(("show_window", None, None)),
             on_scan=lambda: self._ui_queue.put(("trigger_scan", None, None)),
             on_quit=lambda: self._ui_queue.put(("quit_app", None, None)),
+            on_fix_safe=lambda: self._ui_queue.put(("fix_safe", None, None)),
+            on_profile=lambda prof: self._ui_queue.put(("switch_profile", prof, None)),
+            on_toggle_probalance=lambda: self._ui_queue.put(("toggle_probalance", None, None)),
+            on_toggle_astrashield=lambda: self._ui_queue.put(("toggle_astrashield", None, None)),
         )
-        if show_startup_popups and (self.config_obj.show_tray_icon or self.config_obj.minimize_to_tray):
+        if show_startup_popups and (self.config_obj.show_tray_icon or self.config_obj.minimize_to_tray or start_minimized):
             self.tray.start()
+        if show_startup_popups and (start_minimized or self.config_obj.start_minimized):
+            if not self.tray.running:
+                self.tray.start()
+            if self.tray.running:
+                self.after(150, self.withdraw)
 
         self.title(f"{__app_name__} v{__version__} — {__tagline__}")
         scr_w = max(1280, int(self.winfo_screenwidth() or 1366))
@@ -505,6 +531,7 @@ class AstraCradleApp(ctk.CTk):
                 self.tray.notify("AstraCradle", "Still running in the bottom-right tray. Right-click icon to Quit.")
                 return
         try:
+            self.adblock_shield.stop_dns_sinkhole()
             self.tray.stop()
             self.journal.log_event(
                 component="AstraCradleApp",
@@ -1105,14 +1132,14 @@ class AstraCradleApp(ctk.CTk):
         self._cmd_btns = [
             ctk.CTkButton(
                 btn_row,
-                text="Safe Auto-Optimize",
+                text="Fix Everything Safe",
                 height=34,
                 corner_radius=8,
                 fg_color=p.accent_jade,
                 hover_color=p.accent_jade_hover,
                 text_color="#071510",
                 font=self.fonts["body_bold"],
-                command=self.on_safe_auto_optimize,
+                command=self.on_fix_everything_safe,
             ),
             ctk.CTkButton(
                 btn_row,
@@ -1127,23 +1154,23 @@ class AstraCradleApp(ctk.CTk):
             ),
             ctk.CTkButton(
                 btn_row,
-                text="AI & Process Hunter",
+                text="AstraShield AdBlocker",
                 height=34,
                 corner_radius=8,
                 fg_color=p.bg_elevated,
                 hover_color=p.border_strong,
                 font=self.fonts["body_bold"],
-                command=lambda: self.switch_nav("hunter"),
+                command=lambda: (self._on_module_tab("Privacy & Shield"), self.switch_nav("modules")),
             ),
             ctk.CTkButton(
                 btn_row,
-                text="Toggle Scripts",
+                text="Weekly Digest",
                 height=34,
                 corner_radius=8,
                 fg_color=p.bg_elevated,
                 hover_color=p.border_strong,
                 font=self.fonts["body"],
-                command=lambda: self.switch_nav("scripts"),
+                command=self.on_show_weekly_digest,
             ),
             ctk.CTkButton(
                 btn_row,
@@ -2343,6 +2370,117 @@ class AstraCradleApp(ctk.CTk):
 
     def _render_privacy_shield_module(self) -> None:
         p = self.palette
+        # 0. AstraShield: Pi-hole-Style Local Ad / Tracker / Telemetry Blocker
+        shield_st = self.adblock_shield.status()
+        ab_card = ctk.CTkFrame(
+            self.mod_body, fg_color=p.bg_card, border_width=1, border_color=p.accent_cyan, corner_radius=12
+        )
+        ab_card.pack(fill="x", pady=(0, 8))
+        abh = ctk.CTkFrame(ab_card, fg_color="transparent")
+        abh.pack(fill="x", padx=14, pady=(10, 4))
+        ctk.CTkLabel(
+            abh,
+            text="AstraShield — Local Pi-hole-Style Ad, Tracker & Telemetry Blocker",
+            font=self.fonts["section"],
+            text_color=p.accent_cyan,
+        ).pack(side="left")
+
+        hosts_sw_var = tk.BooleanVar(value=shield_st.hosts_active)
+        ctk.CTkSwitch(
+            abh,
+            text="System Hosts Sinkhole",
+            variable=hosts_sw_var,
+            font=self.fonts["caption"],
+            progress_color=p.accent_jade,
+            command=lambda: self._on_toggle_astrashield_hosts(bool(hosts_sw_var.get())),
+        ).pack(side="right", padx=(8, 0))
+
+        dns_sw_var = tk.BooleanVar(value=shield_st.dns_server_running)
+        ctk.CTkSwitch(
+            abh,
+            text=f"Local DNS ({self.config_obj.astrashield_dns_port})",
+            variable=dns_sw_var,
+            font=self.fonts["caption"],
+            progress_color=p.accent_cyan,
+            command=lambda: self._on_toggle_astrashield_dns(bool(dns_sw_var.get())),
+        ).pack(side="right", padx=8)
+
+        ctk.CTkLabel(
+            ab_card,
+            text=(
+                f"Domains Blocked: {shield_st.blocked_domain_count} · Queries: {shield_st.total_queries} · "
+                f"Blocked: {shield_st.blocked_queries} ({shield_st.blocked_percent:.1f}%) · "
+                f"DNS: {shield_st.dns_listen_addr} · Hosts Active: {'YES' if shield_st.hosts_active else 'NO'}"
+            ),
+            font=self.fonts["mono_small"],
+            text_color=p.accent_jade if (shield_st.hosts_active or shield_st.dns_server_running) else p.text_secondary,
+        ).pack(anchor="w", padx=14, pady=(0, 6))
+
+        cat_row = ctk.CTkFrame(ab_card, fg_color="transparent")
+        cat_row.pack(fill="x", padx=14, pady=(0, 6))
+        ctk.CTkLabel(cat_row, text="Filter Lists:", font=self.fonts["caption"], text_color=p.text_muted).pack(side="left", padx=(0, 8))
+        rules_data = self.adblock_shield.load_rules()
+        active_cats = set(rules_data.get("categories", []))
+        for cname, clabel in [("ads", "Ads"), ("trackers", "Trackers"), ("telemetry", "Telemetry"), ("malware", "Malware")]:
+            cvar = tk.BooleanVar(value=cname in active_cats)
+
+            def _toggle_cat(cat_id=cname, var=cvar) -> None:
+                rd = self.adblock_shield.load_rules()
+                cats = set(rd.get("categories", []))
+                if var.get():
+                    cats.add(cat_id)
+                else:
+                    cats.discard(cat_id)
+                rd["categories"] = sorted(cats)
+                self.adblock_shield.save_rules(rd)
+                self.config_obj.astrashield_categories = rd["categories"]
+                self.cfg_mgr.save(self.config_obj)
+                self._render_modules()
+
+            ctk.CTkCheckBox(cat_row, text=clabel, variable=cvar, font=self.fonts["caption"], command=_toggle_cat).pack(
+                side="left", padx=6
+            )
+
+        dom_row = ctk.CTkFrame(ab_card, fg_color="transparent")
+        dom_row.pack(fill="x", padx=14, pady=(0, 10))
+        dom_ent = ctk.CTkEntry(dom_row, placeholder_text="Domain (e.g. doubleclick.net or trusted-site.com)", width=300)
+        dom_ent.pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            dom_row,
+            text="Test Lookup",
+            height=26,
+            fg_color=p.bg_elevated,
+            font=self.fonts["caption"],
+            command=lambda: (
+                self.show_toast(self.adblock_shield.test_query_domain(dom_ent.get() or "ads.doubleclick.net")[1]),
+                self._render_modules(),
+            ),
+        ).pack(side="left", padx=3)
+        ctk.CTkButton(
+            dom_row,
+            text="+ Block Domain",
+            height=26,
+            fg_color=p.badge_crit_bg,
+            text_color=p.badge_crit_fg,
+            font=self.fonts["caption"],
+            command=lambda: (
+                self.show_toast(self.adblock_shield.add_custom_domain(dom_ent.get(), allow=False)[1]),
+                self._render_modules(),
+            ),
+        ).pack(side="left", padx=3)
+        ctk.CTkButton(
+            dom_row,
+            text="+ Allowlist",
+            height=26,
+            fg_color=p.accent_jade,
+            text_color="#071510",
+            font=self.fonts["caption"],
+            command=lambda: (
+                self.show_toast(self.adblock_shield.add_custom_domain(dom_ent.get(), allow=True)[1]),
+                self._render_modules(),
+            ),
+        ).pack(side="left", padx=3)
+
         # 1. Privacy Trace Sweeper (Consent-Gated)
         pcard = ctk.CTkFrame(
             self.mod_body, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
@@ -2426,18 +2564,45 @@ class AstraCradleApp(ctk.CTk):
             text_color=p.accent_jade if hosts_res.status == "clean" else p.accent_coral,
         ).pack(anchor="w", padx=14, pady=(4, 10))
 
-        # 3. Network Activity + USB/Audio Power Glitch Checks
+        # 3. Network Activity, Per-App Hogs, Fast-DNS & Smart RAM Purge
         ncard = ctk.CTkFrame(
             self.mod_body, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
         )
         ncard.pack(fill="x", pady=(0, 8))
-        ctk.CTkLabel(ncard, text="Per-App Network Connections & USB/Power Glitch Advisor", font=self.fonts["body_bold"]).pack(
-            anchor="w", padx=14, pady=(10, 6)
+        nhdr = ctk.CTkFrame(ncard, fg_color="transparent")
+        nhdr.pack(fill="x", padx=14, pady=(10, 4))
+        ctk.CTkLabel(nhdr, text="Per-App Network/Ping Hogs, Reversible Fast-DNS & Standby RAM Trim", font=self.fonts["body_bold"]).pack(
+            side="left"
         )
-        for na in self.net_advisor.sample_network_apps(limit=5):
+        ctk.CTkButton(
+            nhdr,
+            text="Free Standby RAM",
+            height=26,
+            fg_color=p.accent_jade,
+            text_color="#071510",
+            font=self.fonts["caption"],
+            command=lambda: self.show_toast(self.ram_standby_mgr.trim_standby_ram(dry_run=bool(self.dry_run_var.get()))[1]),
+        ).pack(side="right", padx=(6, 0))
+        dns_preset_var = tk.StringVar(value="Cloudflare (1.1.1.1)")
+        ctk.CTkButton(
+            nhdr,
+            text="Copy Fast-DNS Cmd",
+            height=26,
+            fg_color=p.bg_elevated,
+            font=self.fonts["caption"],
+            command=lambda: self._copy_text(self.net_dns_inspector.apply_dns_preset_command(dns_preset_var.get())),
+        ).pack(side="right", padx=4)
+        ctk.CTkOptionMenu(
+            nhdr,
+            values=list(self.net_dns_inspector.DNS_PRESETS.keys()),
+            variable=dns_preset_var,
+            width=190,
+        ).pack(side="right", padx=4)
+
+        for hog in self.net_dns_inspector.scan_network_hogs(limit=6):
             ctk.CTkLabel(
                 ncard,
-                text=f"  • {na.name} (PID {na.pid}): {na.connections} active socket(s) -> {', '.join(na.remote_endpoints[:2])}",
+                text=f"  • {hog.name} (PID {hog.pid}): {hog.connection_count} socket(s), {hog.established_count} active -> {hog.remote_sample}",
                 font=self.fonts["mono_small"],
                 text_color=p.text_secondary,
             ).pack(anchor="w", padx=14, pady=1)
@@ -3407,7 +3572,19 @@ class AstraCradleApp(ctk.CTk):
                     text_color=p.badge_warn_fg,
                     font=self.fonts["caption"],
                     command=lambda e=ar: self._on_toggle_autorun(e, False),
-                ).pack(side="right", padx=10)
+                ).pack(side="right", padx=(4, 10))
+                if getattr(ar, "command_or_path", "") and Path(str(ar.command_or_path)).exists():
+                    ctk.CTkButton(
+                        row,
+                        text="Delay 45s",
+                        width=86,
+                        height=26,
+                        fg_color=p.bg_elevated,
+                        font=self.fonts["caption"],
+                        command=lambda p_str=str(ar.command_or_path): self.show_toast(
+                            self.startup_file_delay.delay_startup_entry(Path(p_str), 45)[1]
+                        ),
+                    ).pack(side="right", padx=2)
             else:
                 make_badge(row, "READ-ONLY", p.bg_elevated, p.text_muted, self.fonts["caption"]).pack(side="right", padx=10)
 
@@ -3667,7 +3844,52 @@ class AstraCradleApp(ctk.CTk):
                 command=lambda tid=tr["id"]: self._on_run_glitch_fix(tid),
             ).pack(side="right", padx=10, pady=6)
 
-        # 2. Pre-Flight Native OS Snapshot + Opt-In Outdated Apps Check
+        # 2. Battery Wear, Wattage, Sleep Wake-Locks & 'What Changed Since My PC Was Fast?' Snapshot Diff
+        bat = self.battery_inspector.inspect()
+        bcard = ctk.CTkFrame(
+            self.mod_body, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
+        )
+        bcard.pack(fill="x", pady=(0, 8))
+        bhdr = ctk.CTkFrame(bcard, fg_color="transparent")
+        bhdr.pack(fill="x", padx=14, pady=(10, 4))
+        ctk.CTkLabel(bhdr, text="Battery Health, Wake-Locks & Snapshot Change Diff", font=self.fonts["body_bold"]).pack(
+            side="left"
+        )
+        ctk.CTkButton(
+            bhdr,
+            text="Compare Latest 2 Snapshots",
+            height=26,
+            fg_color=p.accent_cyan,
+            text_color="#071217",
+            font=self.fonts["caption"],
+            command=self._on_compare_snapshots,
+        ).pack(side="right", padx=(4, 0))
+        ctk.CTkButton(
+            bhdr,
+            text="Save PC Snapshot",
+            height=26,
+            fg_color=p.bg_elevated,
+            font=self.fonts["caption"],
+            command=self._on_save_diff_snapshot,
+        ).pack(side="right", padx=4)
+
+        ctk.CTkLabel(
+            bcard,
+            text=f"Power / Battery: {bat.summary}",
+            font=self.fonts["mono_small"],
+            text_color=p.accent_jade if bat.present else p.text_secondary,
+        ).pack(anchor="w", padx=14, pady=(0, 4))
+        if bat.wake_locks:
+            ctk.CTkLabel(
+                bcard,
+                text="Active Sleep Wake-Locks: " + " | ".join(bat.wake_locks[:3]),
+                font=self.fonts["caption"],
+                text_color=p.accent_brass,
+            ).pack(anchor="w", padx=14, pady=(0, 8))
+        else:
+            ctk.CTkFrame(bcard, height=6, fg_color="transparent").pack()
+
+        # 3. Pre-Flight Native OS Snapshot + Opt-In Outdated Apps Check
         ocard = ctk.CTkFrame(
             self.mod_body, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
         )
@@ -4051,6 +4273,9 @@ class AstraCradleApp(ctk.CTk):
         self.set_low_power = tk.BooleanVar(value=self.config_obj.low_power_ui_mode)
         self.set_tray_icon_var = tk.BooleanVar(value=self.config_obj.show_tray_icon)
         self.set_tray_var = tk.BooleanVar(value=self.config_obj.minimize_to_tray)
+        self.set_start_min_var = tk.BooleanVar(value=self.config_obj.start_minimized)
+        self.set_login_var = tk.BooleanVar(value=self.config_obj.launch_at_login)
+        self.set_ram_guard_var = tk.BooleanVar(value=self.config_obj.ram_guard_enabled)
         self.set_sched_var = tk.BooleanVar(value=self.config_obj.background_schedule_enabled)
         self.set_privacy_var = tk.BooleanVar(value=self.config_obj.consent_privacy_scan)
         self.set_quiet = tk.BooleanVar(value=self.config_obj.quiet_hours_enabled)
@@ -4127,6 +4352,21 @@ class AstraCradleApp(ctk.CTk):
                 "Minimize to System Tray (Hide from Taskbar)",
                 ctk.CTkSwitch(form, text="Minimize & close into tray instead of taskbar", variable=self.set_tray_var),
                 "When ON, minimizing or closing hides AstraCradle into the bottom-right tray icon instead of keeping it in the taskbar.",
+            ),
+            (
+                "Start Minimized to Tray",
+                ctk.CTkSwitch(form, text="Open straight into bottom-right tray", variable=self.set_start_min_var),
+                "Starts AstraCradle quietly in the bottom-right system tray without popping up the main window.",
+            ),
+            (
+                "Launch AstraCradle at OS Login",
+                ctk.CTkSwitch(form, text="Auto-start when computer turns on", variable=self.set_login_var),
+                "Registers (or cleanly removes) AstraCradle in your OS login autostart folder.",
+            ),
+            (
+                "Smart RAM Pressure Guard (>85%)",
+                ctk.CTkSwitch(form, text="Auto-trim standby RAM under pressure", variable=self.set_ram_guard_var),
+                "Automatically performs a safe working-set/standby RAM trim whenever RAM usage exceeds 85%.",
             ),
             (
                 f"Native Background Schedule ({sched_status.mechanism})",
@@ -4254,6 +4494,37 @@ class AstraCradleApp(ctk.CTk):
                     continue
                 if first == "trigger_scan":
                     self.on_deep_scan()
+                    continue
+                if first == "fix_safe":
+                    self.on_fix_everything_safe()
+                    continue
+                if first == "switch_profile":
+                    prof = str(item[1] or "Balanced Daily")
+                    if prof in SITUATION_PROFILES:
+                        self.config_obj.apply_profile(prof)
+                        self.cfg_mgr.save(self.config_obj)
+                        if hasattr(self, "profile_menu"):
+                            self.profile_menu.set(prof)
+                        self.show_toast(f"Switched profile to {prof}.")
+                        self.tray.notify("AstraCradle", f"Active profile: {prof}")
+                    continue
+                if first == "toggle_probalance":
+                    self.config_obj.probalance_enabled = not self.config_obj.probalance_enabled
+                    self.cfg_mgr.save(self.config_obj)
+                    state = "ON" if self.config_obj.probalance_enabled else "OFF"
+                    self.show_toast(f"ProBalance {state}")
+                    self.tray.notify("AstraCradle", f"ProBalance {state}")
+                    continue
+                if first == "toggle_astrashield":
+                    if self.adblock_shield.dns_running:
+                        _, msg = self.adblock_shield.stop_dns_sinkhole()
+                    else:
+                        _, msg = self.adblock_shield.start_dns_sinkhole(
+                            port=self.config_obj.astrashield_dns_port,
+                            upstream=self.config_obj.astrashield_upstream_dns,
+                        )
+                    self.show_toast(msg)
+                    self.tray.notify("AstraShield", msg)
                     continue
                 if first == "quit_app":
                     self.on_close(force_quit=True)
@@ -4815,8 +5086,16 @@ class AstraCradleApp(ctk.CTk):
         self.config_obj.low_power_ui_mode = bool(self.set_low_power.get())
         self.config_obj.show_tray_icon = bool(self.set_tray_icon_var.get())
         self.config_obj.minimize_to_tray = bool(self.set_tray_var.get())
+        self.config_obj.start_minimized = bool(self.set_start_min_var.get())
+        self.config_obj.launch_at_login = bool(self.set_login_var.get())
+        self.config_obj.ram_guard_enabled = bool(self.set_ram_guard_var.get())
         self.config_obj.consent_privacy_scan = bool(self.set_privacy_var.get())
         self.config_obj.quiet_hours_enabled = bool(self.set_quiet.get())
+        self.lifecycle.set_launch_at_login(
+            self.config_obj.launch_at_login,
+            Path(__file__).resolve().parents[2],
+            start_minimized=self.config_obj.start_minimized,
+        )
         if self.config_obj.show_tray_icon or self.config_obj.minimize_to_tray:
             self.tray.start()
         else:
@@ -4892,6 +5171,70 @@ class AstraCradleApp(ctk.CTk):
             Path(dest).write_text(json.dumps(asdict(self.config_obj), indent=2), encoding="utf-8")
             self.show_toast(f"Exported configuration to {dest}")
 
+    def on_fix_everything_safe(self) -> None:
+        _, summary, notes = self.safe_fixer.run_fix_everything_safe(
+            self._active_adapter(),
+            self.config_obj,
+            dry_run=bool(self.dry_run_var.get()),
+        )
+        self.show_toast(summary)
+        if self._show_startup_popups:
+            messagebox.showinfo(summary, "\n".join(f"• {n}" for n in notes))
+        self.refresh_telemetry_async(include_dns=False, also_scan=True)
+
+    def on_show_weekly_digest(self) -> None:
+        blk = self.adblock_shield.status().blocked_queries
+        digest = self.safe_fixer.build_weekly_digest(adblock_blocked_count=blk)
+        self.show_toast("Generated 7-Day AstraCradle Weekly Digest.")
+        if self._show_startup_popups:
+            messagebox.showinfo("AstraCradle 7-Day Weekly Digest", digest)
+
+    def _on_toggle_astrashield_hosts(self, enable: bool) -> None:
+        if enable:
+            ok, msg = self.adblock_shield.enable_hosts_sinkhole(
+                self.config_obj.astrashield_categories,
+                dry_run=bool(self.dry_run_var.get()),
+            )
+        else:
+            ok, msg = self.adblock_shield.disable_hosts_sinkhole()
+        self.config_obj.astrashield_enabled = bool(enable and ok)
+        self.cfg_mgr.save(self.config_obj)
+        self.show_toast(msg)
+        self._render_modules()
+
+    def _on_toggle_astrashield_dns(self, enable: bool) -> None:
+        if enable:
+            _, msg = self.adblock_shield.start_dns_sinkhole(
+                port=self.config_obj.astrashield_dns_port,
+                upstream=self.config_obj.astrashield_upstream_dns,
+            )
+        else:
+            _, msg = self.adblock_shield.stop_dns_sinkhole()
+        self.show_toast(msg)
+        self._render_modules()
+
+    def _on_save_diff_snapshot(self) -> None:
+        out = self.baseline_diff.capture_snapshot(
+            self._active_adapter(),
+            self.config_obj,
+            autoruns=self.autoruns_auditor,
+        )
+        self.show_toast(f"Saved PC snapshot -> {out.name}")
+        self._render_modules()
+
+    def _on_compare_snapshots(self) -> None:
+        snaps = self.baseline_diff.list_snapshots()
+        if len(snaps) < 2:
+            self.baseline_diff.capture_snapshot(self._active_adapter(), self.config_obj, autoruns=self.autoruns_auditor)
+            snaps = self.baseline_diff.list_snapshots()
+        if len(snaps) < 2:
+            self.show_toast("Saved initial baseline snapshot. Save one more later to compare changes!")
+            return
+        diff = self.baseline_diff.diff_snapshots(snaps[-2], snaps[-1])
+        self.show_toast(diff.summary_lines[1])
+        if self._show_startup_popups:
+            messagebox.showinfo("What Changed Since My PC Was Fast?", "\n".join(diff.summary_lines))
+
     def _copy_text(self, text: str) -> None:
         try:
             self.clipboard_clear()
@@ -4902,6 +5245,6 @@ class AstraCradleApp(ctk.CTk):
             self.show_toast("Clipboard unavailable in headless display.")
 
 
-def launch_gui(base_dir: Path | str | None = None) -> None:
-    app = AstraCradleApp(base_dir=base_dir)
+def launch_gui(base_dir: Path | str | None = None, start_minimized: bool = False) -> None:
+    app = AstraCradleApp(base_dir=base_dir, start_minimized=start_minimized)
     app.mainloop()

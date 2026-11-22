@@ -146,6 +146,58 @@ def run_cli(args: argparse.Namespace) -> int:
         print(f"Saved baseline -> {out.baseline.baseline_json_path}")
         return 0
 
+    if args.fix_safe:
+        from .core.pc_extras import SafeBeginnerFixer
+
+        fixer = SafeBeginnerFixer(cfg_mgr, executor, rollback_mgr, journal)
+        ok, summary, notes = fixer.run_fix_everything_safe(adapter, cfg, dry_run=cfg.dry_run_default)
+        print(summary)
+        for ln in notes:
+            print("  •", ln)
+        return 0 if ok else 1
+
+    if args.battery_report:
+        from .core.pc_extras import BatteryAndPowerInspector
+
+        rep = BatteryAndPowerInspector().inspect()
+        print(rep.summary)
+        for wl in rep.wake_locks:
+            print("  wake-lock:", wl)
+        return 0
+
+    if args.diff_snapshots:
+        from .core.pc_extras import BaselineDiffEngine
+
+        de = BaselineDiffEngine(cfg_mgr, journal)
+        snaps = de.list_snapshots()
+        if len(snaps) < 2:
+            out = de.capture_snapshot(adapter, cfg)
+            print(f"Captured snapshot -> {out.name} (need 2 snapshots to diff).")
+            return 0
+        diff = de.diff_snapshots(snaps[-2], snaps[-1])
+        for ln in diff.summary_lines:
+            print(ln)
+        return 0
+
+    if args.astrashield:
+        from .core.adblock_shield import AstraShieldManager
+
+        sh = AstraShieldManager(cfg_mgr, rollback_mgr, journal)
+        if args.astrashield == "on":
+            ok, msg = sh.enable_hosts_sinkhole(cfg.astrashield_categories, dry_run=cfg.dry_run_default)
+            print(msg)
+            return 0 if ok else 1
+        if args.astrashield == "off":
+            ok, msg = sh.disable_hosts_sinkhole()
+            print(msg)
+            return 0 if ok else 1
+        st = sh.status()
+        print(
+            f"AstraShield: hosts_active={st.hosts_active}, dns_running={st.dns_server_running}, "
+            f"domains={st.blocked_domain_count}, blocked={st.blocked_queries}/{st.total_queries}"
+        )
+        return 0
+
     telemetry = TelemetryCollector(cfg.excluded_processes)
     snap = telemetry.collect(adapter, include_dns=True)
     report = DiagnosticsEngine().run_scan(snap, adapter, cfg)
@@ -166,6 +218,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--diagnose", action="store_true", help="Run CLI 8-subsystem diagnostics & print playbook.")
     parser.add_argument("--full-discovery", action="store_true", help="Run comprehensive local PC discovery across all subsystems.")
+    parser.add_argument("--fix-safe", action="store_true", help="Run 1-Click 'Fix Everything Safe' reversible optimization pass.")
+    parser.add_argument("--battery-report", action="store_true", help="Inspect laptop battery wear %, cycle count, watts & wake-locks.")
+    parser.add_argument("--diff-snapshots", action="store_true", help="Compare latest 2 'What Changed' PC snapshots.")
+    parser.add_argument("--astrashield", choices=["on", "off", "status"], default=None, help="Toggle or inspect AstraShield local Pi-hole blocker.")
+    parser.add_argument("--minimized", action="store_true", help="Start AstraCradle minimized in the bottom-right system tray.")
     parser.add_argument("--self-check", action="store_true", help="Run silent 7-invariant self-heal & forensic audit.")
     parser.add_argument("--install-shortcuts", action="store_true", help="Create Desktop & Menu shortcuts for 1-click launch.")
     parser.add_argument("--check-updates", action="store_true", help="Check GitHub repo first, then local bundles, and apply updates.")
@@ -191,6 +248,10 @@ def main(argv: list[str] | None = None) -> int:
     if (
         args.diagnose
         or args.full_discovery
+        or args.fix_safe
+        or args.battery_report
+        or args.diff_snapshots
+        or args.astrashield
         or args.self_check
         or args.install_shortcuts
         or args.check_updates
@@ -214,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from .ui.app import launch_gui
 
-    launch_gui()
+    launch_gui(start_minimized=bool(args.minimized))
     return 0
 
 

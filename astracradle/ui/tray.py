@@ -17,11 +17,19 @@ class TrayController:
         on_show: Callable[[], None],
         on_scan: Callable[[], None],
         on_quit: Callable[[], None],
+        on_fix_safe: Callable[[], None] | None = None,
+        on_profile: Callable[[str], None] | None = None,
+        on_toggle_probalance: Callable[[], None] | None = None,
+        on_toggle_astrashield: Callable[[], None] | None = None,
     ) -> None:
         self.icon_path = self._resolve_platform_icon(icon_path)
         self.on_show = on_show
         self.on_scan = on_scan
         self.on_quit = on_quit
+        self.on_fix_safe = on_fix_safe
+        self.on_profile = on_profile
+        self.on_toggle_probalance = on_toggle_probalance
+        self.on_toggle_astrashield = on_toggle_astrashield
         self._icon = None
         self._thread: threading.Thread | None = None
         self.available = False
@@ -54,12 +62,38 @@ class TrayController:
             import pystray
 
             img = Image.open(self.icon_path) if self.icon_path.exists() else Image.new("RGBA", (64, 64), (72, 216, 224, 255))
-            menu = pystray.Menu(
+            items = [
                 pystray.MenuItem("Open AstraCradle", lambda _icon, _item: self.on_show(), default=True),
                 pystray.MenuItem("Run Equilibrium Scan", lambda _icon, _item: self.on_scan()),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Quit AstraCradle", lambda _icon, _item: self.on_quit()),
+            ]
+            if self.on_fix_safe is not None:
+                cb_fix = self.on_fix_safe
+                items.append(pystray.MenuItem("1-Click Fix Everything Safe", lambda _icon, _item: cb_fix()))
+            if self.on_profile is not None:
+                cb_prof = self.on_profile
+                items.append(
+                    pystray.MenuItem(
+                        "Switch Profile",
+                        pystray.Menu(
+                            pystray.MenuItem("Balanced Daily", lambda _i, _m: cb_prof("Balanced Daily")),
+                            pystray.MenuItem("Gaming / Low-Latency", lambda _i, _m: cb_prof("Gaming / Low-Latency")),
+                            pystray.MenuItem("Battery Endurance", lambda _i, _m: cb_prof("Battery Endurance")),
+                        ),
+                    )
+                )
+            if self.on_toggle_probalance is not None:
+                cb_pb = self.on_toggle_probalance
+                items.append(pystray.MenuItem("Toggle ProBalance", lambda _icon, _item: cb_pb()))
+            if self.on_toggle_astrashield is not None:
+                cb_sh = self.on_toggle_astrashield
+                items.append(pystray.MenuItem("Toggle AstraShield (Ad/Tracker Blocker)", lambda _icon, _item: cb_sh()))
+            items.extend(
+                [
+                    pystray.Menu.SEPARATOR,
+                    pystray.MenuItem("Quit AstraCradle", lambda _icon, _item: self.on_quit()),
+                ]
             )
+            menu = pystray.Menu(*items)
             self._icon = pystray.Icon("AstraCradle", img, "AstraCradle — OS Equilibrium Studio", menu)
             self._thread = threading.Thread(target=self._run_safe, daemon=True)
             self._thread.start()

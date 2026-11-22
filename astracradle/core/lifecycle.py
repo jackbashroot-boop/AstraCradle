@@ -62,6 +62,7 @@ class LifecycleManager:
                 [
                     home / ".local" / "share" / "applications" / "astracradle.desktop",
                     home / "Desktop" / "AstraCradle.desktop",
+                    home / ".config" / "autostart" / "astracradle.desktop",
                 ]
             )
             for sz in ("32x32", "64x64", "128x128", "256x256"):
@@ -72,18 +73,22 @@ class LifecycleManager:
                     home / "Applications" / "AstraCradle.app",
                     home / "Applications" / "AstraCradle.command",
                     home / "Desktop" / "AstraCradle.command",
+                    home / "Library" / "LaunchAgents" / "local.astracradle.studio.plist",
                 ]
             )
         elif sys_name == "Windows":
             desktop = home / "Desktop"
             appdata = Path(os.environ.get("APPDATA", str(home / "AppData" / "Roaming")))
             start_menu = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+            startup_dir = start_menu / "Startup"
             paths.extend(
                 [
                     desktop / "AstraCradle.lnk",
                     desktop / "AstraCradle.bat",
                     start_menu / "AstraCradle.lnk",
                     start_menu / "AstraCradle.bat",
+                    startup_dir / "AstraCradle.lnk",
+                    startup_dir / "AstraCradle.bat",
                 ]
             )
         return paths
@@ -275,6 +280,90 @@ class LifecycleManager:
         )
         return created
 
+    def set_launch_at_login(
+        self,
+        enabled: bool,
+        repo_root: Path,
+        start_minimized: bool = False,
+        os_override: str | None = None,
+    ) -> tuple[bool, str]:
+        """Configures or removes OS login autostart (optionally passing --minimized to tray)."""
+        sys_name = os_override or platform.system()
+        home = Path.home()
+        min_flag = " --minimized" if start_minimized else ""
+
+        if sys_name == "Linux":
+            autostart_file = home / ".config" / "autostart" / "astracradle.desktop"
+            if not enabled:
+                autostart_file.unlink(missing_ok=True)
+                return True, "Removed Linux login autostart entry."
+            autostart_file.parent.mkdir(parents=True, exist_ok=True)
+            gui_bin = Path(sys.executable).parent / "astracradle-gui"
+            exec_cmd = f'"{gui_bin}"{min_flag}' if gui_bin.exists() else f'"{sys.executable}" -m astracradle{min_flag}'
+            autostart_file.write_text(
+                "[Desktop Entry]\n"
+                "Type=Application\n"
+                "Name=AstraCradle\n"
+                f"Exec={exec_cmd}\n"
+                f"Path={repo_root}\n"
+                "Icon=astracradle\n"
+                "Terminal=false\n"
+                "X-GNOME-Autostart-enabled=true\n",
+                encoding="utf-8",
+            )
+            autostart_file.chmod(0o755)
+            return True, f"Enabled Linux login autostart ({'minimized to tray' if start_minimized else 'normal window'})."
+
+        if sys_name == "Darwin":
+            plist_file = home / "Library" / "LaunchAgents" / "local.astracradle.studio.plist"
+            if not enabled:
+                plist_file.unlink(missing_ok=True)
+                return True, "Removed macOS LaunchAgent login autostart."
+            plist_file.parent.mkdir(parents=True, exist_ok=True)
+            gui_bin = Path(sys.executable).parent / "astracradle-gui"
+            prog_args = (
+                f"    <string>{gui_bin}</string>\n"
+                if gui_bin.exists()
+                else f"    <string>{sys.executable}</string>\n    <string>-m</string>\n    <string>astracradle</string>\n"
+            )
+            if start_minimized:
+                prog_args += "    <string>--minimized</string>\n"
+            plist_file.write_text(
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+                '<plist version="1.0"><dict>\n'
+                "  <key>Label</key><string>local.astracradle.studio</string>\n"
+                "  <key>ProgramArguments</key>\n  <array>\n"
+                f"{prog_args}"
+                "  </array>\n"
+                "  <key>RunAtLoad</key><true/>\n"
+                "</dict></plist>\n",
+                encoding="utf-8",
+            )
+            return True, f"Enabled macOS login autostart ({'minimized' if start_minimized else 'normal'})."
+
+        if sys_name == "Windows":
+            appdata = Path(os.environ.get("APPDATA", str(home / "AppData" / "Roaming")))
+            startup_dir = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+            bat_file = startup_dir / "AstraCradle.bat"
+            lnk_file = startup_dir / "AstraCradle.lnk"
+            if not enabled:
+                bat_file.unlink(missing_ok=True)
+                lnk_file.unlink(missing_ok=True)
+                return True, "Removed Windows Startup folder entry."
+            startup_dir.mkdir(parents=True, exist_ok=True)
+            py_exe = Path(sys.executable)
+            gui_exe = py_exe.parent / "astracradle-gui.exe"
+            pyw_exe = py_exe.parent / "pythonw.exe"
+            target_exe = str(gui_exe if gui_exe.exists() else (pyw_exe if pyw_exe.exists() else py_exe))
+            args = "" if gui_exe.exists() else "-m astracradle"
+            if start_minimized:
+                args = (args + " --minimized").strip()
+            bat_file.write_text(f'@echo off\r\ncd /d "{repo_root}"\r\nstart "" "{target_exe}" {args}\r\n', encoding="utf-8")
+            return True, f"Enabled Windows login autostart ({'minimized to tray' if start_minimized else 'normal'})."
+
+        return False, f"Unsupported OS for login autostart: {sys_name}"
+
     def remove_shortcuts(self, extra_paths: list[Path] | None = None) -> list[str]:
         removed: list[str] = []
         candidates = self.shortcut_paths() + (extra_paths or [])
@@ -331,10 +420,16 @@ class LifecycleManager:
         if summary.removed_shortcuts:
             summary.notes.append(f"Removed {len(summary.removed_shortcuts)} AstraCradle shortcut(s).")
 
-        # 3b. Remove any background schedule units/tasks cleanly
+        # 3b. Remove any background schedule units/tasks & AstraShield hosts sinkhole cleanly
         try:
             from .scheduler import BackgroundSchedulerManager
             BackgroundSchedulerManager(self.cfg_mgr, self.journal).remove_schedule()
+        except Exception:
+            pass
+        try:
+            from .adblock_shield import AstraShieldManager
+            shield_notes = AstraShieldManager(self.cfg_mgr, self.rollback_mgr, self.journal).cleanup_on_uninstall()
+            summary.notes.extend(shield_notes)
         except Exception:
             pass
 

@@ -186,6 +186,16 @@ class AppConfig:
     low_power_ui_mode: bool = False
     show_tray_icon: bool = True
     minimize_to_tray: bool = False
+    start_minimized: bool = False
+    launch_at_login: bool = False
+    ram_guard_enabled: bool = False
+    ram_guard_threshold: float = 85.0
+    astrashield_enabled: bool = False
+    astrashield_dns_port: int = 5353
+    astrashield_upstream_dns: str = "1.1.1.1"
+    astrashield_categories: list[str] = field(
+        default_factory=lambda: ["ads", "trackers", "telemetry", "malware"]
+    )
     background_schedule_enabled: bool = False
     schedule_interval_minutes: int = 180
     quarantine_enabled: bool = True
@@ -222,7 +232,7 @@ class AppConfig:
     # Seamless Auto-Updater (checks GitHub repo first, then falls back to local)
     auto_update_mode: str = "silent_auto"  # silent_auto | notify | manual
     update_channel: str = "stable"  # stable | beta
-    update_repo_url: str = "https://github.com/AstraCradle/AstraCradle"
+    update_repo_url: str = "https://github.com/jackbashroot-boop/AstraCradle"
     update_manifest_url: str = "local://updates/manifest.json"
     active_preset_id: str = "preset_intel_hybrid_gaming"
     hardware_custom_tiers: dict[str, str] = field(default_factory=dict)
@@ -371,6 +381,12 @@ class ConfigManager:
         filtered["probalance_cpu_threshold"] = _safe_float(
             filtered.get("probalance_cpu_threshold"), defaults.probalance_cpu_threshold, 10.0, 95.0
         )
+        filtered["ram_guard_threshold"] = _safe_float(
+            filtered.get("ram_guard_threshold"), defaults.ram_guard_threshold, 50.0, 98.0
+        )
+        filtered["astrashield_dns_port"] = _safe_int(
+            filtered.get("astrashield_dns_port"), defaults.astrashield_dns_port, 1024, 65535
+        )
 
         for bool_k in (
             "dry_run_default",
@@ -378,6 +394,10 @@ class ConfigManager:
             "low_power_ui_mode",
             "show_tray_icon",
             "minimize_to_tray",
+            "start_minimized",
+            "launch_at_login",
+            "ram_guard_enabled",
+            "astrashield_enabled",
             "background_schedule_enabled",
             "quarantine_enabled",
             "quiet_hours_enabled",
@@ -417,6 +437,9 @@ class ConfigManager:
         filtered["ignored_recommendations"] = _safe_str_list(
             filtered.get("ignored_recommendations"), defaults.ignored_recommendations
         )
+        filtered["astrashield_categories"] = _safe_str_list(
+            filtered.get("astrashield_categories"), defaults.astrashield_categories
+        )
 
         raw_rules = filtered.get("automation_rules")
         if isinstance(raw_rules, list):
@@ -438,6 +461,7 @@ class ConfigManager:
             "update_channel",
             "update_repo_url",
             "update_manifest_url",
+            "astrashield_upstream_dns",
             "active_preset_id",
             "telemetry_resolution",
             "last_updated",
