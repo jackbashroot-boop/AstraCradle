@@ -191,11 +191,72 @@ def run_cli(args: argparse.Namespace) -> int:
             ok, msg = sh.disable_hosts_sinkhole()
             print(msg)
             return 0 if ok else 1
+        if args.astrashield == "sync-pihole":
+            ok, msg, _ = sh.download_pihole_blocklists(timeout=12.0)
+            print(msg)
+            return 0 if ok else 1
+        if args.astrashield == "youtube-prune":
+            js_p, flt_p = sh.export_youtube_ad_prune_assets()
+            print(f"Exported YouTube Safe Ad-Prune userscript -> {js_p}")
+            print(f"Exported uBlock/AdGuard filters -> {flt_p}")
+            return 0
         st = sh.status()
         print(
             f"AstraShield: hosts_active={st.hosts_active}, dns_running={st.dns_server_running}, "
-            f"domains={st.blocked_domain_count}, blocked={st.blocked_queries}/{st.total_queries}"
+            f"domains={st.blocked_domain_count} (pihole_cache={st.pihole_cached_count}), blocked={st.blocked_queries}/{st.total_queries}"
         )
+        return 0
+
+    if args.scan_usb:
+        from .core.usb_guard import UsbAndPeripheralGuard
+
+        ug = UsbAndPeripheralGuard(cfg_mgr, journal)
+        devs = ug.scan_all_peripherals()
+        print(f"Attached Hardware & Peripherals ({len(devs)} detected, BadUSB Guard={'ON' if cfg.badusb_guard_enabled else 'OFF'}):")
+        for d in devs:
+            if d.bus == "usb":
+                safe, reasons = ug.evaluate_badusb(d, cfg)
+                verdict = "CLEARED" if safe else f"BLOCKED ({'; '.join(reasons)})"
+            else:
+                verdict = "OK"
+            print(f"  [{d.bus.upper()}] {d.vendor} {d.name} ({d.plain_description}) -> {verdict}")
+        return 0
+
+    if args.conflicts:
+        from .core.pc_extras import ConflictProgramDetector
+
+        cd = ConflictProgramDetector(journal)
+        found = cd.scan_conflicts()
+        print(f"Conflicting Background Programs ({len(found)} detected):")
+        for cf in found:
+            print(f"  [{cf.severity.upper()}] {cf.name} ({cf.service_unit or f'PID {cf.pid}'}) — {cf.reason}")
+        return 0
+
+    if args.export_ai_bundle:
+        from dataclasses import asdict
+        from .core.adblock_shield import AstraShieldManager
+        from .core.advanced_controls import GpuPowerAndFanController
+        from .core.pc_extras import ConflictProgramDetector
+        from .core.safeguard_plus import AIDiagnosticArchiveExporter
+
+        telemetry = TelemetryCollector(cfg.excluded_processes)
+        snap = telemetry.collect(adapter, include_dns=True)
+        sensors = TelemetryCollector.collect_detailed_sensors()
+        gpu_live = GpuPowerAndFanController.probe_live_power_and_fan()
+        conflicts = [asdict(c) for c in ConflictProgramDetector(journal).scan_conflicts()]
+        shield_st = asdict(AstraShieldManager(cfg_mgr, rollback_mgr, journal).status())
+        exporter = AIDiagnosticArchiveExporter(cfg_mgr, journal)
+        res = exporter.export_ai_handoff_bundle(
+            snapshot_data=asdict(snap),
+            sensors_data=sensors,
+            gpu_data=gpu_live,
+            conflicts_data=conflicts,
+            shield_status=shield_st,
+        )
+        print(f"AI Diagnostic Markdown Report -> {res['markdown']}")
+        print(f"AI Diagnostic JSON Bundle     -> {res['json']}")
+        print(f"AI Diagnostic Zip Archive     -> {res['zip']}")
+        print(f"Anomalies flagged: {res['anomaly_count']} | Old files archived: {res['archived_count']}")
         return 0
 
     telemetry = TelemetryCollector(cfg.excluded_processes)
@@ -221,7 +282,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fix-safe", action="store_true", help="Run 1-Click 'Fix Everything Safe' reversible optimization pass.")
     parser.add_argument("--battery-report", action="store_true", help="Inspect laptop battery wear percent, cycle count, watts & wake-locks.")
     parser.add_argument("--diff-snapshots", action="store_true", help="Compare latest 2 'What Changed' PC snapshots.")
-    parser.add_argument("--astrashield", choices=["on", "off", "status"], default=None, help="Toggle or inspect AstraShield local Pi-hole blocker.")
+    parser.add_argument(
+        "--astrashield",
+        choices=["on", "off", "status", "sync-pihole", "youtube-prune"],
+        default=None,
+        help="Toggle, sync Pi-hole lists, export YouTube ad-pruner, or inspect AstraShield.",
+    )
+    parser.add_argument("--scan-usb", action="store_true", help="List all USB & peripheral hardware and run BadUSB check.")
+    parser.add_argument("--conflicts", action="store_true", help="Check for overlapping DNS, fan, or optimizer tools.")
+    parser.add_argument("--export-ai-bundle", action="store_true", help="Consolidate old logs and export an AI-ready diagnostic report.")
     parser.add_argument("--minimized", action="store_true", help="Start AstraCradle minimized in the bottom-right system tray.")
     parser.add_argument("--self-check", action="store_true", help="Run silent 7-invariant self-heal & forensic audit.")
     parser.add_argument("--install-shortcuts", action="store_true", help="Create Desktop & Menu shortcuts for 1-click launch.")
@@ -252,6 +321,9 @@ def main(argv: list[str] | None = None) -> int:
         or args.battery_report
         or args.diff_snapshots
         or args.astrashield
+        or args.scan_usb
+        or args.conflicts
+        or args.export_ai_bundle
         or args.self_check
         or args.install_shortcuts
         or args.check_updates

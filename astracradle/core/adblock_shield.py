@@ -7,11 +7,15 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import platform
+import re
+import shutil
 import socket
 import struct
 import threading
 import time
 from typing import Any
+from urllib.parse import urlparse
+import urllib.request
 
 from .config import ConfigManager
 from .elevation import ElevationRunner
@@ -20,48 +24,275 @@ from .models import utc_now_iso
 from .rollback import RollbackManager
 
 
+# Verified standard Pi-hole / community blocklist & whitelist feeds (HTTPS only)
+PIHOLE_STANDARD_SOURCES: dict[str, dict[str, str]] = {
+    "stevenblack_unified": {
+        "name": "StevenBlack Unified Hosts (Ads + Malware)",
+        "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+        "kind": "block",
+    },
+    "hagezi_pro": {
+        "name": "HaGeZi Multi Pro DNS Blocklist",
+        "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/pro.txt",
+        "kind": "block",
+    },
+    "oisd_big": {
+        "name": "OISD Big Blocklist",
+        "url": "https://big.oisd.nl/domainswild",
+        "kind": "block",
+    },
+    "firebog_easyprivacy": {
+        "name": "Firebog EasyPrivacy Trackers",
+        "url": "https://v.firebog.net/hosts/Easyprivacy.txt",
+        "kind": "block",
+    },
+    "peter_lowe_ads": {
+        "name": "Peter Lowe's Ad & Tracking Servers",
+        "url": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext",
+        "kind": "block",
+    },
+    "adaway_hosts": {
+        "name": "AdAway Mobile & Web Ads",
+        "url": "https://adaway.org/hosts.txt",
+        "kind": "block",
+    },
+    "youtube_ads_pihole": {
+        "name": "YouTube Ads for Pi-hole (kboghdady safe list)",
+        "url": "https://raw.githubusercontent.com/kboghdady/youTube_ads_4_pi-hole/refs/heads/master/youtubelist.txt",
+        "kind": "block",
+    },
+    "youtube_ignore_pihole": {
+        "name": "YouTube Playback-Safe Ignore List",
+        "url": "https://raw.githubusercontent.com/kboghdady/youTube_ads_4_pi-hole/refs/heads/master/ignore.list",
+        "kind": "allow",
+    },
+    "anudeep_whitelist": {
+        "name": "AnudeepND Pi-hole Safe Whitelist",
+        "url": "https://raw.githubusercontent.com/anudeepND/whitelist/master/domains/whitelist.txt",
+        "kind": "allow",
+    },
+}
+
+# Domains that must NEVER be blocked so YouTube video streaming, thumbnails & watch progress never break
+YOUTUBE_PLAYBACK_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtu.be",
+        "s.youtube.com",
+        "i.ytimg.com",
+        "i9.ytimg.com",
+        "s.ytimg.com",
+        "yt3.ggpht.com",
+        "yt3.googleusercontent.com",
+        "youtubei.googleapis.com",
+        "googlevideo.com",
+        "manifest.googlevideo.com",
+        "redirector.googlevideo.com",
+    }
+)
+
+_VALID_DOMAIN_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$")
+
 DEFAULT_BLOCK_CATEGORIES: dict[str, list[str]] = {
     "ads": [
         "doubleclick.net",
+        "ad.doubleclick.net",
+        "static.doubleclick.net",
+        "m.doubleclick.net",
+        "mediavisor.doubleclick.net",
+        "pubads.g.doubleclick.net",
+        "securepubads.g.doubleclick.net",
+        "googleads.g.doubleclick.net",
+        "googleads4.g.doubleclick.net",
         "adservice.google.com",
         "pagead2.googlesyndication.com",
-        "googleads.g.doubleclick.net",
+        "tpc.googlesyndication.com",
+        "partnerad.l.doubleclick.net",
+        "www.googleadservices.com",
+        "ads.google.com",
+        "afs.googlesyndication.com",
+        "s0.2mdn.net",
+        "s1.2mdn.net",
         "ads.pubmatic.com",
+        "hbopenbid.pubmatic.com",
         "adnxs.com",
+        "ib.adnxs.com",
         "ads.yahoo.com",
+        "gemini.yahoo.com",
         "advertising.com",
+        "adtech.de",
         "taboola.com",
+        "cdn.taboola.com",
+        "trc.taboola.com",
         "outbrain.com",
+        "widgets.outbrain.com",
         "criteo.com",
+        "static.criteo.net",
+        "bidder.criteo.com",
         "rubiconproject.com",
+        "fastlane.rubiconproject.com",
         "openx.net",
+        "rtb.openx.net",
         "adsafeprotected.com",
+        "pixel.adsafeprotected.com",
         "moatads.com",
+        "z.moatads.com",
         "amazon-adsystem.com",
+        "aax.amazon-adsystem.com",
+        "fls-na.amazon-adsystem.com",
         "media.net",
+        "contextual.media.net",
         "adcolony.com",
         "applovin.com",
+        "d.applovin.com",
         "unityads.unity3d.com",
+        "adserver.unityads.unity3d.com",
+        "casalemedia.com",
+        "htlb.casalemedia.com",
+        "bidswitch.net",
+        "smartadserver.com",
+        "ww251.smartadserver.com",
+        "lijit.com",
+        "ap.lijit.com",
+        "triplelift.com",
+        "tlx.3lift.com",
+        "indexww.com",
+        "adsrvr.org",
+        "match.adsrvr.org",
+        "sharethrough.com",
+        "btlr.sharethrough.com",
+        "zemanta.com",
+        "revcontent.com",
+        "trends.revcontent.com",
+        "mgid.com",
+        "jsc.mgid.com",
+        "popads.net",
+        "serve.popads.net",
+        "propellerads.com",
+        "adcash.com",
+        "exoclick.com",
+        "syndication.exoclick.com",
+        "juicyads.com",
+        "carbonads.com",
+        "srv.carbonads.net",
+        "buysellads.com",
+        "ads.linkedin.com",
+        "ads.pinterest.com",
+        "ads.reddit.com",
+        "events.redditmedia.com",
+        "alb.reddit.com",
+        "ads-twitter.com",
+        "static.ads-twitter.com",
+        "an.facebook.com",
+        "ads.snapchat.com",
+        "sc-static.net",
+        "tr.snapchat.com",
+    ],
+    "youtube_ads": [
+        "ads.youtube.com",
+        "yt.moatads.com",
+        "pixel.moatads.com",
+        "googleads.g.doubleclick.net",
+        "adservice.google.com",
+        "pagead2.googlesyndication.com",
+        "pubads.g.doubleclick.net",
+        "securepubads.g.doubleclick.net",
+        "static.doubleclick.net",
+        "www.googleadservices.com",
+        "s0.2mdn.net",
+        "fundingchoicesmessages.google.com",
+        "ade.googlesyndication.com",
+        "adclick.g.doubleclick.net",
+        "cm.g.doubleclick.net",
+        "stats.g.doubleclick.net",
     ],
     "trackers": [
         "www.google-analytics.com",
         "ssl.google-analytics.com",
         "analytics.google.com",
+        "googletagmanager.com",
+        "www.googletagmanager.com",
+        "google-analytics.com",
         "pixel.facebook.com",
         "connect.facebook.net",
+        "graph.facebook.com",
         "analytics.tiktok.com",
         "ads-api.tiktok.com",
+        "analytics-sg.tiktok.com",
         "bat.bing.com",
+        "c.bing.com",
         "analytics.twitter.com",
         "t.co",
         "sb.scorecardresearch.com",
+        "b.scorecardresearch.com",
         "quantserve.com",
+        "pixel.quantserve.com",
         "hotjar.com",
+        "static.hotjar.com",
+        "script.hotjar.com",
         "mixpanel.com",
+        "api.mixpanel.com",
+        "cdn.mxpnl.com",
         "segment.io",
+        "api.segment.io",
+        "cdn.segment.com",
         "amplitude.com",
+        "api.amplitude.com",
+        "api2.amplitude.com",
         "fullstory.com",
+        "rs.fullstory.com",
         "clarity.ms",
+        "www.clarity.ms",
+        "heapanalytics.com",
+        "cdn.heapanalytics.com",
+        "mouseflow.com",
+        "crazyegg.com",
+        "script.crazyegg.com",
+        "luckyorange.com",
+        "newrelic.com",
+        "js-agent.newrelic.com",
+        "bam.nr-data.net",
+        "sentry.io",
+        "browser-intake-datadoghq.com",
+        "logx.optimizely.com",
+        "cdn.optimizely.com",
+        "demdex.net",
+        "dpm.demdex.net",
+        "omtrdc.net",
+        "2o7.net",
+        "everesttech.net",
+        "krxd.net",
+        "beacon.krxd.net",
+        "bluekai.com",
+        "tags.bluekai.com",
+        "rlcdn.com",
+        "id.rlcdn.com",
+        "exelator.com",
+        "loadm.exelator.com",
+        "agkn.com",
+        "crwdcntrl.net",
+        "bcp.crwdcntrl.net",
+        "tapad.com",
+        "pixel.tapad.com",
+        "mathtag.com",
+        "pixel.mathtag.com",
+        "chartbeat.com",
+        "static.chartbeat.com",
+        "ping.chartbeat.net",
+        "parsely.com",
+        "srv.pixel.parsely.com",
+        "branch.io",
+        "api2.branch.io",
+        "app.adjust.com",
+        "app.appsflyer.com",
+        "t.appsflyer.com",
+        "kochava.com",
+        "control.kochava.com",
+        "bugsnag.com",
+        "notify.bugsnag.com",
     ],
     "telemetry": [
         "vortex.data.microsoft.com",
@@ -69,20 +300,56 @@ DEFAULT_BLOCK_CATEGORIES: dict[str, list[str]] = {
         "telecommand.telemetry.microsoft.com",
         "watson.telemetry.microsoft.com",
         "settings-win.data.microsoft.com",
+        "oca.telemetry.microsoft.com",
+        "sqm.telemetry.microsoft.com",
+        "ceuswatcab01.blob.core.windows.net",
+        "watson.microsoft.com",
+        "self.events.data.microsoft.com",
+        "mobile.events.data.microsoft.com",
         "telemetry.mozilla.org",
         "incoming.telemetry.mozilla.org",
         "metrics.icloud.com",
         "metrics.mzstatic.com",
+        "xp.apple.com",
         "crashlytics.com",
+        "e.crashlytics.com",
+        "reports.crashlytics.com",
         "app-measurement.com",
+        "firebaselogging-pa.googleapis.com",
         "telemetry.nvidia.com",
         "events.gfe.nvidia.com",
+        "ls.d3.nvidia.com",
+        "telemetry.dropbox.com",
+        "log.spotify.com",
+        "adeventtracker.spotify.com",
+        "analytics.spotify.com",
+        "spclient.wg.spotify.com",
+        "metrics.plex.tv",
+        "analytics.plex.tv",
+        "samsungads.com",
+        "lcprd1.samsungcloudsolution.net",
+        "ad.lgappstv.com",
+        "us.info.lgsmartad.com",
+        "scribe.logs.roku.com",
+        "cooper.logs.roku.com",
+        "device-metrics-us.amazon.com",
+        "device-metrics-us-2.amazon.com",
+        "metrics.ubuntu.com",
+        "popcon.ubuntu.com",
+        "telemetry.brave.com",
+        "usage-ping.duckduckgo.com",
     ],
     "malware": [
         "coinhive.com",
         "coin-hive.com",
         "authedmine.com",
         "cryptoloot.pro",
+        "crypto-loot.com",
+        "webminepool.com",
+        "jsecoin.com",
+        "minero.cc",
+        "browsermine.com",
+        "papoto.com",
         "malicious-tracking-example.invalid",
     ],
 }
@@ -113,6 +380,9 @@ class AstraShieldStatus:
     recent_events: list[DnsQueryEvent] = field(default_factory=list)
     hosts_path: str = ""
     note: str = ""
+    pihole_cached_count: int = 0
+    pihole_last_updated: str = ""
+    youtube_safe_prune: bool = True
 
 
 def _parse_dns_qname(packet: bytes) -> tuple[str, int, int] | None:
@@ -175,6 +445,8 @@ class AstraShieldManager:
         self.journal = journal
         self.elevation = elevation
         self.rules_path = cfg_mgr.base_dir / "astrashield_rules.json"
+        self.pihole_cache_path = cfg_mgr.base_dir / "astrashield_pihole_cache.txt"
+        self.pihole_meta_path = cfg_mgr.base_dir / "astrashield_pihole_meta.json"
         self.hosts_path = hosts_path or self.default_hosts_path()
 
         self._lock = threading.Lock()
@@ -183,6 +455,7 @@ class AstraShieldManager:
         self._stop_event = threading.Event()
         self._listen_addr = ""
         self._upstream_dns = "1.1.1.1"
+        self._cached_pihole_domains: set[str] | None = None
 
         self.total_queries = 0
         self.blocked_queries = 0
@@ -198,10 +471,12 @@ class AstraShieldManager:
 
     def load_rules(self) -> dict[str, Any]:
         default = {
-            "categories": ["ads", "trackers", "telemetry", "malware"],
+            "categories": ["ads", "youtube_ads", "trackers", "telemetry", "malware"],
             "custom_block": [],
             "custom_allow": [],
             "upstream_dns": "1.1.1.1",
+            "youtube_safe_prune": True,
+            "use_pihole_cache": True,
         }
         if not self.rules_path.exists():
             self.save_rules(default)
@@ -219,6 +494,244 @@ class AstraShieldManager:
     def save_rules(self, rules: dict[str, Any]) -> None:
         self.cfg_mgr.ensure_directories()
         self.rules_path.write_text(json.dumps(rules, indent=2), encoding="utf-8")
+        self._cached_pihole_domains = None
+
+    def _load_pihole_cache(self) -> set[str]:
+        if self._cached_pihole_domains is not None:
+            return self._cached_pihole_domains
+        if not self.pihole_cache_path.exists():
+            self._cached_pihole_domains = set()
+            return self._cached_pihole_domains
+        try:
+            doms = {
+                ln.strip().lower()
+                for ln in self.pihole_cache_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                if ln.strip() and not ln.startswith("#")
+            }
+            self._cached_pihole_domains = doms
+            return doms
+        except OSError:
+            return set()
+
+    @staticmethod
+    def parse_blocklist_text(raw_text: str) -> set[str]:
+        """Parses hosts, AdBlock (||domain^), and plain-domain Pi-hole feeds safely."""
+        out: set[str] = set()
+        for raw_ln in raw_text.splitlines():
+            ln = raw_ln.split("#", 1)[0].split("!", 1)[0].strip().lower()
+            if not ln:
+                continue
+            if ln.startswith("||"):
+                ln = ln[2:].split("^", 1)[0].split("$", 1)[0].strip()
+            elif ln.startswith("0.0.0.0 ") or ln.startswith("127.0.0.1 ") or "\t" in ln or " " in ln:
+                parts = ln.split()
+                if len(parts) >= 2 and parts[0] in ("0.0.0.0", "127.0.0.1", "::", "::1"):
+                    ln = parts[1].strip()
+                else:
+                    continue
+            ln = ln.lstrip("*.").rstrip(".")
+            if ln in ("localhost", "localhost.localdomain", "local", "broadcasthost", "ip6-localhost", "ip6-loopback"):
+                continue
+            if _VALID_DOMAIN_RE.match(ln):
+                out.add(ln)
+        return out
+
+    def download_pihole_blocklists(
+        self,
+        source_keys: list[str] | None = None,
+        timeout: float = 12.0,
+    ) -> tuple[bool, str, int]:
+        """Downloads official Pi-hole community blocklists + YouTube safe ignore/whitelists."""
+        keys = source_keys or list(PIHOLE_STANDARD_SOURCES.keys())
+        blocked_all: set[str] = set()
+        allow_all: set[str] = set(YOUTUBE_PLAYBACK_ALLOWLIST)
+        fetched_sources: list[str] = []
+        failed_sources: list[str] = []
+
+        for key in keys:
+            meta = PIHOLE_STANDARD_SOURCES.get(key)
+            if not meta:
+                continue
+            url = meta["url"]
+            parsed_url = urlparse(url)
+            if parsed_url.scheme != "https":
+                failed_sources.append(f"{key} (non-https)")
+                continue
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "AstraCradle-AstraShield/1.0"})
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    raw = resp.read(25 * 1024 * 1024).decode("utf-8", errors="ignore")
+                parsed = self.parse_blocklist_text(raw)
+                if meta.get("kind") == "allow":
+                    allow_all.update(parsed)
+                else:
+                    blocked_all.update(parsed)
+                fetched_sources.append(f"{key} ({len(parsed):,})")
+            except Exception as exc:
+                failed_sources.append(f"{key}: {exc}")
+
+        if not fetched_sources:
+            return False, f"Could not download Pi-hole feeds ({'; '.join(failed_sources[:3])}). Built-in compiled list remains active.", 0
+
+        # Protect YouTube playback & essential whitelisted domains
+        blocked_all -= allow_all
+        self.cfg_mgr.ensure_directories()
+        self.pihole_cache_path.write_text("\n".join(sorted(blocked_all)) + "\n", encoding="utf-8")
+        self._cached_pihole_domains = blocked_all
+        meta_doc = {
+            "updated_at": utc_now_iso(),
+            "domain_count": len(blocked_all),
+            "fetched": fetched_sources,
+            "failed": failed_sources,
+        }
+        self.pihole_meta_path.write_text(json.dumps(meta_doc, indent=2), encoding="utf-8")
+        self.journal.log_event(
+            "AstraShield",
+            "download_pihole_lists",
+            f"Downloaded {len(blocked_all):,} Pi-hole domains from {len(fetched_sources)} feed(s)",
+            "Synced community Pi-hole blocklists with YouTube playback safety filter",
+            "ok" if not failed_sources else "warning",
+        )
+        warn_suffix = f" ({len(failed_sources)} feed(s) offline/skipped)" if failed_sources else ""
+        return True, f"Synced {len(blocked_all):,} Pi-hole domains from {len(fetched_sources)} feeds{warn_suffix}.", len(blocked_all)
+
+    @staticmethod
+    def prune_youtube_player_payload(raw_json: str) -> tuple[str, int]:
+        """Strips YouTube ad metadata keys from player JSON while preserving streamingData & videoDetails."""
+        try:
+            data = json.loads(raw_json)
+        except Exception:
+            return raw_json, 0
+        if not isinstance(data, dict):
+            return raw_json, 0
+        ad_keys = ("adPlacements", "playerAds", "adSlots", "adBreakHeartbeatParams", "adNextParams")
+        pruned = 0
+        for k in ad_keys:
+            if k in data:
+                val = data.get(k)
+                if isinstance(val, list):
+                    pruned += len(val)
+                    data[k] = []
+                else:
+                    pruned += 1
+                    data.pop(k, None)
+        return json.dumps(data), pruned
+
+    @staticmethod
+    def detect_installed_browsers() -> list[dict[str, Any]]:
+        candidates = (
+            ("Firefox", ("firefox", "firefox-esr"), Path.home() / ".mozilla" / "firefox"),
+            ("LibreWolf", ("librewolf",), Path.home() / ".librewolf"),
+            ("Zen Browser", ("zen", "zen-browser"), Path.home() / ".zen"),
+            ("Brave", ("brave", "brave-browser"), Path.home() / ".config" / "BraveSoftware"),
+            ("Chromium", ("chromium", "chromium-browser"), Path.home() / ".config" / "chromium"),
+            ("Google Chrome", ("google-chrome", "chrome"), Path.home() / ".config" / "google-chrome"),
+            ("Vivaldi", ("vivaldi",), Path.home() / ".config" / "vivaldi"),
+        )
+        found: list[dict[str, Any]] = []
+        for label, bins, cfg_dir in candidates:
+            bin_path = next((shutil.which(b) for b in bins if shutil.which(b)), None)
+            if bin_path or cfg_dir.exists():
+                has_ublock = False
+                if cfg_dir.exists():
+                    try:
+                        for p in cfg_dir.rglob("*ublock*"):
+                            has_ublock = True
+                            break
+                        if not has_ublock:
+                            for p in cfg_dir.rglob("uBlock0@rayhill*.xpi"):
+                                has_ublock = True
+                                break
+                    except OSError:
+                        pass
+                found.append({"name": label, "bin": bin_path or "", "has_ublock": has_ublock})
+        return found
+
+    def export_youtube_ad_prune_assets(self, dest_dir: Path | None = None) -> tuple[Path, Path]:
+        """Generates a browser-safe YouTube ad-pruning userscript + uBlock filter list."""
+        out_dir = dest_dir or self.cfg_mgr.base_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        js_path = out_dir / "astracradle_youtube_adprune.user.js"
+        flt_path = out_dir / "astracradle_ublock_youtube_filters.txt"
+
+        userscript = """// ==UserScript==
+// @name         AstraCradle YouTube Safe Ad-Pruner
+// @namespace    https://github.com/jackbashroot-boop/AstraCradle
+// @version      1.0.0
+// @description  Prunes YouTube adPlacements / playerAds / adSlots JSON payloads without breaking googlevideo playback.
+// @match        *://*.youtube.com/*
+// @run-at       document-start
+// @grant        none
+// ==/UserScript==
+(function() {
+  'use strict';
+  const AD_KEYS = ['adPlacements', 'playerAds', 'adSlots', 'adBreakHeartbeatParams'];
+  function pruneObj(obj) {
+    if (!obj || typeof obj !== 'object') return obj;
+    for (const k of AD_KEYS) {
+      if (k in obj) {
+        if (Array.isArray(obj[k])) obj[k] = [];
+        else delete obj[k];
+      }
+    }
+    return obj;
+  }
+  const origParse = JSON.parse;
+  JSON.parse = function(text, reviver) {
+    const res = origParse.call(this, text, reviver);
+    if (res && typeof res === 'object' && ('streamingData' in res || 'adPlacements' in res || 'playerAds' in res)) {
+      pruneObj(res);
+    }
+    return res;
+  };
+  if (window.fetch) {
+    const origFetch = window.fetch;
+    window.fetch = async function(...args) {
+      const resp = await origFetch.apply(this, args);
+      const url = String(args[0] && args[0].url ? args[0].url : args[0] || '');
+      if (url.includes('/youtubei/v1/player')) {
+        try {
+          const clone = resp.clone();
+          const data = pruneObj(await clone.json());
+          return new Response(JSON.stringify(data), { status: resp.status, statusText: resp.statusText, headers: resp.headers });
+        } catch (_) {}
+      }
+      return resp;
+    };
+  }
+  setInterval(() => {
+    const skip = document.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern');
+    if (skip) skip.click();
+    const player = document.querySelector('#movie_player');
+    if (player && player.classList.contains('ad-showing')) {
+      const v = document.querySelector('video.html5-main-video');
+      if (v && Number.isFinite(v.duration) && v.duration > 0) v.currentTime = v.duration;
+    }
+  }, 350);
+})();
+"""
+        ublock_filters = """! AstraCradle YouTube Safe Ad-Prune Filters (for uBlock Origin / AdGuard)
+! Prunes player ad pods & page ads while keeping *.googlevideo.com video playback intact
+youtube.com##+js(json-prune, adPlacements playerAds adSlots)
+youtube.com##ytd-ad-slot-renderer, ytd-banner-promo-renderer, ytd-in-feed-ad-layout-renderer, #masthead-ad, ytd-player-legacy-desktop-watch-ads-renderer
+||googleads.g.doubleclick.net^
+||pagead2.googlesyndication.com^
+||adservice.google.com^
+||ads.youtube.com^
+@@||manifest.googlevideo.com^
+@@||s.youtube.com^
+@@||i.ytimg.com^
+"""
+        js_path.write_text(userscript, encoding="utf-8")
+        flt_path.write_text(ublock_filters, encoding="utf-8")
+        self.journal.log_event(
+            "AstraShield",
+            "export_youtube_prune",
+            f"Generated YouTube safe ad-prune userscript & filter pack in {out_dir}",
+            "Provide in-stream YouTube ad pruning without breaking googlevideo playback",
+            "ok",
+        )
+        return js_path, flt_path
 
     def build_domain_set(self, categories: list[str] | None = None) -> tuple[set[str], set[str]]:
         rules = self.load_rules()
@@ -227,11 +740,15 @@ class AstraShieldManager:
         for c in cats:
             for dom in DEFAULT_BLOCK_CATEGORIES.get(c, []):
                 blocked.add(dom.lower().strip())
+        if rules.get("use_pihole_cache", True):
+            blocked.update(self._load_pihole_cache())
         for dom in rules.get("custom_block", []):
             d = str(dom).lower().strip()
             if d:
                 blocked.add(d)
         allowed = {str(d).lower().strip() for d in rules.get("custom_allow", []) if str(d).strip()}
+        if rules.get("youtube_safe_prune", True):
+            allowed.update(YOUTUBE_PLAYBACK_ALLOWLIST)
         blocked -= allowed
         return blocked, allowed
 
@@ -240,13 +757,17 @@ class AstraShieldManager:
         if not dom:
             return False, "empty"
         blocked, allowed = self.build_domain_set(categories)
+        if dom in allowed:
+            return False, f"allowlist:{dom}"
+        if dom in blocked:
+            return True, f"blocked:{dom}"
         parts = dom.split(".")
-        # Check exact + parent domain suffixes (so sub.doubleclick.net matches doubleclick.net)
-        for i in range(len(parts)):
+        # Check parent domain suffixes (allowlist protects *.googlevideo.com; blocklist catches sub.doubleclick.net)
+        for i in range(1, len(parts)):
             sub = ".".join(parts[i:])
             if sub in allowed:
                 return False, f"allowlist:{sub}"
-        for i in range(len(parts)):
+        for i in range(1, len(parts)):
             sub = ".".join(parts[i:])
             if sub in blocked:
                 return True, f"blocked:{sub}"
@@ -537,6 +1058,13 @@ class AstraShieldManager:
             pct = round((blk / tot) * 100.0, 1) if tot > 0 else 0.0
             top = self._top_blocked.most_common(8)
             rec = list(self._recent)[:15]
+        pihole_doms = self._load_pihole_cache()
+        last_upd = ""
+        if self.pihole_meta_path.exists():
+            try:
+                last_upd = str(json.loads(self.pihole_meta_path.read_text(encoding="utf-8")).get("updated_at", ""))
+            except Exception:
+                pass
         return AstraShieldStatus(
             hosts_active=self.is_hosts_active(),
             dns_server_running=self.dns_running,
@@ -550,6 +1078,9 @@ class AstraShieldManager:
             recent_events=rec,
             hosts_path=str(self.hosts_path),
             note="Pi-hole-style local DNS & hosts blocker ready.",
+            pihole_cached_count=len(pihole_doms),
+            pihole_last_updated=last_upd,
+            youtube_safe_prune=bool(rules.get("youtube_safe_prune", True)),
         )
 
     def cleanup_on_uninstall(self) -> list[str]:

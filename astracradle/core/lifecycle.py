@@ -103,7 +103,7 @@ class LifecycleManager:
         icon_icns = repo_root / "assets" / "astracradle.icns"
 
         if sys_name == "Linux":
-            # Install multi-size XDG hicolor icons so KDE/GNOME/CachyOS Start Menus render crisp icons
+            # Install multi-size XDG hicolor & pixmaps icons so KDE/GNOME/CachyOS menus & taskbars render crisp AstraCradle artwork
             hicolor_base = home / ".local" / "share" / "icons" / "hicolor"
             for sz, fname in (
                 ("32x32", "astracradle_emblem_32.png"),
@@ -113,12 +113,20 @@ class LifecycleManager:
             ):
                 src_icon = repo_root / "assets" / fname
                 if src_icon.exists():
-                    dest_icon = hicolor_base / sz / "apps" / "astracradle.png"
-                    dest_icon.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        shutil.copy2(src_icon, dest_icon)
-                    except OSError:
-                        pass
+                    for app_icon_name in ("astracradle.png", "Astracradle.png"):
+                        dest_icon = hicolor_base / sz / "apps" / app_icon_name
+                        dest_icon.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            shutil.copy2(src_icon, dest_icon)
+                        except OSError:
+                            pass
+            pixmaps_dir = home / ".local" / "share" / "pixmaps"
+            if icon_png.exists():
+                try:
+                    pixmaps_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(icon_png, pixmaps_dir / "astracradle.png")
+                except OSError:
+                    pass
 
             standalone_bin = repo_root / "dist" / "AstraCradle" / "AstraCradle"
             gui_bin = Path(sys.executable).parent / "astracradle-gui"
@@ -139,7 +147,7 @@ class LifecycleManager:
                 f"Exec={exec_cmd}\n"
                 f"Path={repo_root}\n"
                 f"Icon={icon_value}\n"
-                "StartupWMClass=AstraCradle\n"
+                "StartupWMClass=Astracradle\n"
                 "Terminal=false\n"
                 "Categories=Utility;System;\n"
                 "Keywords=system;optimizer;diagnostics;telemetry;astracradle;\n"
@@ -161,6 +169,8 @@ class LifecycleManager:
             for cmd in (
                 ["update-desktop-database", str(home / ".local" / "share" / "applications")],
                 ["gtk-update-icon-cache", "-f", "-t", str(hicolor_base)],
+                ["kbuildsycoca6"],
+                ["kbuildsycoca5"],
             ):
                 if shutil.which(cmd[0]):
                     try:

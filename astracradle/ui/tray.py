@@ -33,12 +33,16 @@ class TrayController:
         self._icon = None
         self._thread: threading.Thread | None = None
         self.available = False
+        self.last_error: str = ""
+        self.backend_name: str = ""
 
         try:
             import pystray  # noqa: F401
             self.available = True
-        except Exception:
+            self.backend_name = getattr(getattr(pystray, "Icon", None), "__module__", "pystray")
+        except Exception as exc:
             self.available = False
+            self.last_error = str(exc)
 
     @staticmethod
     def _resolve_platform_icon(icon_path: Path) -> Path:
@@ -54,6 +58,18 @@ class TrayController:
     def running(self) -> bool:
         return self._icon is not None
 
+    def ensure_running(self) -> bool:
+        if self.running:
+            return True
+        return self.start()
+
+    def update_status(self, title: str) -> None:
+        if self._icon is not None:
+            try:
+                self._icon.title = title[:64]
+            except Exception:
+                pass
+
     def start(self) -> bool:
         if not self.available or self._icon is not None:
             return False
@@ -61,7 +77,11 @@ class TrayController:
             from PIL import Image
             import pystray
 
-            img = Image.open(self.icon_path) if self.icon_path.exists() else Image.new("RGBA", (64, 64), (72, 216, 224, 255))
+            img = (
+                Image.open(self.icon_path).convert("RGBA")
+                if self.icon_path.exists()
+                else Image.new("RGBA", (64, 64), (72, 216, 224, 255))
+            )
             items = [
                 pystray.MenuItem("Open AstraCradle", lambda _icon, _item: self.on_show(), default=True),
                 pystray.MenuItem("Run Equilibrium Scan", lambda _icon, _item: self.on_scan()),
@@ -98,8 +118,9 @@ class TrayController:
             self._thread = threading.Thread(target=self._run_safe, daemon=True)
             self._thread.start()
             return True
-        except Exception:
+        except Exception as exc:
             self._icon = None
+            self.last_error = str(exc)
             return False
 
     def _run_safe(self) -> None:
@@ -107,9 +128,16 @@ class TrayController:
         if icon is None:
             return
         try:
-            icon.run()
-        except Exception:
+            def _setup(ic) -> None:
+                try:
+                    ic.visible = True
+                except Exception:
+                    pass
+
+            icon.run(setup=_setup)
+        except Exception as exc:
             # Headless / missing tray service fallback without crashing GUI
+            self.last_error = str(exc)
             self._icon = None
 
     def notify(self, title: str, message: str) -> bool:

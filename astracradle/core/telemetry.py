@@ -259,3 +259,77 @@ class TelemetryCollector:
             process_count=total_procs,
             top_processes=procs[:process_limit],
         )
+
+    @staticmethod
+    def collect_detailed_sensors() -> dict[str, object]:
+        """Collects all available hardware temperatures, fan RPMs, CPU frequency bounds & battery sensors."""
+        temps_out: list[dict[str, object]] = []
+        try:
+            temps = psutil.sensors_temperatures() or {}  # type: ignore[attr-defined]
+            for chip, entries in sorted(temps.items()):
+                for idx, ent in enumerate(entries):
+                    cur = round(float(ent.current), 1)
+                    high = round(float(ent.high), 1) if ent.high else None
+                    crit = round(float(ent.critical), 1) if ent.critical else None
+                    label = (ent.label or f"sensor_{idx + 1}").strip()
+                    status = "crit" if (crit and cur >= crit) or cur >= 95.0 else ("warn" if (high and cur >= high) or cur >= 82.0 else "ok")
+                    temps_out.append(
+                        {
+                            "chip": chip,
+                            "label": label,
+                            "current_c": cur,
+                            "high_c": high,
+                            "critical_c": crit,
+                            "status": status,
+                        }
+                    )
+        except Exception:
+            pass
+
+        fans_out: list[dict[str, object]] = []
+        try:
+            fans = psutil.sensors_fans() or {}  # type: ignore[attr-defined]
+            for chip, entries in sorted(fans.items()):
+                for idx, ent in enumerate(entries):
+                    fans_out.append(
+                        {
+                            "chip": chip,
+                            "label": (ent.label or f"fan_{idx + 1}").strip(),
+                            "rpm": int(ent.current),
+                        }
+                    )
+        except Exception:
+            pass
+
+        freq_info: dict[str, float | None] = {"current_mhz": None, "min_mhz": None, "max_mhz": None}
+        try:
+            cf = psutil.cpu_freq()
+            if cf:
+                freq_info = {
+                    "current_mhz": round(float(cf.current), 0),
+                    "min_mhz": round(float(cf.min), 0) if cf.min else None,
+                    "max_mhz": round(float(cf.max), 0) if cf.max else None,
+                }
+        except Exception:
+            pass
+
+        bat_info: dict[str, object] | None = None
+        try:
+            bat = psutil.sensors_battery()
+            if bat is not None:
+                bat_info = {
+                    "percent": round(float(bat.percent), 1),
+                    "plugged": bool(bat.power_plugged),
+                    "secs_left": None if bat.secsleft in (-1, -2) else int(bat.secsleft),
+                }
+        except Exception:
+            pass
+
+        return {
+            "temperatures": temps_out,
+            "fans": fans_out,
+            "cpu_freq": freq_info,
+            "battery": bat_info,
+            "boot_time": psutil.boot_time(),
+        }
+

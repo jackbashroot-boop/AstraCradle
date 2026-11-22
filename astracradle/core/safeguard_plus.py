@@ -350,3 +350,267 @@ h1{{color:#48d8e0;margin-top:0}} .meta{{color:#9fb0c3;font-size:14px}}
             outcome="ok",
         )
         return out
+
+
+class AIDiagnosticArchiveExporter:
+    """Consolidates old logs/snapshots into tidy archives and builds a full AI-ready diagnostic report."""
+
+    def __init__(self, cfg_mgr: ConfigManager, journal: ForensicJournal) -> None:
+        self.cfg_mgr = cfg_mgr
+        self.journal = journal
+        self.archives_dir = cfg_mgr.base_dir / "archives"
+
+    def consolidate_historical_data(self, keep_recent_snapshots: int = 10) -> tuple[int, Path | None]:
+        """Archives older snapshots & rotated digests into a single compressed archive to avoid clutter."""
+        self.cfg_mgr.ensure_directories()
+        self.archives_dir.mkdir(parents=True, exist_ok=True)
+        to_archive: list[Path] = []
+        if self.cfg_mgr.snapshots_dir.exists():
+            snaps = sorted(self.cfg_mgr.snapshots_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+            to_archive.extend(snaps[keep_recent_snapshots:])
+        if self.cfg_mgr.playbooks_dir.exists():
+            digests = sorted(self.cfg_mgr.playbooks_dir.glob("weekly_digest_*.html"), key=lambda p: p.stat().st_mtime, reverse=True)
+            to_archive.extend(digests[5:])
+
+        if not to_archive:
+            return 0, None
+
+        archive_zip = self.archives_dir / f"consolidated_history_{int(time.time())}.zip"
+        archived_count = 0
+        with zipfile.ZipFile(archive_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for item in to_archive:
+                if item.exists():
+                    zf.write(item, arcname=f"{item.parent.name}/{item.name}")
+                    archived_count += 1
+        for item in to_archive:
+            try:
+                item.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if archived_count:
+            self.journal.log_event(
+                "AIDiagnostics",
+                "consolidate_archives",
+                f"Consolidated {archived_count} older snapshot/digest file(s) into {archive_zip.name}",
+                "Keep local AstraCradle data folder tidy while preserving full history",
+                "ok",
+            )
+        return archived_count, archive_zip
+
+    def export_ai_handoff_bundle(
+        self,
+        snapshot_data: dict | None = None,
+        sensors_data: dict | None = None,
+        gpu_data: dict | None = None,
+        conflicts_data: list[dict] | None = None,
+        shield_status: dict | None = None,
+        crash_report: dict | None = None,
+        self_audit: list[dict] | None = None,
+        dest_dir: Path | None = None,
+    ) -> dict[str, Path | int]:
+        """Exports AI_HANDOFF_REPORT.md + ai_diagnostic_bundle.json + zip archive for any AI agent."""
+        self.cfg_mgr.ensure_directories()
+        self.archives_dir.mkdir(parents=True, exist_ok=True)
+        archived_count, consolidated_zip = self.consolidate_historical_data()
+
+        out_dir = dest_dir or self.archives_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts_slug = int(time.time())
+        md_path = out_dir / "AI_HANDOFF_REPORT.md"
+        json_path = out_dir / "ai_diagnostic_bundle.json"
+        zip_path = out_dir / f"astracradle_ai_diagnostics_{ts_slug}.zip"
+
+        entries = self.journal.read_entries(limit=300, newest_first=True)
+        error_entries = [
+            {
+                "timestamp": e.timestamp,
+                "component": e.component,
+                "action": e.action,
+                "outcome": e.outcome,
+                "how": e.how,
+                "why": e.why,
+            }
+            for e in entries
+            if e.outcome in ("error", "warn", "warning")
+        ]
+
+        # Detect irregular issues automatically so both human and AI see them first
+        anomalies: list[dict[str, str]] = []
+        temps = (sensors_data or {}).get("temperatures") or []
+        for t in temps:
+            if t.get("status") in ("warn", "crit"):
+                anomalies.append(
+                    {
+                        "severity": str(t.get("status")).upper(),
+                        "area": "Thermals",
+                        "issue": f"{t.get('chip')}:{t.get('label')} at {t.get('current_c')}°C",
+                        "fix_hint": "Check fan curve, dust buildup, or reduce sustained load.",
+                    }
+                )
+        snap = snapshot_data or {}
+        if float(snap.get("mem_percent") or 0.0) >= 88.0:
+            anomalies.append(
+                {
+                    "severity": "WARN",
+                    "area": "Memory",
+                    "issue": f"High RAM usage ({snap.get('mem_percent')}%)",
+                    "fix_hint": "Run Free Standby RAM or hibernate idle AI/browser processes.",
+                }
+            )
+        if float(snap.get("swap_percent") or 0.0) >= 75.0:
+            anomalies.append(
+                {
+                    "severity": "WARN",
+                    "area": "Swap",
+                    "issue": f"Heavy swap usage ({snap.get('swap_percent')}%)",
+                    "fix_hint": "Close memory-heavy apps to stop disk thrashing.",
+                }
+            )
+        for p_info in snap.get("partitions") or []:
+            if float(p_info.get("percent") or 0.0) >= 90.0:
+                anomalies.append(
+                    {
+                        "severity": "WARN",
+                        "area": "Storage",
+                        "issue": f"Mount {p_info.get('mountpoint')} is {p_info.get('percent')}% full",
+                        "fix_hint": "Run AstraCradle Storage Sweep / Duplicate & Dev Vault cleaner.",
+                    }
+                )
+        for cf in conflicts_data or []:
+            anomalies.append(
+                {
+                    "severity": str(cf.get("severity") or "medium").upper(),
+                    "area": "Conflict",
+                    "issue": f"Overlapping tool running: {cf.get('name')} ({cf.get('reason')})",
+                    "fix_hint": "Stop the overlapping daemon/program in AstraShield or Command Deck.",
+                }
+            )
+        if crash_report and crash_report.get("dirty_shutdown"):
+            anomalies.append(
+                {
+                    "severity": "CRIT",
+                    "area": "CrashRecovery",
+                    "issue": f"Previous session ended unexpectedly: {crash_report.get('summary')}",
+                    "fix_hint": str(crash_report.get("fix_steps") or "Inspect crash_history.json and journal errors."),
+                }
+            )
+        if error_entries:
+            anomalies.append(
+                {
+                    "severity": "INFO",
+                    "area": "ForensicJournal",
+                    "issue": f"{len(error_entries)} warning/error event(s) logged in ForensicJournal",
+                    "fix_hint": "Review recent error_events inside ai_diagnostic_bundle.json.",
+                }
+            )
+
+        bundle = {
+            "generated_at": utc_now_iso(),
+            "host": {
+                "os": platform.platform(),
+                "machine": platform.machine(),
+                "python": platform.python_version(),
+            },
+            "anomalies_detected": anomalies,
+            "snapshot": snap,
+            "sensors": sensors_data or {},
+            "gpu": gpu_data or {},
+            "conflicting_programs": conflicts_data or [],
+            "astrashield": shield_status or {},
+            "crash_report": crash_report or {},
+            "self_audit": self_audit or [],
+            "error_and_warning_events": error_entries[:80],
+            "recent_journal_events": [
+                {
+                    "timestamp": e.timestamp,
+                    "component": e.component,
+                    "action": e.action,
+                    "outcome": e.outcome,
+                    "how": e.how,
+                    "why": e.why,
+                }
+                for e in entries[:120]
+            ],
+            "archived_old_files_count": archived_count,
+        }
+        json_path.write_text(json.dumps(bundle, indent=2), encoding="utf-8")
+
+        md_lines = [
+            "# AstraCradle AI Diagnostic & Forensic Handoff Report",
+            "",
+            "> **Instructions for AI Agent (Arena / Claude / ChatGPT / Gemini / Grok):**",
+            "> Inspect the anomalies, hardware temperatures, conflicting services, crash post-mortem, and forensic log events below (plus `ai_diagnostic_bundle.json`). Explain any irregular issues in plain English and give exact, safe step-by-step commands or AstraCradle actions to fix them.",
+            "",
+            f"- **Generated:** {bundle['generated_at']}",
+            f"- **OS / Kernel:** {bundle['host']['os']} ({bundle['host']['machine']})",
+            f"- **Python:** {bundle['host']['python']}",
+            f"- **Historical files consolidated:** {archived_count}",
+            "",
+            "## 1. Detected Anomalies & Irregular Issues",
+        ]
+        if anomalies:
+            for a in anomalies:
+                md_lines.append(f"- **[{a['severity']}] ({a['area']})** {a['issue']} — *Suggested Fix:* {a['fix_hint']}")
+        else:
+            md_lines.append("- No critical anomalies or thermal/memory alerts detected.")
+
+        md_lines.extend(["", "## 2. Temperatures, Fans & Hardware Summary"])
+        if temps:
+            for t in temps[:20]:
+                md_lines.append(f"- `{t.get('chip')}:{t.get('label')}`: **{t.get('current_c')}°C** [{str(t.get('status')).upper()}]")
+        else:
+            md_lines.append("- No direct hardware temperature sensors exposed by OS.")
+        fans = (sensors_data or {}).get("fans") or []
+        for f in fans[:10]:
+            md_lines.append(f"- Fan `{f.get('chip')}:{f.get('label')}`: **{f.get('rpm')} RPM**")
+        if gpu_data:
+            md_lines.append(
+                f"- GPU: `{gpu_data.get('name', 'Unknown')}` · Temp `{gpu_data.get('temp_c', 'N/A')}°C` · "
+                f"Power `{gpu_data.get('power_draw_w', 'N/A')}W` · Fan `{gpu_data.get('fan_percent', 'N/A')}%`"
+            )
+
+        md_lines.extend(["", "## 3. Conflicting Background Tools"])
+        if conflicts_data:
+            for c in conflicts_data:
+                md_lines.append(f"- **{c.get('name')}** (PID `{c.get('pid')}`, unit `{c.get('service_unit')}`): {c.get('reason')}")
+        else:
+            md_lines.append("- Zero overlapping DNS/fan/optimizer tools detected.")
+
+        md_lines.extend(["", "## 4. Recent Warnings / Errors from Forensic Journal"])
+        if error_entries:
+            for ev in error_entries[:25]:
+                md_lines.append(f"- `{ev['timestamp']}` [{ev['component']}.{ev['action']}] ({ev['outcome']}): {ev['how']}")
+        else:
+            md_lines.append("- Zero errors or warnings in recent journal entries.")
+
+        md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.write(md_path, arcname="AI_HANDOFF_REPORT.md")
+            zf.write(json_path, arcname="ai_diagnostic_bundle.json")
+            for f in (
+                self.cfg_mgr.forensic_log_path,
+                self.cfg_mgr.self_heal_log_path,
+                self.cfg_mgr.crash_history_path,
+                self.cfg_mgr.rollback_path,
+                self.cfg_mgr.config_path,
+            ):
+                if f.exists():
+                    zf.write(f, arcname=f"logs/{f.name}")
+
+        self.journal.log_event(
+            "AIDiagnostics",
+            "export_ai_bundle",
+            f"Exported AI diagnostic bundle ({len(anomalies)} anomaly flags) -> {zip_path.name}",
+            "Provide a consolidated, AI-readable full log so any AI assistant can diagnose & help fix issues",
+            "ok",
+        )
+        return {
+            "markdown": md_path,
+            "json": json_path,
+            "zip": zip_path,
+            "archived_count": archived_count,
+            "anomaly_count": len(anomalies),
+            "consolidated_zip": consolidated_zip or zip_path,
+        }
+

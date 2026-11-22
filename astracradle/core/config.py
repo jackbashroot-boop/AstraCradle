@@ -193,9 +193,15 @@ class AppConfig:
     astrashield_enabled: bool = False
     astrashield_dns_port: int = 5353
     astrashield_upstream_dns: str = "1.1.1.1"
+    astrashield_youtube_safe_prune: bool = True
     astrashield_categories: list[str] = field(
-        default_factory=lambda: ["ads", "trackers", "telemetry", "malware"]
+        default_factory=lambda: ["ads", "youtube_ads", "trackers", "telemetry", "malware"]
     )
+    badusb_guard_enabled: bool = True
+    usb_strict_gate: bool = True
+    usb_notify_new_devices: bool = True
+    usb_trusted_ids: list[str] = field(default_factory=list)
+    usb_blocked_ids: list[str] = field(default_factory=list)
     background_schedule_enabled: bool = False
     schedule_interval_minutes: int = 180
     quarantine_enabled: bool = True
@@ -398,6 +404,10 @@ class ConfigManager:
             "launch_at_login",
             "ram_guard_enabled",
             "astrashield_enabled",
+            "astrashield_youtube_safe_prune",
+            "badusb_guard_enabled",
+            "usb_strict_gate",
+            "usb_notify_new_devices",
             "background_schedule_enabled",
             "quarantine_enabled",
             "quiet_hours_enabled",
@@ -439,6 +449,12 @@ class ConfigManager:
         )
         filtered["astrashield_categories"] = _safe_str_list(
             filtered.get("astrashield_categories"), defaults.astrashield_categories
+        )
+        filtered["usb_trusted_ids"] = _safe_str_list(
+            filtered.get("usb_trusted_ids"), defaults.usb_trusted_ids
+        )
+        filtered["usb_blocked_ids"] = _safe_str_list(
+            filtered.get("usb_blocked_ids"), defaults.usb_blocked_ids
         )
 
         raw_rules = filtered.get("automation_rules")

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import ctypes
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import platform
 import re
@@ -655,3 +656,176 @@ class SafeBeginnerFixer:
             f"Quarantine Vault: {q_cnt} reversible item(s) ({q_bytes / (1024*1024):.1f} MB recoverable)\n"
             f"AstraShield DNS/Ad Blocker: {adblock_blocked_count} tracker/ad queries blocked"
         )
+
+
+@dataclass
+class ConflictProgramInfo:
+    conflict_id: str
+    name: str
+    category: str  # dns_adblock | optimizer_power | fan_gpu
+    pid: int | None
+    service_unit: str
+    reason: str
+    severity: str  # high | medium | low
+    can_stop: bool = True
+
+
+class ConflictProgramDetector:
+    """Detects overlapping DNS/adblock, fan-curve, and power/CPU optimizer tools and lets the user stop them cleanly."""
+
+    KNOWN_CONFLICTS: tuple[tuple[str, str, str, str, str, str], ...] = (
+        ("pihole-ftl", "Pi-hole FTL DNS", "dns_adblock", "pihole-FTL.service", "Competes with AstraShield for DNS port 53 & hosts filtering.", "high"),
+        ("adguardhome", "AdGuard Home", "dns_adblock", "AdGuardHome.service", "Competes with AstraShield for local DNS sinkhole & blocklists.", "high"),
+        ("dnsmasq", "dnsmasq", "dns_adblock", "dnsmasq.service", "May bind local DNS port 53 or override AstraShield DNS routing.", "medium"),
+        ("unbound", "Unbound DNS Resolver", "dns_adblock", "unbound.service", "Local DNS resolver that may conflict with AstraShield DNS port 53.", "medium"),
+        ("dnscrypt-proxy", "DNSCrypt Proxy", "dns_adblock", "dnscrypt-proxy.service", "Intercepts local DNS queries before AstraShield DNS.", "medium"),
+        ("nextdns", "NextDNS CLI", "dns_adblock", "nextdns.service", "Overrides system DNS & hosts filtering alongside AstraShield.", "medium"),
+        ("coolercontrold", "CoolerControl Daemon", "fan_gpu", "coolercontrold.service", "Controls system/GPU fan curves simultaneously with AstraCradle GPU profiles.", "medium"),
+        ("corectrl", "CoreCtrl", "fan_gpu", "", "Manages GPU/CPU power & fan profiles alongside AstraCradle.", "medium"),
+        ("fancontrol", "lm-sensors fancontrol", "fan_gpu", "fancontrol.service", "PWM fan daemon that may override AstraCradle fan targets.", "medium"),
+        ("auto-cpufreq", "auto-cpufreq", "optimizer_power", "auto-cpufreq.service", "Automatically changes CPU frequency governors alongside AstraCradle profiles.", "medium"),
+        ("tlp", "TLP Power Manager", "optimizer_power", "tlp.service", "Overrides CPU/power settings when switching AstraCradle profiles.", "low"),
+        ("ananicy-cpp", "Ananicy-CPP", "optimizer_power", "ananicy-cpp.service", "Adjusts process nice/ionice priorities alongside AstraCradle ProBalance.", "low"),
+        ("processlasso", "Process Lasso", "optimizer_power", "", "Manages process CPU affinity & ProBalance priorities simultaneously.", "high"),
+        ("msiafterburner", "MSI Afterburner", "fan_gpu", "", "Controls GPU power/fan curves alongside AstraCradle GPU controls.", "medium"),
+        ("ccleaner", "CCleaner", "optimizer_power", "", "Background cleaner/optimizer overlapping with AstraCradle maintenance.", "low"),
+        ("armourycrate", "ASUS Armoury Crate", "optimizer_power", "", "Vendor power/fan daemon that may override AstraCradle settings.", "medium"),
+        ("razersynapse", "Razer Synapse", "optimizer_power", "", "Background peripheral/game booster overlapping with AstraCradle.", "low"),
+    )
+
+    def __init__(self, journal: ForensicJournal, elevation: ElevationRunner | None = None) -> None:
+        self.journal = journal
+        self.elevation = elevation
+
+    def scan_conflicts(self) -> list[ConflictProgramInfo]:
+        found: list[ConflictProgramInfo] = []
+        seen_ids: set[str] = set()
+        own_pid = os.getpid()
+
+        # 1. Active user/system processes
+        try:
+            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+                try:
+                    pid = int(proc.info["pid"])
+                    if pid <= 4 or pid == own_pid:
+                        continue
+                    pname = (proc.info.get("name") or "").lower()
+                    cmd = " ".join(proc.info.get("cmdline") or []).lower()
+                    hay = f"{pname} {cmd}"
+                    for key, label, cat, unit, reason, sev in self.KNOWN_CONFLICTS:
+                        if key in hay and key not in seen_ids:
+                            seen_ids.add(key)
+                            found.append(
+                                ConflictProgramInfo(
+                                    conflict_id=key,
+                                    name=label,
+                                    category=cat,
+                                    pid=pid,
+                                    service_unit=unit,
+                                    reason=reason,
+                                    severity=sev,
+                                    can_stop=True,
+                                )
+                            )
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+        except Exception:
+            pass
+
+        # 2. Running systemd units on Linux (in case daemon name differs slightly)
+        if platform.system() == "Linux" and shutil.which("systemctl"):
+            try:
+                p = subprocess.run(
+                    ["systemctl", "list-units", "--type=service", "--state=running", "--no-pager", "--no-legend"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                )
+                if p.returncode == 0:
+                    units_txt = (p.stdout or "").lower()
+                    for key, label, cat, unit, reason, sev in self.KNOWN_CONFLICTS:
+                        if unit and unit.lower() in units_txt and key not in seen_ids:
+                            seen_ids.add(key)
+                            found.append(
+                                ConflictProgramInfo(
+                                    conflict_id=key,
+                                    name=label,
+                                    category=cat,
+                                    pid=None,
+                                    service_unit=unit,
+                                    reason=reason,
+                                    severity=sev,
+                                    can_stop=True,
+                                )
+                            )
+            except Exception:
+                pass
+
+        return found
+
+    def stop_conflict(
+        self,
+        conflict: ConflictProgramInfo,
+        dry_run: bool = False,
+        elevation: ElevationRunner | None = None,
+    ) -> tuple[bool, str]:
+        elev = elevation or self.elevation
+        if dry_run:
+            return True, f"[DRY RUN] Would stop conflicting program '{conflict.name}' cleanly."
+
+        if conflict.service_unit and platform.system() == "Linux" and shutil.which("systemctl"):
+            if elev is not None:
+                eres = elev.run_privileged(
+                    ["systemctl", "stop", conflict.service_unit],
+                    reason=f"Stop conflicting background service '{conflict.name}' ({conflict.service_unit})",
+                )
+                if eres.ok:
+                    self.journal.log_event(
+                        "ConflictGuard",
+                        f"stop_{conflict.conflict_id}",
+                        f"Stopped service {conflict.service_unit} via sudo",
+                        conflict.reason,
+                        "ok",
+                    )
+                    return True, f"Stopped conflicting service '{conflict.name}'."
+                return False, eres.message
+            return False, f"Elevation required to stop system service '{conflict.service_unit}'."
+
+        if conflict.pid is not None:
+            try:
+                proc = psutil.Process(conflict.pid)
+                proc.terminate()
+                proc.wait(timeout=3)
+                self.journal.log_event(
+                    "ConflictGuard",
+                    f"stop_{conflict.conflict_id}",
+                    f"Terminated conflicting process '{conflict.name}' (PID {conflict.pid})",
+                    conflict.reason,
+                    "ok",
+                )
+                return True, f"Stopped conflicting process '{conflict.name}' (PID {conflict.pid})."
+            except psutil.NoSuchProcess:
+                return True, f"'{conflict.name}' is no longer running."
+            except psutil.AccessDenied:
+                if elev is not None and platform.system() != "Windows":
+                    eres = elev.run_privileged(
+                        ["kill", "-TERM", str(conflict.pid)],
+                        reason=f"Stop conflicting process '{conflict.name}' (PID {conflict.pid})",
+                    )
+                    if eres.ok:
+                        self.journal.log_event(
+                            "ConflictGuard",
+                            f"stop_{conflict.conflict_id}",
+                            f"Terminated '{conflict.name}' (PID {conflict.pid}) via sudo",
+                            conflict.reason,
+                            "ok",
+                        )
+                        return True, f"Stopped '{conflict.name}' (PID {conflict.pid})."
+                    return False, eres.message
+                return False, f"Permission denied stopping '{conflict.name}' (PID {conflict.pid})."
+            except Exception as exc:
+                return False, f"Could not stop '{conflict.name}': {exc}"
+
+        return False, f"No active PID or service unit found for '{conflict.name}'."
+

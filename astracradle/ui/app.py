@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 import json
 import math
+from dataclasses import asdict
 from pathlib import Path
 import platform
 import queue
@@ -27,6 +28,7 @@ from ..core.executor import GuardedExecutor
 from ..core.pc_extras import (
     BaselineDiffEngine,
     BatteryAndPowerInspector,
+    ConflictProgramDetector,
     MemoryStandbyManager,
     NetworkAndDnsInspector,
     SafeBeginnerFixer,
@@ -75,6 +77,7 @@ from ..core.playbook import PlaybookBuilder
 from ..core.probalance import ProBalanceEngine
 from ..core.rollback import RollbackManager
 from ..core.safeguard_plus import (
+    AIDiagnosticArchiveExporter,
     ConfigIntegrityShield,
     PrivacyTraceSweeper,
     ProcessTranslator,
@@ -100,6 +103,7 @@ from ..core.telemetry_history import (
     TelemetryHistoryDB,
 )
 from ..core.thermal_spc import ThermalSpcMonitor
+from ..core.usb_guard import UsbAndPeripheralGuard
 from ..core.updater import ModuleAndUpdateManager
 from ..theme import ThemePalette, get_palette, get_ui_fonts
 from .modals import (
@@ -140,7 +144,7 @@ class AstraCradleApp(ctk.CTk):
         show_startup_popups: bool = True,
         start_minimized: bool = False,
     ) -> None:
-        super().__init__()
+        super().__init__(className="AstraCradle")
 
         self.cfg_mgr = ConfigManager(base_dir=base_dir)
         self.config_obj: AppConfig = self.cfg_mgr.load()
@@ -174,6 +178,7 @@ class AstraCradleApp(ctk.CTk):
         self.privacy_sweeper = PrivacyTraceSweeper()
         self.integrity_shield = ConfigIntegrityShield(self.cfg_mgr, self.journal)
         self.recovery_exporter = RecoveryBundleExporter(self.cfg_mgr, self.journal)
+        self.ai_exporter = AIDiagnosticArchiveExporter(self.cfg_mgr, self.journal)
         self.digest_gen = WeeklyDigestGenerator(self.cfg_mgr, self.journal)
         self.hw_mgr = HardwareLibraryManager(self.cfg_mgr, self.journal)
         self.pipe_mgr = PipelineEngine(self.cfg_mgr, self.executor, self.scripts_engine, self.hw_mgr, self.journal)
@@ -190,6 +195,8 @@ class AstraCradleApp(ctk.CTk):
         self.adblock_shield = AstraShieldManager(
             self.cfg_mgr, self.rollback_mgr, self.journal, elevation=self.elevation
         )
+        self.conflict_detector = ConflictProgramDetector(self.journal, elevation=self.elevation)
+        self.usb_guard = UsbAndPeripheralGuard(self.cfg_mgr, self.journal, elevation=self.elevation)
         self.baseline_diff = BaselineDiffEngine(self.cfg_mgr, self.journal)
         self.startup_file_delay = StartupFileDelayManager(self.cfg_mgr, self.rollback_mgr, self.journal)
         self.net_dns_inspector = NetworkAndDnsInspector(self.journal)
@@ -204,6 +211,9 @@ class AstraCradleApp(ctk.CTk):
         self._last_latency_report = None
         self._last_autoruns: list = []
         self._last_ghosts: list = []
+        self._latest_sensors: dict = {}
+        self._latest_conflicts: list = []
+        self._latest_peripherals: list = []
         self._last_baseline: FullSystemBaseline | None = self.full_discovery.load_saved_baseline()
         self._draft_fan_curve: list[list[int]] = self.gpu_pwr.get_applied_curve()[1]
         self._toast_after_id: str | None = None
@@ -234,7 +244,15 @@ class AstraCradleApp(ctk.CTk):
             on_toggle_astrashield=lambda: self._ui_queue.put(("toggle_astrashield", None, None)),
         )
         if show_startup_popups and (self.config_obj.show_tray_icon or self.config_obj.minimize_to_tray or start_minimized):
-            self.tray.start()
+            tray_ok = self.tray.start()
+            if not tray_ok and self.tray.last_error:
+                self.journal.log_event(
+                    "TrayController",
+                    "tray_start_warn",
+                    f"System tray unavailable ({self.tray.last_error})",
+                    "On Linux KDE/Wayland, install libayatana-appindicator & python-gobject if tray icon is hidden",
+                    "warning",
+                )
         if show_startup_popups and (start_minimized or self.config_obj.start_minimized):
             if not self.tray.running:
                 self.tray.start()
@@ -578,12 +596,31 @@ class AstraCradleApp(ctk.CTk):
         )
 
     def _set_window_icon(self) -> None:
-        icon_path = self.assets_dir / "astracradle_emblem_64.png"
-        if icon_path.exists():
+        self._tk_icons: list[ImageTk.PhotoImage] = []
+        if platform.system() == "Windows":
+            ico_path = self.assets_dir / "astracradle.ico"
+            if ico_path.exists():
+                try:
+                    self.iconbitmap(str(ico_path))
+                except Exception:
+                    pass
+        for fname in (
+            "astracradle_emblem_256.png",
+            "astracradle_emblem_128.png",
+            "astracradle_emblem_64.png",
+            "astracradle_emblem_32.png",
+        ):
+            icon_path = self.assets_dir / fname
+            if icon_path.exists():
+                try:
+                    img = Image.open(icon_path).convert("RGBA")
+                    self._tk_icons.append(ImageTk.PhotoImage(img, master=self))
+                except Exception:
+                    pass
+        if self._tk_icons:
             try:
-                img = Image.open(icon_path)
-                self._tk_icon = ImageTk.PhotoImage(img)
-                self.iconphoto(True, self._tk_icon)
+                self.wm_iconphoto(True, *self._tk_icons)
+                self._tk_icon = self._tk_icons[0]
             except Exception:
                 pass
 
@@ -1310,6 +1347,23 @@ class AstraCradleApp(ctk.CTk):
         b_digest.grid(row=0, column=2, sticky="ew", padx=4)
         attach_tooltip(b_digest, "Creates an offline visual HTML health report inside ~/.astracradle/playbooks.", p)
 
+        b_ai_log = ctk.CTkButton(
+            tbtns,
+            text="Consolidate & Export AI Diagnostic Log",
+            height=32,
+            fg_color=p.accent_jade,
+            hover_color=p.accent_jade_hover,
+            text_color="#071510",
+            font=self.fonts["body_bold"],
+            command=self.on_export_ai_diagnostic_bundle,
+        )
+        b_ai_log.grid(row=1, column=0, columnspan=2, sticky="ew", padx=(0, 6), pady=(6, 0))
+        attach_tooltip(
+            b_ai_log,
+            "Archives old snapshots/logs and generates AI_HANDOFF_REPORT.md + JSON + zip for any AI assistant.",
+            p,
+        )
+
         self.auto_det_var = tk.BooleanVar(value=self.config_obj.app_auto_detect_enabled)
         b_autodet = ctk.CTkSwitch(
             tbtns,
@@ -1319,12 +1373,27 @@ class AstraCradleApp(ctk.CTk):
             progress_color=p.accent_jade,
             command=self._on_toggle_auto_detect,
         )
-        b_autodet.grid(row=0, column=3, sticky="e", padx=(8, 0))
+        b_autodet.grid(row=1, column=2, sticky="e", padx=(8, 0), pady=(6, 0))
         attach_tooltip(
             b_autodet,
             "Automatically activates matching Toggleable Scripts when Blender, Steam, Cargo, or Unreal launch.",
             p,
         )
+
+        # Live System Diagnostics, Temperatures, Fans, Power & Conflicts Panel (Command Deck)
+        self.dash_diag_panel = ctk.CTkFrame(
+            page, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
+        )
+        self.dash_diag_panel.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(4, 6))
+        self.dash_conflicts_frame = ctk.CTkFrame(
+            page, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
+        )
+        self.dash_conflicts_frame.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 6))
+        self.dash_deploy_frame = ctk.CTkFrame(
+            page, fg_color=p.bg_card, border_width=1, border_color=p.accent_cyan, corner_radius=12
+        )
+        self.dash_deploy_frame.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        self._build_command_deck_deploy_hub()
 
     def _make_metric_card(self, parent, title: str, color: str):
         p = self.palette
@@ -2421,8 +2490,8 @@ class AstraCradleApp(ctk.CTk):
         ctk.CTkLabel(
             ab_card,
             text=(
-                f"Domains Blocked: {shield_st.blocked_domain_count} · Queries: {shield_st.total_queries} · "
-                f"Blocked: {shield_st.blocked_queries} ({shield_st.blocked_percent:.1f}%) · "
+                f"Domains Blocked: {shield_st.blocked_domain_count:,} (Pi-hole Feed Cache: {shield_st.pihole_cached_count:,}) · "
+                f"Queries: {shield_st.total_queries} · Blocked: {shield_st.blocked_queries} ({shield_st.blocked_percent:.1f}%) · "
                 f"DNS: {shield_st.dns_listen_addr} · Hosts Active: {'YES' if shield_st.hosts_active else 'NO'}"
             ),
             font=self.fonts["mono_small"],
@@ -2434,7 +2503,13 @@ class AstraCradleApp(ctk.CTk):
         ctk.CTkLabel(cat_row, text="Filter Lists:", font=self.fonts["caption"], text_color=p.text_muted).pack(side="left", padx=(0, 8))
         rules_data = self.adblock_shield.load_rules()
         active_cats = set(rules_data.get("categories", []))
-        for cname, clabel in [("ads", "Ads"), ("trackers", "Trackers"), ("telemetry", "Telemetry"), ("malware", "Malware")]:
+        for cname, clabel in [
+            ("ads", "Ads"),
+            ("youtube_ads", "YouTube Ad Endpoints"),
+            ("trackers", "Trackers"),
+            ("telemetry", "Telemetry"),
+            ("malware", "Malware"),
+        ]:
             cvar = tk.BooleanVar(value=cname in active_cats)
 
             def _toggle_cat(cat_id=cname, var=cvar) -> None:
@@ -2453,6 +2528,47 @@ class AstraCradleApp(ctk.CTk):
             ctk.CTkCheckBox(cat_row, text=clabel, variable=cvar, font=self.fonts["caption"], command=_toggle_cat).pack(
                 side="left", padx=6
             )
+
+        yt_row = ctk.CTkFrame(ab_card, fg_color="transparent")
+        yt_row.pack(fill="x", padx=14, pady=(0, 6))
+        yt_safe_var = tk.BooleanVar(value=bool(rules_data.get("youtube_safe_prune", True)))
+        ctk.CTkSwitch(
+            yt_row,
+            text="YouTube Safe Ad-Prune (Never Breaks googlevideo Playback)",
+            variable=yt_safe_var,
+            font=self.fonts["caption"],
+            progress_color=p.accent_jade,
+            command=lambda: self._on_toggle_youtube_safe_prune(bool(yt_safe_var.get())),
+        ).pack(side="left")
+        ctk.CTkButton(
+            yt_row,
+            text="Sync Standard Pi-hole Lists",
+            height=26,
+            fg_color=p.accent_cyan,
+            text_color="#071217",
+            font=self.fonts["caption"],
+            command=self._on_sync_pihole_lists,
+        ).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(
+            yt_row,
+            text="Export YouTube Browser Ad-Pruner (.user.js)",
+            height=26,
+            fg_color=p.bg_elevated,
+            font=self.fonts["caption"],
+            command=self._on_export_youtube_adprune,
+        ).pack(side="right", padx=4)
+
+        browsers = self.adblock_shield.detect_installed_browsers()
+        if browsers:
+            b_summary = ", ".join(
+                f"{b['name']} ({'uBlock OK' if b['has_ublock'] else 'no uBlock detected'})" for b in browsers[:5]
+            )
+            ctk.CTkLabel(
+                ab_card,
+                text=f"Detected Browsers: {b_summary}",
+                font=self.fonts["caption"],
+                text_color=p.text_muted,
+            ).pack(anchor="w", padx=14, pady=(0, 6))
 
         dom_row = ctk.CTkFrame(ab_card, fg_color="transparent")
         dom_row.pack(fill="x", padx=14, pady=(0, 10))
@@ -2493,6 +2609,74 @@ class AstraCradleApp(ctk.CTk):
                 self._render_modules(),
             ),
         ).pack(side="left", padx=3)
+
+        # 0.5 BadUSB Guard (ON by Default) & Attached Hardware Monitor
+        ucard = ctk.CTkFrame(
+            self.mod_body, fg_color=p.bg_card, border_width=1, border_color=p.accent_jade, corner_radius=12
+        )
+        ucard.pack(fill="x", pady=(0, 8))
+        uhdr = ctk.CTkFrame(ucard, fg_color="transparent")
+        uhdr.pack(fill="x", padx=14, pady=(10, 4))
+        ctk.CTkLabel(
+            uhdr,
+            text="BadUSB Pre-Connection Guard & Live Peripheral Ping (ON by Default)",
+            font=self.fonts["body_bold"],
+            text_color=p.accent_jade,
+        ).pack(side="left")
+
+        badusb_var = tk.BooleanVar(value=bool(self.config_obj.badusb_guard_enabled))
+        ctk.CTkSwitch(
+            uhdr,
+            text="BadUSB Guard",
+            variable=badusb_var,
+            font=self.fonts["caption"],
+            progress_color=p.accent_jade,
+            command=lambda: self._on_toggle_badusb_guard(bool(badusb_var.get())),
+        ).pack(side="right", padx=(8, 0))
+
+        ctk.CTkButton(
+            uhdr,
+            text="Enforce Kernel USB Gate",
+            height=26,
+            fg_color=p.accent_cyan,
+            text_color="#071217",
+            font=self.fonts["caption"],
+            command=lambda: self._on_toggle_usb_strict_gate(True),
+        ).pack(side="right", padx=4)
+
+        periphs = self._latest_peripherals or self.usb_guard.scan_all_peripherals()
+        ctk.CTkLabel(
+            ucard,
+            text=(
+                f"Detected {len(periphs)} hardware/peripheral device(s). Newly plugged USB devices are pinged, "
+                "inspected for composite HID/Storage/Microcontroller BadUSB signatures, and allowed ONLY after clearing."
+            ),
+            font=self.fonts["small"],
+            text_color=p.text_secondary,
+            wraplength=self._content_wrap(120),
+            justify="left",
+        ).pack(anchor="w", padx=14, pady=(0, 6))
+        for dev in periphs[:8]:
+            drow = ctk.CTkFrame(ucard, fg_color=p.bg_elevated, corner_radius=8)
+            drow.pack(fill="x", padx=14, pady=(0, 4))
+            ctk.CTkLabel(
+                drow,
+                text=f"[{dev.bus.upper()} · {dev.status.upper()}] {dev.vendor} {dev.name} ({dev.plain_description})",
+                font=self.fonts["mono_small"],
+                text_color=p.accent_coral if dev.status == "blocked" else p.text_secondary,
+            ).pack(side="left", padx=10, pady=5)
+            if dev.bus == "usb" and dev.status == "blocked":
+                ctk.CTkButton(
+                    drow,
+                    text="Trust & Allow",
+                    width=96,
+                    height=22,
+                    fg_color=p.accent_jade,
+                    text_color="#071510",
+                    font=self.fonts["caption"],
+                    command=lambda d=dev: self._on_trust_usb(d),
+                ).pack(side="right", padx=8, pady=4)
+        ctk.CTkFrame(ucard, height=4, fg_color="transparent").pack()
 
         # 1. Privacy Trace Sweeper (Consent-Gated)
         pcard = ctk.CTkFrame(
@@ -4515,6 +4699,8 @@ class AstraCradleApp(ctk.CTk):
         self._poll_job = self.after(ms, self._poll_tick)
 
     def _poll_tick(self) -> None:
+        if self._show_startup_popups and self.config_obj.show_tray_icon:
+            self.tray.ensure_running()
         if not self._is_busy:
             self.refresh_telemetry_async(include_dns=False, also_scan=False)
         self._schedule_telemetry_poll()
@@ -4595,11 +4781,32 @@ class AstraCradleApp(ctk.CTk):
                     self.show_toast(f"Full PC Discovery note: {item[1]}", color=self.palette.accent_coral)
                     continue
 
-                if len(item) == 4 and isinstance(item[0], SystemSnapshot):
-                    snap, report, pb, gpu = item
+                if first == "pihole_synced":
+                    msg = item[1]
+                    self.show_toast(str(msg))
+                    if self.current_nav == "modules":
+                        self._render_modules()
+                    continue
+
+                if len(item) >= 4 and isinstance(item[0], SystemSnapshot):
+                    snap, report, pb, gpu = item[0], item[1], item[2], item[3]
+                    if len(item) >= 6:
+                        self._latest_sensors = item[4] or {}
+                        self._latest_conflicts = item[5] or []
+                    if len(item) >= 8:
+                        self._latest_peripherals = item[6] or []
+                        for uev in (item[7] or []):
+                            if uev.event_type == "new_device_blocked":
+                                self.show_toast(uev.message, color=self.palette.accent_coral)
+                                self.tray.notify("BadUSB BLOCKED", uev.message)
+                            else:
+                                self.show_toast(uev.message, color=self.palette.accent_jade)
+                                self.tray.notify("New Hardware Ping", uev.message)
                     self._latest_gpu = gpu
-                else:
+                elif len(item) == 3 and isinstance(item[0], SystemSnapshot):
                     snap, report, pb = item
+                else:
+                    continue
                 self.latest_snapshot = snap
                 self.leak_watchdog.record_snapshot(snap.top_processes)
                 ad_act, ad_sid, ad_app = self.auto_detector.evaluate(snap.top_processes, self.config_obj)
@@ -4666,6 +4873,8 @@ class AstraCradleApp(ctk.CTk):
             self._drain_job = self.after(120, self._drain_ui_queue)
 
     def refresh_telemetry_async(self, include_dns: bool = False, also_scan: bool = False) -> None:
+        dry_now = bool(self.dry_run_var.get()) if hasattr(self, "dry_run_var") else bool(self.config_obj.dry_run_default)
+
         def worker():
             adapter = self._active_adapter()
             snap = self.telemetry.collect(
@@ -4675,9 +4884,17 @@ class AstraCradleApp(ctk.CTk):
                 consent_processes=self.config_obj.consent_process_scan,
             )
             gpu = GpuTelemetryCollector.collect()
+            sensors = TelemetryCollector.collect_detailed_sensors() if self.config_obj.consent_telemetry else {}
+            conflicts = self.conflict_detector.scan_conflicts() if self.config_obj.consent_process_scan else []
+            usb_events = (
+                self.usb_guard.poll_and_guard(self.config_obj, dry_run=dry_now)
+                if self.config_obj.consent_telemetry
+                else []
+            )
+            peripherals = self.usb_guard.scan_all_peripherals() if self.config_obj.consent_telemetry else []
             report = self.diagnostics.run_scan(snap, adapter, self.config_obj) if also_scan else None
             pb = self.playbook_builder.build(report, self.config_obj) if report else None
-            self._ui_queue.put((snap, report, pb, gpu))
+            self._ui_queue.put((snap, report, pb, gpu, sensors, conflicts, peripherals, usb_events))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -4720,6 +4937,8 @@ class AstraCradleApp(ctk.CTk):
             self.gpu_val_lbl.configure(text="Integrated")
             self.gpu_sub_lbl.configure(text=gpu.name)
             self.gpu_spark.push(snap.cpu_percent * 0.35)
+
+        self._update_command_deck_diagnostics(snap, gpu)
 
     def _update_diagnosis_overview(self, report: DiagnosticReport, pb: Playbook) -> None:
         p = self.palette
@@ -5319,6 +5538,475 @@ class AstraCradleApp(ctk.CTk):
             self.show_toast("Copied commands to clipboard!")
         except Exception:
             self.show_toast("Clipboard unavailable in headless display.")
+
+    # ------------------------------------------------------------------
+    # Command Deck: 1-Button Setup & Deploy Hub + Full Live Diagnostics
+    # ------------------------------------------------------------------
+    def _build_command_deck_deploy_hub(self) -> None:
+        p = self.palette
+        for c in self.dash_deploy_frame.winfo_children():
+            c.destroy()
+        hdr = ctk.CTkFrame(self.dash_deploy_frame, fg_color="transparent")
+        hdr.pack(fill="x", padx=16, pady=(10, 4))
+        ctk.CTkLabel(
+            hdr,
+            text="1-Button Automatic Setup & Deploy Control Center",
+            font=self.fonts["body_bold"],
+            text_color=p.accent_cyan,
+        ).pack(side="left")
+        ctk.CTkButton(
+            hdr,
+            text="Deploy All Toggled Fixes Now",
+            height=30,
+            fg_color=p.accent_jade,
+            hover_color=p.accent_jade_hover,
+            text_color="#071510",
+            font=self.fonts["body_bold"],
+            command=self._deploy_selected_command_deck_items,
+        ).pack(side="right")
+
+        ctk.CTkLabel(
+            self.dash_deploy_frame,
+            text=(
+                "Toggle the items you want and click 'Deploy All Toggled Fixes Now', or hit any single "
+                "'Auto Setup & Deploy' button below to solve it immediately."
+            ),
+            font=self.fonts["small"],
+            text_color=p.text_secondary,
+        ).pack(anchor="w", padx=16, pady=(0, 6))
+
+        self._deploy_vars: dict[str, tk.BooleanVar] = {}
+        items = [
+            ("astrashield_yt", "AstraShield Ad/Tracker Blocker + YouTube Safe Ad-Prune", True),
+            ("pihole_sync", "Download & Sync Standard Pi-hole Blocklists", True),
+            ("stop_conflicts", "Turn Off Conflicting Background Tools (DNS/Fan/Optimizer)", True),
+            ("badusb_guard", "BadUSB Pre-Connection Gate + Active Peripheral Ping (Default ON)", bool(self.config_obj.badusb_guard_enabled)),
+            ("fast_dns", "Apply Fast-DNS (Cloudflare 1.1.1.1)", False),
+            ("safe_fix_ram", "Free Standby RAM + 1-Click Safe Storage/Ghost Sweep", True),
+            ("probalance", "Enable ProBalance CPU Hog Restraint", bool(self.config_obj.probalance_enabled)),
+            ("shortcuts_icon", "Install Desktop Icon, App Menu & System Tray Shortcuts", True),
+        ]
+        for key, label, default_on in items:
+            var = tk.BooleanVar(value=default_on)
+            self._deploy_vars[key] = var
+            row = ctk.CTkFrame(self.dash_deploy_frame, fg_color=p.bg_elevated, corner_radius=8)
+            row.pack(fill="x", padx=16, pady=2)
+            ctk.CTkCheckBox(row, text=label, variable=var, font=self.fonts["small"]).pack(
+                side="left", padx=10, pady=5
+            )
+            ctk.CTkButton(
+                row,
+                text="Auto Setup & Deploy",
+                width=142,
+                height=24,
+                fg_color=p.accent_cyan,
+                text_color="#071217",
+                font=self.fonts["caption"],
+                command=lambda k=key: self._run_single_setup_deploy(k),
+            ).pack(side="right", padx=8, pady=4)
+        ctk.CTkFrame(self.dash_deploy_frame, height=8, fg_color="transparent").pack()
+
+    def _run_single_setup_deploy(self, key: str, quiet: bool = False) -> tuple[bool, str]:
+        dry = bool(self.dry_run_var.get())
+        if key == "astrashield_yt":
+            rd = self.adblock_shield.load_rules()
+            rd["youtube_safe_prune"] = True
+            cats = set(rd.get("categories", [])) | {"ads", "youtube_ads", "trackers", "telemetry", "malware"}
+            rd["categories"] = sorted(cats)
+            self.adblock_shield.save_rules(rd)
+            js_p, _ = self.adblock_shield.export_youtube_ad_prune_assets()
+            ok_h, msg_h = self.adblock_shield.enable_hosts_sinkhole(rd["categories"], dry_run=dry)
+            ok_d, msg_d = self.adblock_shield.start_dns_sinkhole(
+                port=self.config_obj.astrashield_dns_port,
+                upstream=self.config_obj.astrashield_upstream_dns,
+            )
+            self.config_obj.astrashield_enabled = bool(ok_h)
+            self.config_obj.astrashield_youtube_safe_prune = True
+            self.cfg_mgr.save(self.config_obj)
+            res_msg = f"AstraShield + YouTube Ad-Pruner ready ({js_p.name}): {msg_h} | {msg_d}"
+            if not quiet:
+                self.show_toast(res_msg)
+            return ok_h or ok_d, res_msg
+
+        if key == "pihole_sync":
+            ok_p, msg_p, _ = self.adblock_shield.download_pihole_blocklists(timeout=10.0)
+            if ok_p and self.adblock_shield.is_hosts_active() and not dry:
+                self.adblock_shield.enable_hosts_sinkhole(self.config_obj.astrashield_categories, dry_run=False)
+            if not quiet:
+                self.show_toast(msg_p)
+            return ok_p, msg_p
+
+        if key == "stop_conflicts":
+            conflicts = self.conflict_detector.scan_conflicts()
+            if not conflicts:
+                msg_c = "Zero conflicting programs or services running."
+                if not quiet:
+                    self.show_toast(msg_c)
+                return True, msg_c
+            stopped = 0
+            last_msg = ""
+            for cf in conflicts:
+                ok_c, last_msg = self.conflict_detector.stop_conflict(cf, dry_run=dry, elevation=self.elevation)
+                if ok_c:
+                    stopped += 1
+            msg_c = f"Processed {stopped}/{len(conflicts)} conflicting tool(s). {last_msg}"
+            if not quiet:
+                self.show_toast(msg_c)
+                self.refresh_telemetry_async(include_dns=False, also_scan=False)
+            return stopped > 0, msg_c
+
+        if key == "badusb_guard":
+            self.config_obj.badusb_guard_enabled = True
+            self.config_obj.usb_strict_gate = True
+            self.cfg_mgr.save(self.config_obj)
+            ok_u, msg_u = self.usb_guard.set_strict_precheck_gate(True, dry_run=dry)
+            if not quiet:
+                self.show_toast(msg_u)
+            return ok_u, msg_u
+
+        if key == "fast_dns":
+            ok_n, msg_n = self.net_dns_inspector.apply_dns_preset(
+                "Cloudflare (1.1.1.1)", dry_run=dry, elevation=self.elevation
+            )
+            if not quiet:
+                self.show_toast(msg_n)
+            return ok_n, msg_n
+
+        if key == "safe_fix_ram":
+            ok_r, msg_r, _ = self.ram_standby_mgr.trim_standby_ram(dry_run=dry, elevation=self.elevation)
+            _, _, notes = self.safe_fixer.run_fix_everything_safe(
+                self._active_adapter(), self.config_obj, dry_run=dry
+            )
+            msg_all = f"{msg_r} | {' ; '.join(notes[:2])}"
+            if not quiet:
+                self.show_toast(msg_all)
+            return ok_r, msg_all
+
+        if key == "probalance":
+            self.config_obj.probalance_enabled = True
+            self.cfg_mgr.save(self.config_obj)
+            msg_pb = "ProBalance CPU Hog Restraint enabled."
+            if not quiet:
+                self.show_toast(msg_pb)
+            return True, msg_pb
+
+        if key == "shortcuts_icon":
+            repo_root = Path(__file__).resolve().parents[2]
+            created = self.lifecycle.install_shortcuts(repo_root)
+            self.tray.ensure_running()
+            msg_s = f"Installed {len(created)} AstraCradle icon/desktop shortcut(s) and refreshed system tray."
+            if not quiet:
+                self.show_toast(msg_s)
+            return True, msg_s
+
+        return False, f"Unknown setup action '{key}'."
+
+    def _deploy_selected_command_deck_items(self) -> None:
+        selected = [k for k, v in getattr(self, "_deploy_vars", {}).items() if v.get()]
+        if not selected:
+            self.show_toast("Toggle at least one setup item first.")
+            return
+        results: list[str] = []
+        for k in selected:
+            ok, msg = self._run_single_setup_deploy(k, quiet=True)
+            results.append(f"{'OK' if ok else 'WARN'} [{k}]: {msg}")
+        self.show_toast(f"Deployed {len(selected)} toggled setup action(s)!")
+        if self._show_startup_popups:
+            messagebox.showinfo("AstraCradle Batch Setup & Deploy Complete", "\n\n".join(results))
+        self.refresh_telemetry_async(include_dns=True, also_scan=True)
+
+    def _update_command_deck_diagnostics(self, snap: SystemSnapshot, gpu=None) -> None:
+        if not hasattr(self, "dash_diag_panel") or not self.dash_diag_panel.winfo_exists():
+            return
+        p = self.palette
+        for c in self.dash_diag_panel.winfo_children():
+            c.destroy()
+
+        hdr = ctk.CTkFrame(self.dash_diag_panel, fg_color="transparent")
+        hdr.pack(fill="x", padx=16, pady=(10, 4))
+        ctk.CTkLabel(
+            hdr,
+            text="Live System Diagnostics, Temperatures, Sensors & Attached Peripherals",
+            font=self.fonts["body_bold"],
+            text_color=p.accent_cyan,
+        ).pack(side="left")
+        shield_st = self.adblock_shield.status()
+        ctk.CTkLabel(
+            hdr,
+            text=f"AstraShield: {shield_st.blocked_domain_count:,} domains · BadUSB Guard: {'ON' if self.config_obj.badusb_guard_enabled else 'OFF'}",
+            font=self.fonts["mono_small"],
+            text_color=p.accent_jade if self.config_obj.badusb_guard_enabled else p.accent_brass,
+        ).pack(side="right")
+
+        sensors = self._latest_sensors or {}
+        temps = sensors.get("temperatures") or []
+        fans = sensors.get("fans") or []
+        bat = sensors.get("battery")
+        freq = sensors.get("cpu_freq") or {}
+
+        grid = ctk.CTkFrame(self.dash_diag_panel, fg_color="transparent")
+        grid.pack(fill="x", padx=14, pady=(0, 8))
+        grid.grid_columnconfigure((0, 1), weight=1)
+
+        # Left column: Temperatures, Fans, GPU & Power
+        left = ctk.CTkFrame(grid, fg_color=p.bg_elevated, corner_radius=8)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=2)
+        ctk.CTkLabel(left, text="Thermals, Fans & GPU Power", font=self.fonts["body_bold"], text_color=p.accent_brass).pack(
+            anchor="w", padx=10, pady=(8, 4)
+        )
+        if temps:
+            for t in temps[:10]:
+                st = str(t.get("status", "ok")).upper()
+                col = p.accent_coral if st == "CRIT" else (p.accent_brass if st == "WARN" else p.accent_jade)
+                ctk.CTkLabel(
+                    left,
+                    text=f"  • {t.get('chip')}:{t.get('label')}: {t.get('current_c')}°C [{st}]",
+                    font=self.fonts["mono_small"],
+                    text_color=col,
+                    anchor="w",
+                ).pack(fill="x", padx=10, pady=1)
+        else:
+            ctk.CTkLabel(
+                left,
+                text=f"  • Primary Sensor: {f'{snap.temperature_c:.1f}°C' if snap.temperature_c else 'N/A (VM/No hwmon)'}",
+                font=self.fonts["mono_small"],
+                text_color=p.text_secondary,
+                anchor="w",
+            ).pack(fill="x", padx=10, pady=1)
+        if fans:
+            for f in fans[:5]:
+                ctk.CTkLabel(
+                    left,
+                    text=f"  • Fan {f.get('chip')}:{f.get('label')}: {f.get('rpm')} RPM",
+                    font=self.fonts["mono_small"],
+                    text_color=p.text_secondary,
+                    anchor="w",
+                ).pack(fill="x", padx=10, pady=1)
+        gpu_live = GpuPowerAndFanController.probe_live_power_and_fan()
+        ctk.CTkLabel(
+            left,
+            text=f"  • GPU: {gpu_live.get('name', 'Integrated')} · Temp {gpu_live.get('temp_c')}°C · Power {gpu_live.get('power_draw_w')}W · Fan {gpu_live.get('fan_percent')}%",
+            font=self.fonts["mono_small"],
+            text_color=p.text_secondary,
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(1, 8))
+
+        # Right column: CPU/RAM/Storage/Battery/Network
+        right = ctk.CTkFrame(grid, fg_color=p.bg_elevated, corner_radius=8)
+        right.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=2)
+        ctk.CTkLabel(right, text="Compute, Storage, Battery & Network", font=self.fonts["body_bold"], text_color=p.accent_cyan).pack(
+            anchor="w", padx=10, pady=(8, 4)
+        )
+        load_txt = f"{snap.load_avg}" if snap.load_avg else "N/A"
+        ctk.CTkLabel(
+            right,
+            text=f"  • CPU Clock: {freq.get('current_mhz') or snap.cpu_freq_mhz or 'Auto'} MHz · Load Avg: {load_txt}",
+            font=self.fonts["mono_small"],
+            text_color=p.text_secondary,
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=1)
+        for part in snap.partitions[:4]:
+            ctk.CTkLabel(
+                right,
+                text=f"  • Disk {part.mountpoint} ({part.fstype}): {part.percent:.1f}% used ({format_bytes(part.free_bytes)} free)",
+                font=self.fonts["mono_small"],
+                text_color=p.accent_coral if part.percent >= 90 else p.text_secondary,
+                anchor="w",
+            ).pack(fill="x", padx=10, pady=1)
+        if bat:
+            ctk.CTkLabel(
+                right,
+                text=f"  • Battery: {bat.get('percent')}% ({'Plugged In' if bat.get('plugged') else 'On Battery'})",
+                font=self.fonts["mono_small"],
+                text_color=p.text_secondary,
+                anchor="w",
+            ).pack(fill="x", padx=10, pady=1)
+        ctk.CTkLabel(
+            right,
+            text=f"  • Processes: {snap.process_count} active · Tray Visible: {'YES' if self.tray.running else 'Fallback'}",
+            font=self.fonts["mono_small"],
+            text_color=p.text_secondary,
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(1, 8))
+
+        # Attached USB & Peripherals Summary + BadUSB Guard
+        periphs = self._latest_peripherals or []
+        if periphs:
+            prow_hdr = ctk.CTkFrame(self.dash_diag_panel, fg_color="transparent")
+            prow_hdr.pack(fill="x", padx=16, pady=(2, 2))
+            ctk.CTkLabel(
+                prow_hdr,
+                text=f"Attached USB & Hardware Peripherals ({len(periphs)} detected · BadUSB Guard ON)",
+                font=self.fonts["body_bold"],
+            ).pack(side="left")
+            for dev in periphs[:8]:
+                drow = ctk.CTkFrame(self.dash_diag_panel, fg_color=p.bg_elevated, corner_radius=6)
+                drow.pack(fill="x", padx=16, pady=1)
+                badge_col = p.accent_coral if dev.status == "blocked" else p.accent_jade
+                ctk.CTkLabel(
+                    drow,
+                    text=f"[{dev.bus.upper()} · {dev.status.upper()}] {dev.vendor} {dev.name} — {dev.plain_description}",
+                    font=self.fonts["mono_small"],
+                    text_color=badge_col if dev.bus == "usb" else p.text_secondary,
+                    anchor="w",
+                ).pack(side="left", padx=8, pady=3)
+                if dev.bus == "usb" and dev.status == "blocked":
+                    ctk.CTkButton(
+                        drow,
+                        text="Trust & Allow",
+                        width=96,
+                        height=20,
+                        fg_color=p.accent_jade,
+                        text_color="#071510",
+                        font=self.fonts["caption"],
+                        command=lambda d=dev: self._on_trust_usb(d),
+                    ).pack(side="right", padx=6, pady=2)
+        ctk.CTkFrame(self.dash_diag_panel, height=8, fg_color="transparent").pack()
+
+        # Conflicting Programs + AI Diagnostic Handoff Panel
+        if hasattr(self, "dash_conflicts_frame") and self.dash_conflicts_frame.winfo_exists():
+            for c in self.dash_conflicts_frame.winfo_children():
+                c.destroy()
+            chdr = ctk.CTkFrame(self.dash_conflicts_frame, fg_color="transparent")
+            chdr.pack(fill="x", padx=16, pady=(10, 4))
+            ctk.CTkLabel(
+                chdr,
+                text="Conflicting Background Software & AI Diagnostic Handoff",
+                font=self.fonts["body_bold"],
+            ).pack(side="left")
+            ctk.CTkButton(
+                chdr,
+                text="Consolidate & Export AI Diagnostic Log",
+                height=26,
+                fg_color=p.accent_cyan,
+                text_color="#071217",
+                font=self.fonts["caption"],
+                command=self.on_export_ai_diagnostic_bundle,
+            ).pack(side="right")
+
+            conflicts = self._latest_conflicts or []
+            if not conflicts:
+                ctk.CTkLabel(
+                    self.dash_conflicts_frame,
+                    text="Zero conflicting DNS, adblock, fan-curve, or optimizer daemons detected on this PC.",
+                    font=self.fonts["small"],
+                    text_color=p.accent_jade,
+                ).pack(anchor="w", padx=16, pady=(0, 10))
+            else:
+                for cf in conflicts[:6]:
+                    crow = ctk.CTkFrame(self.dash_conflicts_frame, fg_color=p.bg_elevated, corner_radius=8)
+                    crow.pack(fill="x", padx=16, pady=2)
+                    ctk.CTkLabel(
+                        crow,
+                        text=f"[{cf.severity.upper()}] {cf.name} ({cf.service_unit or f'PID {cf.pid}'}) — {cf.reason}",
+                        font=self.fonts["small"],
+                        text_color=p.accent_brass,
+                        anchor="w",
+                    ).pack(side="left", padx=10, pady=5)
+                    ctk.CTkButton(
+                        crow,
+                        text="Turn Off Safely",
+                        width=116,
+                        height=24,
+                        fg_color=p.badge_crit_bg,
+                        text_color=p.badge_crit_fg,
+                        font=self.fonts["caption"],
+                        command=lambda item=cf: self._on_stop_conflict(item),
+                    ).pack(side="right", padx=8, pady=4)
+                ctk.CTkFrame(self.dash_conflicts_frame, height=6, fg_color="transparent").pack()
+
+    def on_export_ai_diagnostic_bundle(self) -> None:
+        snap_dict = asdict(self.latest_snapshot) if self.latest_snapshot else {}
+        gpu_live = GpuPowerAndFanController.probe_live_power_and_fan()
+        conflicts_list = [asdict(c) for c in (self._latest_conflicts or self.conflict_detector.scan_conflicts())]
+        shield_dict = asdict(self.adblock_shield.status())
+        crash_dict = asdict(self.startup_crash_report) if self.startup_crash_report else {}
+        audit_list = [asdict(a) for a in (self.latest_audit or [])]
+        res = self.ai_exporter.export_ai_handoff_bundle(
+            snapshot_data=snap_dict,
+            sensors_data=self._latest_sensors,
+            gpu_data=gpu_live,
+            conflicts_data=conflicts_list,
+            shield_status=shield_dict,
+            crash_report=crash_dict,
+            self_audit=audit_list,
+        )
+        msg = (
+            f"Exported AI Diagnostic Log ({res['anomaly_count']} flag(s), {res['archived_count']} archived) -> {res['zip']}"
+        )
+        self._copy_text(str(res["markdown"]))
+        self.show_toast(msg)
+        if self._show_startup_popups:
+            messagebox.showinfo(
+                "AI Diagnostic & Forensic Archive Ready",
+                f"Share either file below with Arena or any AI assistant to diagnose issues:\n\n"
+                f"• Markdown Report: {res['markdown']}\n"
+                f"• Full JSON Bundle: {res['json']}\n"
+                f"• Complete Zip Archive: {res['zip']}\n\n"
+                f"Report path copied to clipboard!",
+            )
+
+    def _on_stop_conflict(self, conflict) -> None:
+        ok, msg = self.conflict_detector.stop_conflict(
+            conflict, dry_run=bool(self.dry_run_var.get()), elevation=self.elevation
+        )
+        self.show_toast(msg, color=self.palette.accent_jade if ok else self.palette.accent_coral)
+        self.refresh_telemetry_async(include_dns=False, also_scan=False)
+
+    def _on_sync_pihole_lists(self) -> None:
+        self.show_toast("Downloading standard Pi-hole blocklists (with YouTube playback safety)...")
+
+        def worker() -> None:
+            ok, msg, cnt = self.adblock_shield.download_pihole_blocklists(timeout=12.0)
+            if ok and self.adblock_shield.is_hosts_active() and not bool(self.dry_run_var.get()):
+                self.adblock_shield.enable_hosts_sinkhole(self.config_obj.astrashield_categories, dry_run=False)
+            self._ui_queue.put(("pihole_synced", msg, cnt))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_toggle_youtube_safe_prune(self, enable: bool) -> None:
+        rd = self.adblock_shield.load_rules()
+        rd["youtube_safe_prune"] = bool(enable)
+        self.adblock_shield.save_rules(rd)
+        self.config_obj.astrashield_youtube_safe_prune = bool(enable)
+        self.cfg_mgr.save(self.config_obj)
+        self.show_toast(
+            "YouTube Safe Ad-Prune ON (blocks ad beacons while protecting video playback)."
+            if enable
+            else "YouTube Safe Ad-Prune toggled OFF."
+        )
+        self._render_modules()
+
+    def _on_export_youtube_adprune(self) -> None:
+        js_path, flt_path = self.adblock_shield.export_youtube_ad_prune_assets()
+        self._copy_text(str(js_path))
+        self.show_toast(f"Generated YouTube Ad-Pruner: {js_path.name} & {flt_path.name}")
+        if self._show_startup_popups:
+            messagebox.showinfo(
+                "YouTube Safe Ad-Pruner Ready",
+                f"Generated browser-safe YouTube ad-pruning files:\n\n"
+                f"1. Userscript (Tampermonkey / Violentmonkey):\n   {js_path}\n\n"
+                f"2. uBlock Origin / AdGuard Filter List:\n   {flt_path}\n\n"
+                f"Path copied to clipboard!",
+            )
+
+    def _on_trust_usb(self, dev) -> None:
+        _, msg = self.usb_guard.trust_device(dev, self.config_obj, self.cfg_mgr)
+        self.show_toast(msg)
+        self.refresh_telemetry_async(include_dns=False, also_scan=False)
+
+    def _on_toggle_badusb_guard(self, enable: bool) -> None:
+        self.config_obj.badusb_guard_enabled = bool(enable)
+        self.cfg_mgr.save(self.config_obj)
+        self.show_toast(f"BadUSB Guard {'ENABLED (Default)' if enable else 'DISABLED'}.")
+        self._render_modules()
+
+    def _on_toggle_usb_strict_gate(self, enable: bool) -> None:
+        self.config_obj.usb_strict_gate = bool(enable)
+        self.cfg_mgr.save(self.config_obj)
+        _, msg = self.usb_guard.set_strict_precheck_gate(enable, dry_run=bool(self.dry_run_var.get()))
+        self.show_toast(msg)
+        self._render_modules()
 
 
 def launch_gui(base_dir: Path | str | None = None, start_minimized: bool = False) -> None:

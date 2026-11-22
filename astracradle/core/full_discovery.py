@@ -32,6 +32,7 @@ from .telemetry_history import (
     TelemetryHistoryDB,
 )
 from .thermal_spc import ThermalSpcMonitor
+from .usb_guard import UsbAndPeripheralGuard
 
 
 @dataclass
@@ -63,6 +64,10 @@ class FullSystemBaseline:
     integrity_status: str = "ok"
     active_window: str = ""
     preflight_status: str = ""
+    peripherals_count: int = 0
+    usb_devices_count: int = 0
+    badusb_flagged_count: int = 0
+    peripherals: list[dict[str, Any]] = field(default_factory=list)
     subsystems_checked: list[str] = field(default_factory=list)
     summary_lines: list[str] = field(default_factory=list)
     baseline_json_path: str = ""
@@ -175,6 +180,34 @@ class FullSystemDiscoveryEngine:
         shield_status = "modified" if any(s.status == "modified" for s in shield) else "clean"
         checked.append("Network, Hosts, Shield, Focus & 48h Driver Changes")
 
+        # 8.5 Full USB & Peripheral Hardware Inventory + BadUSB Safety Check
+        usb_guard = UsbAndPeripheralGuard(self.cfg_mgr, self.journal)
+        peripherals = usb_guard.scan_all_peripherals() if config.consent_telemetry else []
+        usb_only = [d for d in peripherals if d.bus == "usb"]
+        badusb_flagged = 0
+        periph_dicts: list[dict[str, Any]] = []
+        for dev in peripherals:
+            if dev.bus == "usb" and getattr(config, "badusb_guard_enabled", True):
+                safe, reasons = usb_guard.evaluate_badusb(dev, config)
+                if not safe:
+                    dev.status = "blocked"
+                    dev.badusb_reasons = reasons
+                    badusb_flagged += 1
+                else:
+                    dev.status = "cleared"
+            periph_dicts.append(
+                {
+                    "bus": dev.bus,
+                    "name": dev.name,
+                    "vendor": dev.vendor,
+                    "vid": dev.vid,
+                    "pid": dev.pid,
+                    "status": dev.status,
+                    "description": dev.plain_description,
+                }
+            )
+        checked.append("USB & All Peripherals + BadUSB Audit")
+
         # 9. Seed initial Multi-Res Telemetry & Thermal SPC baseline sample
         if history_db is not None:
             history_db.record_tick(snap, playbook.health_score, persist_db=True)
@@ -191,6 +224,7 @@ class FullSystemDiscoveryEngine:
             f"Storage & SMART: {passport.storage_summary} · {len(smart_disks)} disk(s) checked · Reclaimable {format_bytes(playbook.total_reclaimable_bytes)}",
             f"Equilibrium Score: {playbook.health_score}/100 across {len(report.findings)} diagnostic finding(s)",
             f"Autoruns & Apps: {len(apps)} installed app(s), {len(autoruns)} autorun/service entry(s), {len(ghosts)} ghost driver item(s)",
+            f"USB & Peripherals: {len(peripherals)} attached device(s) ({len(usb_only)} USB, {badusb_flagged} BadUSB flag(s))",
             f"Latency & Network: DPC p95 {lat_rep.p95_us} us ({lat_rep.grade}) · {len(lat_rep.irq_sources)} IRQ(s) · Hosts {hosts_res.status.upper()} · {len(net_apps)} active net app(s)",
         ]
 
@@ -222,6 +256,10 @@ class FullSystemDiscoveryEngine:
             integrity_status=shield_status,
             active_window=f"{focus.window_title} ({focus.process_name})",
             preflight_status=pf_msg,
+            peripherals_count=len(peripherals),
+            usb_devices_count=len(usb_only),
+            badusb_flagged_count=badusb_flagged,
+            peripherals=periph_dicts,
             subsystems_checked=checked,
             summary_lines=summary_lines,
         )
