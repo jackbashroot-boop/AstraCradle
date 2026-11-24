@@ -148,24 +148,28 @@ def get_ui_fonts(scale: float = 1.0) -> dict[str, tuple[str, int, str] | tuple[s
     if system == "Darwin":
         sans = "SF Pro Display"
         mono = "Menlo"
+        linux_adj = 1.0
     elif system == "Windows":
         sans = "Segoe UI"
         mono = "Consolas"
+        linux_adj = 1.0
     else:
         sans = "DejaVu Sans"
         mono = "DejaVu Sans Mono"
+        # DejaVu Sans renders noticeably wider/taller per point on Linux/KDE than Segoe UI / SF Pro
+        linux_adj = 0.90
 
     def sz(base: int) -> int:
-        return max(8, int(round(base * scale)))
+        return max(8, int(round(base * scale * linux_adj)))
 
     return {
-        "hero": (sans, sz(24), "bold"),
-        "title": (sans, sz(18), "bold"),
-        "section": (sans, sz(14), "bold"),
-        "body_bold": (sans, sz(12), "bold"),
-        "body": (sans, sz(12)),
-        "small": (sans, sz(11)),
-        "caption": (sans, sz(10)),
-        "mono": (mono, sz(11)),
-        "mono_small": (mono, sz(10)),
+        "hero": (sans, sz(22), "bold"),
+        "title": (sans, sz(16), "bold"),
+        "section": (sans, sz(13), "bold"),
+        "body_bold": (sans, sz(11), "bold"),
+        "body": (sans, sz(11)),
+        "small": (sans, sz(10)),
+        "caption": (sans, sz(9)),
+        "mono": (mono, sz(10)),
+        "mono_small": (mono, sz(9)),
     }

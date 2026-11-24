@@ -214,3 +214,35 @@ def test_3d_hover_gif_transparency_and_taskbar_boost_animation() -> None:
         finally:
             app.destroy()
 
+
+def test_no_font_double_scaling_and_yes_no_dialog_no_clipping() -> None:
+    from astracradle.theme import get_palette, get_ui_fonts
+    from astracradle.ui.app import AstraCradleApp
+    from astracradle.ui.modals import YesNoActionDialog
+
+    with tempfile.TemporaryDirectory() as td:
+        app = AstraCradleApp(base_dir=td, show_startup_popups=False)
+        try:
+            app.update()
+            # Fonts must not be double-scaled on top of ctk.set_widget_scaling
+            assert app.fonts["body"][1] == get_ui_fonts(1.0)["body"][1]
+
+            dlg = YesNoActionDialog(
+                app,
+                get_palette("Obsidian Horology"),
+                app.fonts,
+                "Less-Traffic Wi-Fi Channel Recommended",
+                "Switch 'Duffwifi' from 5GHz Ch 157 to 2.4GHz Ch 11 (F6:C1:14:F8:66:7C)?",
+                detail_lines=[
+                    "Cleanest RF channels right now -> 2.4GHz: ch 11 | 5GHz: ch 44 | 6GHz: ch 1.",
+                    "Active link: 'Duffwifi' (F6:C1:14:FF:66:7D) (Signal 52%, Interference 88.0).",
+                    "Current BSSID is already on the cleanest available channel for this SSID.",
+                ],
+            )
+            dlg.update()
+            assert dlg.winfo_width() >= 540
+            assert dlg.winfo_height() >= dlg.winfo_reqheight()
+            dlg.destroy()
+        finally:
+            app.destroy()
+

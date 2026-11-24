@@ -309,7 +309,8 @@ class AstraCradleApp(ctk.CTk):
             )
 
         self.palette: ThemePalette = get_palette(self.config_obj.theme)
-        self.fonts = get_ui_fonts(self._scale_float())
+        # CustomTkinter's set_widget_scaling() already scales fonts & widget sizes; keep font scale=1.0 to avoid double-scaling
+        self.fonts = get_ui_fonts(1.0)
         ctk.set_appearance_mode(self.palette.mode)
         self._apply_ui_scale()
         self.tray = TrayController(
@@ -496,13 +497,15 @@ class AstraCradleApp(ctk.CTk):
                 sw = int(self.winfo_screenwidth() or 1920)
             except Exception:
                 sw = 1920
-            if sw >= 3400:
-                return 1.35
-            if sw >= 2400:
-                return 1.15
-            return 1.0
+            try:
+                dpi_scale = max(1.0, float(self.winfo_fpixels("1i") or 96.0) / 96.0)
+            except Exception:
+                dpi_scale = 1.0
+            target = 1.18 if sw >= 3400 else (1.08 if sw >= 2400 else 1.0)
+            # Avoid compounding on top of desktop environment DPI scaling (e.g. KDE 125%-150%)
+            return max(0.80, min(1.30, target / dpi_scale))
         try:
-            return max(0.85, min(1.75, float(raw.replace("%", "").strip()) / 100.0))
+            return max(0.80, min(1.75, float(raw.replace("%", "").strip()) / 100.0))
         except Exception:
             return 1.0
 
@@ -933,6 +936,7 @@ class AstraCradleApp(ctk.CTk):
                 fg=p.text_primary,
                 activebackground=p.accent_cyan,
                 activeforeground="#0B1018",
+                font=self.fonts["small"],
                 relief="flat",
                 borderwidth=1,
             )
@@ -8481,7 +8485,7 @@ class AstraCradleApp(ctk.CTk):
         active_pb = self.current_pb_tab
         active_auto = self.current_auto_tab
         self.palette = get_palette(self.config_obj.theme)
-        self.fonts = get_ui_fonts(self._scale_float())
+        self.fonts = get_ui_fonts(1.0)
         self._applied_scale = self.config_obj.ui_scale
         ctk.set_appearance_mode(self.palette.mode)
         self.configure(fg_color=self.palette.bg_canvas)

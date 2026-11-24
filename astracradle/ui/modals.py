@@ -16,6 +16,39 @@ from ..core.safeguard_plus import ProcessExplanation
 from ..theme import ThemePalette
 
 
+def _fit_and_center_dialog(
+    win,
+    master=None,
+    min_w: int = 460,
+    min_h: int = 240,
+    pad_w: int = 24,
+    pad_h: int = 24,
+) -> None:
+    """Auto-sizes a CTkToplevel dialog to its requested widget size so scaled fonts/buttons never clip."""
+    try:
+        win.update_idletasks()
+        sw = max(800, int(win.winfo_screenwidth() or 1280))
+        sh = max(600, int(win.winfo_screenheight() or 800))
+        req_w = int(win.winfo_reqwidth() or min_w) + pad_w
+        req_h = int(win.winfo_reqheight() or min_h) + pad_h
+        dw = min(sw - 40, max(min_w, req_w))
+        dh = min(sh - 60, max(min_h, req_h))
+        if master is not None and master.winfo_exists():
+            mx = int(master.winfo_rootx() or 0)
+            my = int(master.winfo_rooty() or 0)
+            mw = int(master.winfo_width() or sw)
+            mh = int(master.winfo_height() or sh)
+            px = max(12, min(sw - dw - 12, mx + (mw - dw) // 2))
+            py = max(12, min(sh - dh - 24, my + (mh - dh) // 2))
+        else:
+            px = max(12, (sw - dw) // 2)
+            py = max(12, (sh - dh) // 2)
+        win.geometry(f"{dw}x{dh}+{px}+{py}")
+        win.minsize(min(dw, min_w), min(dh, min_h))
+    except Exception:
+        pass
+
+
 class ConsentAutomationDialog(ctk.CTkToplevel):
     """First-load permission & full PC discovery onboarding wizard."""
 
@@ -277,7 +310,7 @@ class AutomationPromptDialog(ctk.CTkToplevel):
         )
         card.pack(fill="both", expand=True, padx=16, pady=16)
 
-        ctk.CTkLabel(card, text=title_txt, font=fonts["section"], text_color=palette.accent_cyan).pack(
+        ctk.CTkLabel(card, text=title_txt, font=fonts["section"], text_color=palette.accent_cyan, wraplength=480, justify="left").pack(
             anchor="w", padx=16, pady=(14, 6)
         )
         ctk.CTkLabel(
@@ -320,6 +353,7 @@ class AutomationPromptDialog(ctk.CTkToplevel):
             font=fonts["body"],
             command=lambda: self._pick("skip"),
         ).pack(side="right")
+        _fit_and_center_dialog(self, master, min_w=520, min_h=260)
 
     def _pick(self, choice: str) -> None:
         self.on_decision(choice)
@@ -873,7 +907,7 @@ class ProcessExplanationDialog(ctk.CTkToplevel):
         )
         card.pack(fill="both", expand=True, padx=16, pady=16)
         ctk.CTkLabel(
-            card, text=f"{info.name} — {info.role}", font=fonts["section"], text_color=palette.accent_cyan
+            card, text=f"{info.name} — {info.role}", font=fonts["section"], text_color=palette.accent_cyan, wraplength=480, justify="left"
         ).pack(anchor="w", padx=18, pady=(16, 6))
         status_txt = "ESSENTIAL / OS-PROTECTED" if info.essential else "USER / BACKGROUND PROCESS"
         ctk.CTkLabel(
@@ -901,6 +935,7 @@ class ProcessExplanationDialog(ctk.CTkToplevel):
             hover_color=palette.border_strong,
             command=self.destroy,
         ).pack(anchor="e", padx=18, pady=(0, 12))
+        _fit_and_center_dialog(self, master, min_w=500, min_h=280)
 
 
 class DryRunDiffDialog(ctk.CTkToplevel):
@@ -1227,6 +1262,7 @@ class SudoPasswordDialog(ctk.CTkToplevel):
             command=self._cancel,
         ).pack(side="left")
 
+        _fit_and_center_dialog(self, master, min_w=500, min_h=280)
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         try:
             self.grab_set()
@@ -1427,8 +1463,8 @@ class YesNoActionDialog(ctk.CTkToplevel):
     ) -> None:
         super().__init__(master)
         self.title(f"AstraCradle — {title_text}")
-        self.geometry("560x340")
-        self.resizable(False, False)
+        self.geometry("580x360")
+        self.resizable(True, True)
         self.configure(fg_color=palette.bg_canvas)
         self.approved: bool = False
 
@@ -1446,6 +1482,8 @@ class YesNoActionDialog(ctk.CTkToplevel):
             text=title_text,
             font=fonts["section"],
             text_color=palette.accent_cyan,
+            wraplength=500,
+            justify="left",
             anchor="w",
         ).pack(fill="x", padx=18, pady=(14, 4))
 
@@ -1454,7 +1492,7 @@ class YesNoActionDialog(ctk.CTkToplevel):
             text=summary,
             font=fonts["body_bold"],
             text_color=palette.text_primary,
-            wraplength=490,
+            wraplength=500,
             justify="left",
             anchor="w",
         ).pack(fill="x", padx=18, pady=(0, 8))
@@ -1468,7 +1506,7 @@ class YesNoActionDialog(ctk.CTkToplevel):
                     text=f"• {ln}",
                     font=fonts["small"],
                     text_color=palette.text_secondary,
-                    wraplength=470,
+                    wraplength=480,
                     justify="left",
                     anchor="w",
                 ).pack(fill="x", padx=12, pady=3)
@@ -1497,6 +1535,7 @@ class YesNoActionDialog(ctk.CTkToplevel):
             command=self._choose_yes,
         ).pack(side="right")
 
+        _fit_and_center_dialog(self, master, min_w=560, min_h=300)
         self.protocol("WM_DELETE_WINDOW", self._choose_no)
         self.transient(master)
         try:
