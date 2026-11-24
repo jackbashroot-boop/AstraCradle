@@ -2,6 +2,37 @@
 
 **Free, 100% local cross-platform PC optimizer, system diagnostics monitor, CPU affinity manager, thermal & DPC latency analyzer, and safe cleaner for Windows 10/11, macOS, and Linux.**
 
+<p align="center">
+  <a href="https://github.com/jackbashroot-boop/AstraCradle/archive/refs/heads/main.zip">
+    <img src="https://img.shields.io/badge/⬇_1--Click_Download_ZIP-All_OSes_(v2.5.1)-22c55e?style=for-the-badge" alt="Download AstraCradle ZIP">
+  </a>
+  &nbsp;
+  <a href="https://github.com/jackbashroot-boop/AstraCradle/releases/latest">
+    <img src="https://img.shields.io/badge/Standalone_Releases-Windows_·_macOS_·_Linux-06b6d4?style=for-the-badge" alt="Standalone Releases">
+  </a>
+  &nbsp;
+  <a href="https://jackbashroot-boop.github.io/AstraCradle/">
+    <img src="https://img.shields.io/badge/Official_Website-AstraCradle_Pages-eab308?style=for-the-badge" alt="Official Website">
+  </a>
+</p>
+
+## ⚡ 1-Command / 1-Button Install (Easiest Way)
+
+Pick your system — **no `git` or manual setup required**:
+
+- **Linux / CachyOS / macOS** *(paste into Terminal — `bash` or `fish`)*:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/jackbashroot-boop/AstraCradle/main/scripts/quick_install.sh | bash
+  ```
+- **Windows 10 / 11** *(paste into PowerShell)*:
+  ```powershell
+  irm https://raw.githubusercontent.com/jackbashroot-boop/AstraCradle/main/scripts/quick_install.ps1 | iex
+  ```
+- **Or 1-Click ZIP Download:** Click **[Download AstraCradle ZIP](https://github.com/jackbashroot-boop/AstraCradle/archive/refs/heads/main.zip)**, extract it, and run:
+  - **Windows:** double-click `Install_AstraCradle.bat`
+  - **macOS:** right-click `Install_AstraCradle.command` -> **Open**
+  - **Linux (Ubuntu / Arch / Fedora):** `./install_astracradle.sh` · **CachyOS (Fish):** `fish install_astracradle.fish`
+
 > **Supported Platforms:** Windows 10 / 11 · macOS (Apple Silicon & Intel) · Linux (Ubuntu, Debian, Fedora, Arch, Mint, CachyOS) · **100% Local Native Desktop GUI (Zero Cloud / Zero Web App)**
 
 **AstraCradle** is a modular, 100% local native desktop studio (zero web UI) built for **Windows**, **macOS**, and **Linux**. Designed to be effortless for beginners and deeply capable for power users, AstraCradle v2.5.1 includes 1-click setup, responsive scaling up to **4K (`3840x2160`)**, smooth vertical-only scrolling, an explicit **first-load permission-gated Full PC Baseline Discovery**, an interactive 3-step **Easy Guide**, live **GPU/VRAM & thermal throttling** telemetry, a **multi-resolution telemetry history graph (`60s / 5m / 30m / 1hr / 30d`)**, **PC Component Library & savable CPU-affinity/I/O presets** (Intel Hybrid P/E cores & AMD dual-CCD X3D), **customizable multi-stage Optimization Pipelines + local file/CLI hook connectors**, **ProBalance Foreground Boost & Auto-Reverted App Profiles**, **Interrupt Affinity & DPC Latency Guard**, **Interactive Draft-vs-Applied GPU Fan Curve Editor**, **Workload-Aware Welford Thermal SPC Baselines**, **Autoruns Startup/Task/Service Audit + Ghost Driver Cleanup**, **Evidence & Confidence % diagnostic scoring**, **1-click Everyday PC Glitch troubleshooters**, **Dry-Run file diff previews + instant Toast Undo + optional zero-pass shredder**, **48h driver/update crash blame**, **`.astracradle-pack.json` SHA-256 pack sharing**, automated native installer generators (`.iss`/`.dmg`/`.AppImage`), bottom-right system tray + minimize-to-tray support, and a zero-damage Clean Uninstaller.
@@ -37,7 +68,7 @@
 
 ### Install Directly From GitHub (fish / bash)
 ```fish
-git clone https://github.com/<your-username>/AstraCradle.git
+git clone https://github.com/jackbashroot-boop/AstraCradle.git
 cd AstraCradle
 # Linux / macOS:
 bash ./install_astracradle.sh
@@ -47,7 +78,7 @@ bash ./install_astracradle.sh
 
 ### Updates (Checks GitHub Repo First, Then Local)
 - Under **Settings & Updates**, AstraCradle checks your configured **Default GitHub Repo** (`update_repo_url` / cloned `origin`) **first**, and automatically falls back to local staged manifests or `AstraCradle-v*.zip` bundles in `~/.astracradle/updates` and `~/Downloads`.
-- From terminal: `astracradle --check-updates` (or `astracradle --set-update-repo https://github.com/<your-username>/AstraCradle`).
+- From terminal: `astracradle --check-updates` (or `astracradle --set-update-repo https://github.com/jackbashroot-boop/AstraCradle`).
 
 ### System Tray & Minimize-to-Tray
 - AstraCradle includes a cross-OS bottom-right system tray / menu-bar icon (`Open AstraCradle`, `Run Equilibrium Scan`, `Quit AstraCradle`).

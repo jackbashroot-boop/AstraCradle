@@ -4,25 +4,28 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AstraCradle — Local PC Optimizer, System Diagnostics &amp; Self-Healing Studio</title>
-  <meta name="description" content="AstraCradle is a free, 100% local native desktop PC optimizer, hardware CPU-affinity preset manager, ProBalance foreground booster, thermal SPC monitor, autoruns auditor, and zero-damage cleaner for Windows, macOS, and Linux.">
-  <meta name="keywords" content="AstraCradle, PC optimizer, Windows optimizer, Linux system monitor, macOS performance tool, ProBalance, CPU affinity presets, DPC latency guard, autoruns audit, thermal SPC, local diagnostics, safe cleaner">
+  <meta name="description" content="AstraCradle is a free, 100% local native desktop PC optimizer, hardware CPU-affinity preset manager, ProBalance foreground booster, thermal SPC monitor, Wi-Fi channel optimizer, and safe cleaner for Windows, macOS, and Linux.">
+  <meta name="keywords" content="AstraCradle, PC optimizer, Windows optimizer, Linux system monitor, CachyOS optimizer, macOS performance tool, ProBalance, CPU affinity presets, DPC latency guard, autoruns audit, thermal SPC, local diagnostics, safe cleaner">
   <meta name="robots" content="index, follow">
-  <link rel="canonical" href="https://YOUR_GITHUB_USERNAME.github.io/AstraCradle/">
+  <link rel="canonical" href="https://jackbashroot-boop.github.io/AstraCradle/">
   <meta property="og:type" content="website">
+  <meta property="og:url" content="https://jackbashroot-boop.github.io/AstraCradle/">
   <meta property="og:title" content="AstraCradle — Local PC Optimizer &amp; OS Equilibrium Studio">
   <meta property="og:description" content="100% local desktop optimizer for Windows 10/11, macOS, and Linux. 1-click install, system tray integration, reversible quarantine, and hash-chained forensic logs.">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="AstraCradle — Local PC Optimizer &amp; System Diagnostics">
-  <meta name="twitter:description" content="Free local desktop studio for Windows, macOS, and Linux with CPU affinity presets, ProBalance, Thermal SPC, Autoruns Audit, and zero-damage uninstall.">
+  <meta name="twitter:description" content="Free local desktop studio for Windows, macOS, and Linux with CPU affinity presets, ProBalance, Thermal SPC, Wi-Fi optimizer, and zero-damage uninstall.">
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "AstraCradle",
+    "url": "https://jackbashroot-boop.github.io/AstraCradle/",
+    "downloadUrl": "https://github.com/jackbashroot-boop/AstraCradle/archive/refs/heads/main.zip",
     "applicationCategory": "UtilitiesApplication",
     "operatingSystem": "Windows, macOS, Linux",
-    "softwareVersion": "1.0.0",
-    "description": "100% local native desktop PC optimizer, system diagnostics monitor, ProBalance foreground booster, thermal SPC analyzer, autoruns auditor, and reversible cleaner.",
+    "softwareVersion": "2.5.1",
+    "description": "100% local native desktop PC optimizer, system diagnostics monitor, ProBalance foreground booster, thermal SPC analyzer, Wi-Fi best-channel selector, and reversible cleaner.",
     "offers": {
       "@type": "Offer",
       "price": "0",
@@ -31,18 +34,27 @@
   }
   </script>
   <style>
-    :root { color-scheme: dark; --bg: #0b1018; --card: #121a26; --border: #253449; --text: #e9eff7; --muted: #9eb0c7; --accent: #48d8e0; --jade: #4ade80; }
+    :root { color-scheme: dark; --bg: #0b1018; --card: #121a26; --elev: #172233; --border: #253449; --text: #e9eff7; --muted: #9eb0c7; --accent: #48d8e0; --jade: #4ade80; --brass: #e0b36a; }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
-    main { max-width: 920px; margin: 0 auto; padding: 48px 20px 64px; }
+    main { max-width: 960px; margin: 0 auto; padding: 48px 20px 64px; }
     header { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 32px; margin-bottom: 24px; }
-    h1 { margin: 0 0 10px; font-size: 2.1rem; letter-spacing: -0.02em; }
+    h1 { margin: 0 0 10px; font-size: 2.15rem; letter-spacing: -0.02em; }
     .tag { color: var(--accent); font-weight: 600; font-size: 0.95rem; margin-bottom: 12px; display: block; }
     .lead { color: var(--muted); font-size: 1.05rem; margin: 0 0 22px; }
-    .actions { display: flex; flex-wrap: wrap; gap: 12px; }
-    .btn { display: inline-block; padding: 11px 18px; border-radius: 10px; text-decoration: none; font-weight: 600; }
-    .btn-primary { background: var(--accent); color: #071217; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px; border-radius: 10px; text-decoration: none; font-weight: 700; cursor: pointer; border: none; font-size: 0.95rem; }
+    .btn-primary { background: var(--jade); color: #06150d; }
+    .btn-accent { background: var(--accent); color: #071217; }
     .btn-secondary { background: #1a2536; color: var(--text); border: 1px solid var(--border); }
+    .install-box { background: var(--elev); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+    .install-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .tab-btn { background: #101723; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-weight: 600; cursor: pointer; font-size: 0.85rem; }
+    .tab-btn.active { background: var(--accent); color: #071217; border-color: var(--accent); }
+    .cmd-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .cmd-code { flex: 1; min-width: 240px; background: #090e16; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88rem; color: var(--jade); overflow-x: auto; white-space: nowrap; }
+    .copy-btn { background: var(--brass); color: #161005; border: none; border-radius: 8px; padding: 10px 16px; font-weight: 700; cursor: pointer; }
+    .hint { color: var(--muted); font-size: 0.88rem; margin: 10px 0 0; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-top: 20px; }
     .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
     .card h2 { margin: 0 0 8px; font-size: 1.1rem; color: var(--accent); }
@@ -54,16 +66,30 @@
 <body>
   <main>
     <header>
-      <span class="tag">AstraCradle v1.0.0 · Windows 10/11 · macOS · Linux</span>
-      <h1>AstraCradle — Local PC Optimizer &amp; OS Equilibrium Studio</h1>
+      <span class="tag">AstraCradle v2.5.1 · Windows 10/11 · macOS · Linux (CachyOS / Ubuntu / Arch / Fedora)</span>
+      <h1>AstraCradle — 1-Click Local PC Optimizer &amp; OS Equilibrium Studio</h1>
       <p class="lead">
         A fast, privacy-first, 100% local desktop application for PC diagnostics, CPU affinity presets,
-        ProBalance foreground boost, thermal &amp; fan-curve monitoring, startup/autoruns cleanup, and safe reversible maintenance.
+        ProBalance foreground boost, thermal &amp; fan-curve monitoring, Wi-Fi best-channel hold, Smart TV &amp; ad blocking, and safe reversible maintenance.
       </p>
+
       <div class="actions">
-        <a class="btn btn-primary" href="https://github.com/YOUR_GITHUB_USERNAME/AstraCradle/releases">Download Latest Release</a>
-        <a class="btn btn-secondary" href="https://github.com/YOUR_GITHUB_USERNAME/AstraCradle/blob/main/INSTALL_GUIDE.md">Beginner Installation Guide (All 3 OSes)</a>
-        <a class="btn btn-secondary" href="https://github.com/YOUR_GITHUB_USERNAME/AstraCradle">View Source on GitHub</a>
+        <a class="btn btn-primary" href="https://github.com/jackbashroot-boop/AstraCradle/archive/refs/heads/main.zip">⬇ Download 1-Click Installer ZIP</a>
+        <a class="btn btn-accent" href="https://github.com/jackbashroot-boop/AstraCradle/releases/latest">Standalone Releases (.exe / .app / Linux)</a>
+        <a class="btn btn-secondary" href="https://github.com/jackbashroot-boop/AstraCradle/blob/main/INSTALL_GUIDE.md">Step-by-Step Guide</a>
+        <a class="btn btn-secondary" href="https://github.com/jackbashroot-boop/AstraCradle">GitHub Repository</a>
+      </div>
+
+      <div class="install-box">
+        <div class="install-tabs">
+          <button class="tab-btn active" data-os="linux" onclick="pickOS('linux')">Linux / macOS (1-Line Install)</button>
+          <button class="tab-btn" data-os="win" onclick="pickOS('win')">Windows PowerShell (1-Line Install)</button>
+        </div>
+        <div class="cmd-row">
+          <div id="cmdText" class="cmd-code">curl -fsSL https://raw.githubusercontent.com/jackbashroot-boop/AstraCradle/main/scripts/quick_install.sh | bash</div>
+          <button class="copy-btn" onclick="copyInstallCmd()">Copy Command</button>
+        </div>
+        <p id="cmdHint" class="hint">Downloads AstraCradle into <code>~/AstraCradle</code>, creates an isolated environment, adds your App Menu icon, and launches AstraCradle automatically.</p>
       </div>
     </header>
 
@@ -74,11 +100,11 @@
       </article>
       <article class="card">
         <h2>1-Click Setup &amp; Tray Support</h2>
-        <p>Includes <code>Install_AstraCradle.bat</code>, <code>Install_AstraCradle.command</code>, and <code>install_astracradle.sh</code> with zero-console Start Menu launching and system tray minimize.</p>
+        <p>Includes <code>Install_AstraCradle.bat</code>, <code>Install_AstraCradle.command</code>, <code>install_astracradle.sh</code>, and <code>install_astracradle.fish</code> with App Menu icons and system tray controls.</p>
       </article>
       <article class="card">
-        <h2>Hardware &amp; Latency Tuning</h2>
-        <p>Intel P/E-core &amp; AMD X3D affinity presets, ProBalance foreground responsiveness, DPC Latency Guard, and Welford thermal baselines.</p>
+        <h2>Hardware, Wi-Fi &amp; Latency Tuning</h2>
+        <p>Intel P/E-core &amp; AMD X3D affinity presets, ProBalance foreground responsiveness, permission-gated Wi-Fi best-channel lock (10m min hold), and Welford thermal baselines.</p>
       </article>
       <article class="card">
         <h2>Reversible Vault &amp; Clean Uninstall</h2>
@@ -87,8 +113,35 @@
     </section>
 
     <footer>
-      AstraCradle Desktop Studio · Cross-Platform Local System Optimizer
+      AstraCradle Desktop Studio · Cross-Platform Local System Optimizer · <a style="color:var(--accent)" href="https://github.com/jackbashroot-boop/AstraCradle">github.com/jackbashroot-boop/AstraCradle</a>
     </footer>
   </main>
+
+  <script>
+    const OS_CMDS = {
+      linux: {
+        cmd: "curl -fsSL https://raw.githubusercontent.com/jackbashroot-boop/AstraCradle/main/scripts/quick_install.sh | bash",
+        hint: "Downloads AstraCradle into ~/AstraCradle, creates an isolated environment, adds your App Menu icon, and launches AstraCradle automatically."
+      },
+      win: {
+        cmd: "irm https://raw.githubusercontent.com/jackbashroot-boop/AstraCradle/main/scripts/quick_install.ps1 | iex",
+        hint: "Paste into Windows PowerShell — downloads AstraCradle, creates a zero-console Start Menu & Desktop shortcut, and launches AstraCradle."
+      }
+    };
+    function pickOS(osKey) {
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.os === osKey));
+      document.getElementById("cmdText").textContent = OS_CMDS[osKey].cmd;
+      document.getElementById("cmdHint").textContent = OS_CMDS[osKey].hint;
+    }
+    function copyInstallCmd() {
+      const txt = document.getElementById("cmdText").textContent;
+      navigator.clipboard.writeText(txt).then(() => {
+        const btn = document.querySelector(".copy-btn");
+        btn.textContent = "Copied!";
+        setTimeout(() => btn.textContent = "Copy Command", 1800);
+      });
+    }
+    if (navigator.userAgent.indexOf("Windows") !== -1) pickOS("win");
+  </script>
 </body>
 </html>

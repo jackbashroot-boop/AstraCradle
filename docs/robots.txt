@@ -1,2 +1,3 @@
 User-agent: *
 Allow: /
+Sitemap: https://jackbashroot-boop.github.io/AstraCradle/sitemap.xml
