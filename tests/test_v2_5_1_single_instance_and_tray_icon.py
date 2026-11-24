@@ -243,6 +243,13 @@ def test_no_font_double_scaling_and_yes_no_dialog_no_clipping() -> None:
             assert dlg.winfo_width() >= 540
             assert dlg.winfo_height() >= dlg.winfo_reqheight()
             dlg.destroy()
+
+            # Clicking Benchmark Now on Settings must rebuild cleanly without stacking duplicate Settings pages
+            app.switch_nav("settings")
+            app._on_capture_benchmark()
+            app._on_capture_benchmark()
+            app.update()
+            assert len(app.pages["settings"].winfo_children()) == 1
         finally:
             app.destroy()
 

@@ -6748,6 +6748,11 @@ class AstraCradleApp(ctk.CTk):
     # ------------------------------------------------------------------
     def _build_settings_page(self) -> None:
         p = self.palette
+        for child in self.pages["settings"].winfo_children():
+            try:
+                child.destroy()
+            except Exception:
+                pass
         scroll = ctk.CTkScrollableFrame(self.pages["settings"], fg_color="transparent")
         scroll.pack(fill="both", expand=True)
 
@@ -6769,11 +6774,14 @@ class AstraCradleApp(ctk.CTk):
             font=self.fonts["section"],
         )
         self.settings_ver_lbl.pack(anchor="w")
+        cached_gh = getattr(self, "_last_gh_sync_state", None)
+        gh_txt = cached_gh[0] if cached_gh else "GitHub Sync: Checking latest pushed version automatically..."
+        gh_col = cached_gh[1] if cached_gh else p.accent_cyan
         self.settings_gh_ver_lbl = ctk.CTkLabel(
             ab_txt,
-            text="GitHub Sync: Checking latest pushed version automatically...",
+            text=gh_txt,
             font=self.fonts["mono_small"],
-            text_color=p.accent_cyan,
+            text_color=gh_col,
         )
         self.settings_gh_ver_lbl.pack(anchor="w", pady=(2, 2))
         ctk.CTkLabel(
@@ -6815,9 +6823,10 @@ class AstraCradleApp(ctk.CTk):
         )
         self.upd_btn.pack(side="right")
 
+        cached_upd_txt = getattr(self, "_last_upd_status_text", None)
         self.upd_status_lbl = ctk.CTkLabel(
             upd_card,
-            text=self.updater.check_for_updates(self.config_obj, check_remote=False).status_message,
+            text=cached_upd_txt or self.updater.check_for_updates(self.config_obj, check_remote=False).status_message,
             font=self.fonts["small"],
             text_color=p.accent_jade,
             anchor="w",
@@ -8100,19 +8109,18 @@ class AstraCradleApp(ctk.CTk):
             def _apply() -> None:
                 if not self.winfo_exists():
                     return
+                if res.update_available:
+                    gh_text = f"GitHub Sync: Update available ({res.latest_version}) — click 'Check & Update Now'"
+                    gh_col = self.palette.accent_brass
+                else:
+                    gh_text = f"GitHub Sync: Latest version installed ({build_info['display_version']})"
+                    gh_col = self.palette.accent_jade
+                self._last_gh_sync_state = (gh_text, gh_col)
+                self._last_upd_status_text = res.status_message
                 if hasattr(self, "settings_ver_lbl") and self.settings_ver_lbl.winfo_exists():
                     self.settings_ver_lbl.configure(text=f"{__app_name__} · {build_info['display_version']}")
                 if hasattr(self, "settings_gh_ver_lbl") and self.settings_gh_ver_lbl.winfo_exists():
-                    if res.update_available:
-                        self.settings_gh_ver_lbl.configure(
-                            text=f"GitHub Sync: Update available ({res.latest_version}) — click 'Check & Update Now'",
-                            text_color=self.palette.accent_brass,
-                        )
-                    else:
-                        self.settings_gh_ver_lbl.configure(
-                            text=f"GitHub Sync: Latest version installed ({build_info['display_version']})",
-                            text_color=self.palette.accent_jade,
-                        )
+                    self.settings_gh_ver_lbl.configure(text=gh_text, text_color=gh_col)
                 if hasattr(self, "upd_status_lbl") and self.upd_status_lbl.winfo_exists():
                     self.upd_status_lbl.configure(text=res.status_message)
 
