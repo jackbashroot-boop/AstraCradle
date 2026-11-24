@@ -1,0 +1,23 @@
+{
+  "nav.dashboard": "Panel Central",
+  "nav.hardware": "Hardware y Flujos",
+  "nav.modules": "Módulos del Sistema",
+  "nav.scripts": "Scripts Activos",
+  "nav.playbook": "Plan de Acción",
+  "nav.autopilot": "Piloto Automático",
+  "nav.safeguards": "Seguridad y Fallos",
+  "nav.probalance": "ProBalance y Latencia",
+  "nav.autoruns": "Autoruns y Térmica",
+  "nav.settings": "Ajustes",
+  "btn.scan": "Escanear",
+  "btn.easy_guide": "Guía Fácil",
+  "btn.help_search": "Ayuda / Buscar",
+  "btn.uninstall": "Desinstalar...",
+  "btn.dry_run": "Simulacro",
+  "btn.apply_safe": "Aplicar Seguros",
+  "btn.rollback": "Revertir Último",
+  "label.profile": "Perfil de Situación",
+  "label.language": "Idioma",
+  "label.theme": "Tema Visual",
+  "label.scale": "Escala de Texto"
+}
