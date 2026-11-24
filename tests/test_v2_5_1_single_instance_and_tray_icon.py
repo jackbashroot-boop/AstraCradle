@@ -253,3 +253,53 @@ def test_no_font_double_scaling_and_yes_no_dialog_no_clipping() -> None:
         finally:
             app.destroy()
 
+
+def test_conflict_detector_skips_kernel_threads_and_gpu_reads_amdgpu_hwmon(monkeypatch) -> None:
+    from types import SimpleNamespace
+    import astracradle.core.pc_extras as pex
+    import astracradle.core.advanced_controls as ac_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg_mgr = ConfigManager(base_dir=td)
+        journal = ForensicJournal(cfg_mgr)
+
+        fake_procs = [
+            SimpleNamespace(info={"pid": 143, "ppid": 2, "name": "kworker/u128:1-events_unbound", "cmdline": []}),
+            SimpleNamespace(info={"pid": 994, "ppid": 1, "name": "ananicy-cpp", "cmdline": ["/usr/bin/ananicy-cpp", "start"]}),
+        ]
+        monkeypatch.setattr(pex.psutil, "process_iter", lambda _attrs=None: fake_procs)
+        monkeypatch.setattr(pex.shutil, "which", lambda _n: None)
+        cd = pex.ConflictProgramDetector(journal)
+        conflicts = cd.scan_conflicts()
+        ids = [c.conflict_id for c in conflicts]
+        assert "unbound" not in ids
+        assert "ananicy-cpp" in ids
+
+        # Simulate Linux /sys/class/hwmon with nct6687 + amdgpu
+        fake_hwmon = Path(td) / "hwmon"
+        hw0 = fake_hwmon / "hwmon0"
+        hw1 = fake_hwmon / "hwmon1"
+        hw0.mkdir(parents=True)
+        hw1.mkdir(parents=True)
+        (hw0 / "name").write_text("nct6687\n", encoding="utf-8")
+        (hw0 / "pwm1").write_text("128\n", encoding="utf-8")
+        (hw1 / "name").write_text("amdgpu\n", encoding="utf-8")
+        (hw1 / "pwm1").write_text("77\n", encoding="utf-8")
+        (hw1 / "temp1_input").write_text("55000\n", encoding="utf-8")
+        (hw1 / "power1_average").write_text("42500000\n", encoding="utf-8")
+        (hw1 / "power1_cap").write_text("260000000\n", encoding="utf-8")
+
+        monkeypatch.setattr(ac_mod.shutil, "which", lambda _n: None)
+        monkeypatch.setattr(ac_mod.platform, "system", lambda: "Linux")
+        orig_path = ac_mod.Path
+
+        def _fake_path(p):
+            return fake_hwmon if str(p) == "/sys/class/hwmon" else orig_path(p)
+
+        monkeypatch.setattr(ac_mod, "Path", _fake_path)
+        gpu = ac_mod.GpuPowerAndFanController.probe_live_power_and_fan()
+        assert gpu["name"] == "amdgpu"
+        assert gpu["temp_c"] == "55.0"
+        assert gpu["power_draw_w"] == "42.5"
+        assert gpu["fan_percent"] == "30"
+

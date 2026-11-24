@@ -634,7 +634,7 @@ class AstraShieldManager:
             "download_pihole_lists",
             f"Downloaded {len(blocked_all):,} Pi-hole domains from {len(fetched_sources)} feed(s)",
             "Synced community Pi-hole blocklists with YouTube playback safety filter",
-            "ok" if not failed_sources else "warning",
+            "ok" if fetched_sources else "warning",
         )
         warn_suffix = f" ({len(failed_sources)} feed(s) offline/skipped)" if failed_sources else ""
         return True, f"Synced {len(blocked_all):,} Pi-hole domains from {len(fetched_sources)} feeds{warn_suffix}.", len(blocked_all)

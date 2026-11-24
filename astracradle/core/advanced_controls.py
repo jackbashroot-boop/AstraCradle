@@ -426,22 +426,53 @@ class GpuPowerAndFanController:
         if platform.system() == "Linux":
             hwmon = Path("/sys/class/hwmon")
             if hwmon.exists():
-                for dev in sorted(hwmon.glob("hwmon*")):
+                gpu_drivers = ("amdgpu", "radeon", "nouveau", "xe", "i915")
+                devs = list(sorted(hwmon.glob("hwmon*")))
+
+                def _hw_rank(d: Path) -> tuple[int, str]:
+                    try:
+                        nm = (d / "name").read_text().strip().lower() if (d / "name").exists() else d.name.lower()
+                    except Exception:
+                        nm = d.name.lower()
+                    return (0 if nm in gpu_drivers else 1, d.name)
+
+                for dev in sorted(devs, key=_hw_rank):
+                    try:
+                        name = (dev / "name").read_text().strip() if (dev / "name").exists() else dev.name
+                    except Exception:
+                        name = dev.name
                     pwm = dev / "pwm1"
-                    if pwm.exists():
-                        try:
-                            val = int(pwm.read_text().strip())
-                            return {
-                                "available": True,
-                                "name": (dev / "name").read_text().strip() if (dev / "name").exists() else dev.name,
-                                "power_draw_w": "N/A",
-                                "power_limit_w": "hwmon",
-                                "default_limit_w": "hwmon",
-                                "fan_percent": str(round(val / 2.55)),
-                                "temp_c": "N/A",
-                            }
-                        except Exception:
-                            pass
+                    temp_in = dev / "temp1_input"
+                    if not (pwm.exists() or (name.lower() in gpu_drivers and temp_in.exists())):
+                        continue
+                    try:
+                        fan_pct = str(round(int(pwm.read_text().strip()) / 2.55)) if pwm.exists() else "Auto"
+                        temp_c = "N/A"
+                        if temp_in.exists():
+                            temp_c = f"{int(temp_in.read_text().strip()) / 1000.0:.1f}"
+                        pwr_draw = "N/A"
+                        for pf in ("power1_average", "power1_input"):
+                            pfile = dev / pf
+                            if pfile.exists():
+                                pwr_draw = f"{int(pfile.read_text().strip()) / 1_000_000.0:.1f}"
+                                break
+                        pwr_cap = "hwmon"
+                        if (dev / "power1_cap").exists():
+                            pwr_cap = f"{int((dev / 'power1_cap').read_text().strip()) / 1_000_000.0:.0f}"
+                        pwr_def = "hwmon"
+                        if (dev / "power1_cap_default").exists():
+                            pwr_def = f"{int((dev / 'power1_cap_default').read_text().strip()) / 1_000_000.0:.0f}"
+                        return {
+                            "available": True,
+                            "name": name,
+                            "power_draw_w": pwr_draw,
+                            "power_limit_w": pwr_cap,
+                            "default_limit_w": pwr_def,
+                            "fan_percent": fan_pct,
+                            "temp_c": temp_c,
+                        }
+                    except Exception:
+                        pass
         return {
             "available": False,
             "name": "Standard Integrated / No Direct PWM Telemetry",

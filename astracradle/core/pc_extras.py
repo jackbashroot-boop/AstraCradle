@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import socket
 import subprocess
@@ -700,18 +701,27 @@ class ConflictProgramDetector:
         seen_ids: set[str] = set()
         own_pid = os.getpid()
 
-        # 1. Active user/system processes
+        # 1. Active user/system processes (skip Linux kernel threads like kworker/...-events_unbound)
         try:
-            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            for proc in psutil.process_iter(["pid", "ppid", "name", "cmdline"]):
                 try:
                     pid = int(proc.info["pid"])
                     if pid <= 4 or pid == own_pid:
                         continue
+                    ppid = int(proc.info.get("ppid") or 0)
                     pname = (proc.info.get("name") or "").lower()
-                    cmd = " ".join(proc.info.get("cmdline") or []).lower()
+                    cmdline_list = proc.info.get("cmdline") or []
+                    if ppid == 2 or (
+                        not cmdline_list
+                        and pname.startswith(("kworker", "kthread", "migration", "rcu", "scsi_eh", "irq/", "cpuhp", "idle_inject"))
+                    ):
+                        continue
+                    cmd = " ".join(cmdline_list).lower()
                     hay = f"{pname} {cmd}"
                     for key, label, cat, unit, reason, sev in self.KNOWN_CONFLICTS:
-                        if key in hay and key not in seen_ids:
+                        if key in seen_ids:
+                            continue
+                        if re.search(rf"(?:^|[/\\\s]){re.escape(key)}(?:$|[\s.:]|(?:\.exe))", hay):
                             seen_ids.add(key)
                             found.append(
                                 ConflictProgramInfo(
