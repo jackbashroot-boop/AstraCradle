@@ -467,3 +467,60 @@ def test_wifi_permission_auto_select_and_10min_channel_hold() -> None:
         finally:
             app.destroy()
 
+
+def test_task_progress_and_completion_toasts_for_tv_bluetooth_and_buttons() -> None:
+    """Verifies in-progress feedback on task/button start and completion toast on finish (TV/BT scan, Deep Scan, buttons)."""
+    import customtkinter as ctk
+    from astracradle.ui.app import AstraCradleApp
+
+    with tempfile.TemporaryDirectory() as td:
+        app = AstraCradleApp(base_dir=td, show_startup_popups=False)
+        try:
+            app.update()
+            toasts: list[str] = []
+            orig_show = app.show_toast
+
+            def _cap_toast(msg: str, color=None, undo_entry_id=None) -> None:
+                toasts.append(str(msg))
+                orig_show(msg, color=color, undo_entry_id=undo_entry_id)
+
+            app.show_toast = _cap_toast  # type: ignore[method-assign]
+
+            # 1. Explicit TV + Bluetooth scan start -> completion toast
+            app.begin_task_progress("lan_tv", "Scanning Wi-Fi/LAN for Smart TVs and Bluetooth devices...")
+            assert "lan_tv" in app._active_tasks
+            assert "⏳" in app.topbar_status.cget("text")
+            assert any("In progress:" in t for t in toasts)
+
+            app._ui_queue.put(("lan_tv_scanned", ["tv1"], ["bt1", "bt2"]))
+            app._drain_ui_queue()
+            assert "lan_tv" not in app._active_tasks
+            assert any("TV & Bluetooth scan complete" in t and "1 Smart TV/LAN" in t and "2 Bluetooth" in t for t in toasts)
+
+            # 2. Deep scan starts in-progress state and completes when scan result arrives
+            app.on_deep_scan()
+            assert "deep_scan" in app._active_tasks
+            assert any("Deep scanning 8 subsystems" in t for t in toasts)
+
+            # 3. Generic CTkButton click shows in-progress feedback & completion toast automatically
+            app._active_tasks.clear()
+            clicked_flag = {"ran": False}
+            b = ctk.CTkButton(app.topbar, text="Test Action", command=lambda: clicked_flag.__setitem__("ran", True))
+            b.pack(side="left")
+            app.update()
+
+            class _FakeEvt:
+                widget = b
+
+            toasts.clear()
+            app._on_any_button_press_progress(_FakeEvt())
+            assert "⏳ In progress: Test Action" in app.topbar_status.cget("text")
+            # Wait for 35ms post-click check
+            end_t = time.monotonic() + 0.12
+            while time.monotonic() < end_t:
+                app.update()
+                time.sleep(0.015)
+            assert any("✓ Test Action complete" in t for t in toasts)
+        finally:
+            app.destroy()
+

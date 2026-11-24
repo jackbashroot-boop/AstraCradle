@@ -415,9 +415,12 @@ class AstraCradleApp(ctk.CTk):
                 self.updater.stage_and_apply_local_update(self.config_obj)
 
         self._load_brand_images()
+        self._active_tasks: dict[str, str] = {}
+        self._toast_seq: int = 0
         self._build_layout()
         self._bind_shortcuts()
         self._bind_global_mousewheel()
+        self._install_button_progress_hook()
         self.bind("<Configure>", self._on_root_configure)
         self.bind("<Unmap>", self._on_window_unmap)
         self._drain_ui_queue()
@@ -847,7 +850,7 @@ class AstraCradleApp(ctk.CTk):
 
     def _on_quick_wifi_optimize_from_widget(self) -> None:
         self.switch_nav("wifi")
-        self.show_toast("Optimizing Wi-Fi channels...")
+        self.begin_task_progress("wifi", "Optimizing Wi-Fi channels...")
         self._auto_wifi_optimize_async()
 
     def _reapply_saved_scripts_on_boot(self) -> None:
@@ -1606,6 +1609,7 @@ class AstraCradleApp(ctk.CTk):
         self._refresh_github_version_badge_async()
 
     def show_toast(self, msg: str, color: str | None = None, undo_entry_id: str | None = None) -> None:
+        self._toast_seq = getattr(self, "_toast_seq", 0) + 1
         p = self.palette
         self.toast_label.configure(
             text=f"  {msg}  ",
@@ -1626,6 +1630,127 @@ class AstraCradleApp(ctk.CTk):
             except Exception:
                 pass
         self._toast_after_id = self.after(5500, lambda: self.toast_frame.place_forget())
+
+    def begin_task_progress(self, task_id: str, in_progress_msg: str, toast: bool = True) -> None:
+        """Shows immediate in-progress feedback in topbar + toast whenever a button/background task starts."""
+        if not hasattr(self, "_active_tasks"):
+            self._active_tasks = {}
+        self._active_tasks[str(task_id)] = str(in_progress_msg)
+        p = self.palette
+        try:
+            if hasattr(self, "topbar_beacon"):
+                self.topbar_beacon.set_scanning(True)
+            if hasattr(self, "topbar_pulse"):
+                self.topbar_pulse.set_active(True)
+            if hasattr(self, "topbar_status"):
+                self.topbar_status.configure(text=f"⏳ {in_progress_msg}", text_color=p.accent_brass)
+        except Exception:
+            pass
+        if toast:
+            self.show_toast(f"In progress: {in_progress_msg}", color=p.accent_brass)
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+
+    def finish_task_progress(
+        self,
+        task_id: str,
+        done_msg: str,
+        color: str | None = None,
+        undo_entry_id: str | None = None,
+        notify_title: str | None = None,
+    ) -> None:
+        """Clears active task state, paints completion toast, and optionally emits a tray/desktop notification."""
+        if not hasattr(self, "_active_tasks"):
+            self._active_tasks = {}
+        self._active_tasks.pop(str(task_id), None)
+        p = self.palette
+        col = color or p.accent_jade
+        try:
+            if self._active_tasks:
+                nxt = next(reversed(self._active_tasks.values()))
+                if hasattr(self, "topbar_status"):
+                    self.topbar_status.configure(text=f"⏳ {nxt}", text_color=p.accent_brass)
+            else:
+                if hasattr(self, "topbar_beacon"):
+                    self.topbar_beacon.set_scanning(False)
+                if hasattr(self, "topbar_pulse"):
+                    self.topbar_pulse.set_active(False)
+                if hasattr(self, "topbar_status"):
+                    short_msg = done_msg if len(done_msg) <= 68 else done_msg[:65] + "..."
+                    self.topbar_status.configure(text=f"✓ {short_msg}", text_color=col)
+        except Exception:
+            pass
+        clean_done = done_msg if done_msg.startswith("✓") else f"✓ {done_msg}"
+        self.show_toast(clean_done, color=col, undo_entry_id=undo_entry_id)
+        if notify_title and hasattr(self, "tray"):
+            try:
+                is_bg = str(self.state()) in ("withdrawn", "iconic") or self.focus_displayof() is None
+            except Exception:
+                is_bg = False
+            if is_bg:
+                try:
+                    self.tray.notify(notify_title, done_msg)
+                except Exception:
+                    pass
+
+    def _install_button_progress_hook(self) -> None:
+        """Ensures every interactive button click across the UI gives immediate in-progress feedback."""
+        try:
+            self.bind_all("<ButtonPress-1>", self._on_any_button_press_progress, add="+")
+        except Exception:
+            pass
+
+    def _on_any_button_press_progress(self, event=None) -> None:
+        w = getattr(event, "widget", None)
+        btn = None
+        cur = w
+        for _ in range(4):
+            if cur is None:
+                break
+            if isinstance(cur, ctk.CTkButton):
+                btn = cur
+                break
+            cur = getattr(cur, "master", None)
+        if btn is None or btn is getattr(self, "toast_undo_btn", None):
+            return
+        try:
+            if str(btn.cget("state")) == "disabled":
+                return
+            lbl = str(btn.cget("text") or "").strip()
+        except Exception:
+            return
+        if not lbl or lbl in ("×", "−", "Undo", "No", "Cancel", "Close") or btn in getattr(self, "nav_buttons", {}).values():
+            return
+        seq_before = getattr(self, "_toast_seq", 0)
+        p = self.palette
+        try:
+            if hasattr(self, "topbar_pulse"):
+                self.topbar_pulse.set_active(True)
+            if hasattr(self, "topbar_status"):
+                self.topbar_status.configure(text=f"⏳ In progress: {lbl}...", text_color=p.accent_brass)
+        except Exception:
+            pass
+
+        def _post_click_check() -> None:
+            if not self.winfo_exists():
+                return
+            # If the button's handler didn't start an async task or emit a custom toast, show a crisp completion toast
+            if getattr(self, "_toast_seq", 0) == seq_before and not getattr(self, "_active_tasks", None):
+                try:
+                    if hasattr(self, "topbar_pulse"):
+                        self.topbar_pulse.set_active(False)
+                    if hasattr(self, "topbar_status"):
+                        self.topbar_status.configure(text=f"✓ {lbl} complete", text_color=p.accent_jade)
+                except Exception:
+                    pass
+                self.show_toast(f"✓ {lbl} complete.", color=p.accent_jade)
+
+        try:
+            self.after(35, _post_click_check)
+        except Exception:
+            pass
 
     def _animate_toast_in(self, step: int) -> None:
         if not self.winfo_exists():
@@ -1896,10 +2021,7 @@ class AstraCradleApp(ctk.CTk):
         if not self.config_obj.consent_telemetry:
             self.open_consent_wizard(first_run=False)
             return
-        self.topbar_status.configure(text="Discovering PC...")
-        self.topbar_beacon.set_scanning(True)
-        if hasattr(self, "topbar_pulse"):
-            self.topbar_pulse.set_active(True)
+        self.begin_task_progress("full_discovery", "Running Full Local PC Baseline Discovery...")
 
         def worker() -> None:
             try:
@@ -2548,6 +2670,7 @@ class AstraCradleApp(ctk.CTk):
             return
         if target_override is not None:
             self.hunter_pid_var.set(str(target_override))
+        self.begin_task_progress("proc_lookup", f"Looking up process '{raw}'...")
         self.hunter_lookup_result_lbl.configure(
             text=f"Searching local knowledge + web for '{raw}'...",
             text_color=self.palette.accent_cyan,
@@ -4889,7 +5012,7 @@ class AstraCradleApp(ctk.CTk):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_scan_wifi_channels(self) -> None:
-        self.show_toast("Scanning 2.4 / 5 / 6 GHz Wi-Fi channels for congestion...")
+        self.begin_task_progress("wifi", "Scanning 2.4 / 5 / 6 GHz Wi-Fi channels for congestion...")
         min_hold_sec = max(600.0, float(getattr(self.config_obj, "wifi_min_channel_hold_min", 10)) * 60.0)
 
         def _worker() -> None:
@@ -4904,7 +5027,7 @@ class AstraCradleApp(ctk.CTk):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_optimize_wifi_now(self) -> None:
-        self.show_toast("Checking Wi-Fi spectrum for less-trafficked channels...")
+        self.begin_task_progress("wifi", "Checking Wi-Fi spectrum for less-trafficked channels...")
         self._auto_wifi_optimize_async(periodic=False)
 
     def _on_apply_wifi_rec_now(self) -> None:
@@ -5270,9 +5393,7 @@ class AstraCradleApp(ctk.CTk):
         self.show_toast(f"{label} -> {value}")
 
     def _on_run_full_catalog_scan(self) -> None:
-        self.show_toast("Scanning all mounted drives & programs into SQLite catalog...")
-        if hasattr(self, "topbar_pulse"):
-            self.topbar_pulse.set_active(True)
+        self.begin_task_progress("catalog", "Scanning all mounted drives & programs into SQLite catalog...")
         dry = bool(self.dry_run_var.get())
         quiet_fix = bool(getattr(self.config_obj, "catalog_quiet_autofix", True))
         adapter = self._active_adapter()
@@ -5429,13 +5550,14 @@ class AstraCradleApp(ctk.CTk):
         if not permitted:
             self.show_toast("Enable the permission checkbox first to install external programs.", color=self.palette.accent_coral)
             return
+        self.begin_task_progress("dep_install", f"Installing companion tool '{dep_id}'...")
 
         def _worker() -> None:
             ts = getattr(self, "_latest_tailscale", None) or TailscaleDiscovery.get_status()
             res = self.dep_lib.install_and_setup(
                 dep_id, permitted=True, shell_kind=shell_kind, dry_run=bool(self.config_obj.dry_run_default), tailscale_ip=ts.self_ip
             )
-            self._ui_queue.put(("toast", res.message, self.palette.accent_jade if res.ok else self.palette.accent_coral))
+            self._ui_queue.put(("dep_install_done", res.message, self.palette.accent_jade if res.ok else self.palette.accent_coral))
             self._ui_queue.put(("refresh_cmd_vault", None, None))
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -5445,6 +5567,7 @@ class AstraCradleApp(ctk.CTk):
         if not permitted:
             self.show_toast("Enable the permission checkbox first to auto-install missing dependencies.", color=self.palette.accent_coral)
             return
+        self.begin_task_progress("dep_install", "Installing missing companion dependencies...")
 
         def _worker() -> None:
             ts = getattr(self, "_latest_tailscale", None) or TailscaleDiscovery.get_status()
@@ -5453,7 +5576,7 @@ class AstraCradleApp(ctk.CTk):
             )
             ok_cnt = sum(1 for o in outs if o.ok)
             msg = f"Dependency auto-setup finished: {ok_cnt}/{len(outs)} processed." if outs else "All companion dependencies are already installed!"
-            self._ui_queue.put(("toast", msg, self.palette.accent_jade))
+            self._ui_queue.put(("dep_install_done", msg, self.palette.accent_jade))
             self._ui_queue.put(("refresh_cmd_vault", None, None))
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -5548,7 +5671,7 @@ class AstraCradleApp(ctk.CTk):
         self.show_toast(msg, color=self.palette.accent_jade if ok else self.palette.accent_coral)
 
     def _on_refresh_tailscale(self) -> None:
-        self.show_toast("Scanning Tailscale mesh peers & Sunshine/Moonlight status...")
+        self.begin_task_progress("tailscale", "Scanning Tailscale mesh peers & Sunshine/Moonlight status...")
 
         def _worker() -> None:
             ts = TailscaleDiscovery.get_status()
@@ -5697,7 +5820,7 @@ class AstraCradleApp(ctk.CTk):
             self._build_settings_page()
 
     def _on_run_bufferbloat_check(self) -> None:
-        self.show_toast("Running gateway latency & bufferbloat check...")
+        self.begin_task_progress("bufferbloat", "Running gateway latency & bufferbloat check...")
 
         def _worker() -> None:
             rep = self.rf_scanner.run_bufferbloat_check()
@@ -5727,7 +5850,7 @@ class AstraCradleApp(ctk.CTk):
             self.rf_wave_chart.set_band_filter(band_val)
 
     def _on_scan_rf_waves(self, include_ping: bool = False) -> None:
-        self.show_toast("Sweeping bandwidth interfaces, 2.4/5/6 GHz RF channels & Bluetooth waves...")
+        self.begin_task_progress("rf_waves", "Sweeping bandwidth interfaces, 2.4/5/6 GHz RF channels & Bluetooth waves...")
 
         def _worker() -> None:
             snap = self.rf_scanner.scan_all(rescan_rf=True, include_ping=include_ping)
@@ -7560,8 +7683,23 @@ class AstraCradleApp(ctk.CTk):
                     continue
                 if first == "tailscale_refreshed":
                     self._latest_tailscale = item[1]
+                    ts = item[1]
+                    peers_cnt = len(getattr(ts, "peers", []) or []) if ts else 0
+                    self.finish_task_progress(
+                        "tailscale",
+                        f"Tailscale & AstraBeam scan complete ({peers_cnt} peer(s) found).",
+                        notify_title="Tailscale Scan Complete",
+                    )
                     if self.current_nav == "remote_beam":
                         self._render_remote_beam_page()
+                    continue
+                if first == "dep_install_done":
+                    self.finish_task_progress(
+                        "dep_install",
+                        str(item[1] or "Dependency task finished."),
+                        color=item[2],
+                        notify_title="Dependency Setup Complete",
+                    )
                     continue
                 if first == "refresh_cmd_vault":
                     if self.current_nav == "cmd_vault":
@@ -7593,30 +7731,32 @@ class AstraCradleApp(ctk.CTk):
                     self._last_latency_report = out.latency_report
                     self._last_autoruns = out.autoruns
                     self._last_ghosts = out.ghost_drivers
-                    self.topbar_beacon.set_scanning(False)
-                    if hasattr(self, "topbar_pulse"):
-                        self.topbar_pulse.set_active(False)
                     self._update_telemetry_cards(out.snapshot)
                     self._update_diagnosis_overview(out.report, out.playbook)
-                    self.topbar_status.configure(text=f"Full PC Baseline · {len(out.baseline.subsystems_checked)} subsystems")
-                    self.show_toast(
-                        f"Full PC Discovery complete ({len(out.baseline.subsystems_checked)} local subsystems baselined)!"
+                    self.finish_task_progress(
+                        "full_discovery",
+                        f"Full PC Discovery complete ({len(out.baseline.subsystems_checked)} local subsystems baselined)!",
+                        notify_title="Full PC Discovery Complete",
                     )
                     self.refresh_telemetry_async(include_dns=True, also_scan=False)
                     if show_dlg:
                         FullDiscoveryResultDialog(self, self.palette, self.fonts, out.baseline)
                     continue
                 if first == "full_discovery_err":
-                    self.topbar_beacon.set_scanning(False)
-                    if hasattr(self, "topbar_pulse"):
-                        self.topbar_pulse.set_active(False)
-                    self.topbar_status.configure(text="Discovery warning")
-                    self.show_toast(f"Full PC Discovery note: {item[1]}", color=self.palette.accent_coral)
+                    self.finish_task_progress(
+                        "full_discovery",
+                        f"Full PC Discovery note: {item[1]}",
+                        color=self.palette.accent_coral,
+                    )
                     continue
 
                 if first == "pihole_synced":
                     msg = item[1]
-                    self.show_toast(str(msg))
+                    self.finish_task_progress(
+                        "pihole",
+                        str(msg),
+                        notify_title="AstraShield Blocklist Sync Complete",
+                    )
                     if self.current_nav == "modules":
                         self._render_modules()
                     continue
@@ -7626,8 +7766,10 @@ class AstraCradleApp(ctk.CTk):
                     bdevs = item[2] or []
                     self._latest_lan_devices = devs
                     self._latest_bt_devices = bdevs
-                    self.show_toast(
-                        f"Found {len(devs)} Smart TV/LAN device(s) and {len(bdevs)} Bluetooth device(s)."
+                    self.finish_task_progress(
+                        "lan_tv",
+                        f"TV & Bluetooth scan complete: found {len(devs)} Smart TV/LAN device(s) and {len(bdevs)} Bluetooth device(s).",
+                        notify_title="Smart TV & Bluetooth Scan Complete",
                     )
                     if self.current_nav == "modules":
                         self._render_modules()
@@ -7638,7 +7780,13 @@ class AstraCradleApp(ctk.CTk):
                     periodic = bool(item[2])
                     self._latest_wifi_res = wres
                     if not periodic or (wres and wres.switched):
-                        self.show_toast(wres.action_taken if wres else "Wi-Fi scan complete.")
+                        self.finish_task_progress(
+                            "wifi",
+                            wres.action_taken if wres else "Wi-Fi scan complete.",
+                            notify_title="Wi-Fi Channel Scan Complete",
+                        )
+                    else:
+                        self._active_tasks.pop("wifi", None)
                     if self.current_nav == "wifi":
                         self._render_wifi_page()
                     continue
@@ -7660,22 +7808,34 @@ class AstraCradleApp(ctk.CTk):
                         ):
                             self._on_apply_wifi_rec_now()
                         else:
-                            self.show_toast(str(rec.get("summary") or "Wi-Fi channel recommendation ready."))
+                            self.finish_task_progress(
+                                "wifi",
+                                str(rec.get("summary") or "Wi-Fi channel scan complete."),
+                                notify_title="Wi-Fi Channel Scan Complete",
+                            )
                     elif not periodic:
-                        self.show_toast(str(rec.get("summary") or "Wi-Fi channels verified clean."))
+                        self.finish_task_progress(
+                            "wifi",
+                            str(rec.get("summary") or "Wi-Fi channels verified clean."),
+                            notify_title="Wi-Fi Channel Scan Complete",
+                        )
+                    else:
+                        self._active_tasks.pop("wifi", None)
                     continue
 
                 if first == "catalog_scanned":
                     summ = item[1]
                     passive = bool(item[2])
                     self._latest_catalog_summary = summ
-                    if hasattr(self, "topbar_pulse"):
-                        self.topbar_pulse.set_active(False)
                     if not passive or (summ and (summ.newly_installed_programs or summ.quiet_fixes_applied > 0)):
-                        self.show_toast(
-                            f"System Catalog ({summ.mode}): {summ.files_checked_this_pass} checked, "
-                            f"{summ.programs_cataloged} apps, {summ.quiet_fixes_applied} quiet fix(es)."
+                        self.finish_task_progress(
+                            "catalog",
+                            f"System Catalog ({summ.mode}) complete: {summ.files_checked_this_pass} checked, "
+                            f"{summ.programs_cataloged} apps, {summ.quiet_fixes_applied} quiet fix(es).",
+                            notify_title="System Catalog Scan Complete",
                         )
+                    else:
+                        self._active_tasks.pop("catalog", None)
                     if self.current_nav == "scanner":
                         self._render_scanner_page()
                     continue
@@ -7683,9 +7843,11 @@ class AstraCradleApp(ctk.CTk):
                 if first == "rf_waves_scanned":
                     snap_rf = item[1]
                     self._latest_rf_snap = snap_rf
-                    self.show_toast(
-                        f"RF Sweep: RX {snap_rf.total_rx_mbps:.2f} Mbps | TX {snap_rf.total_tx_mbps:.2f} Mbps | "
-                        f"{len(snap_rf.rf_channels)} Wi-Fi APs | {snap_rf.bt_count} BT"
+                    self.finish_task_progress(
+                        "rf_waves",
+                        f"RF Sweep complete: RX {snap_rf.total_rx_mbps:.2f} Mbps | TX {snap_rf.total_tx_mbps:.2f} Mbps | "
+                        f"{len(snap_rf.rf_channels)} Wi-Fi APs | {snap_rf.bt_count} BT",
+                        notify_title="RF & Bluetooth Sweep Complete",
                     )
                     if self.current_nav == "rf_waves":
                         self._render_rf_waves_page()
@@ -7694,7 +7856,11 @@ class AstraCradleApp(ctk.CTk):
                 if first == "bufferbloat_done":
                     bb = item[1]
                     self._last_bufferbloat = bb
-                    self.show_toast(f"Bufferbloat Grade {bb.grade}: +{bb.bloat_delta_ms:.1f} ms bloat")
+                    self.finish_task_progress(
+                        "bufferbloat",
+                        f"Bufferbloat check complete — Grade {bb.grade}: +{bb.bloat_delta_ms:.1f} ms bloat",
+                        notify_title="Bufferbloat Check Complete",
+                    )
                     if self.current_nav == "rf_waves":
                         self._render_rf_waves_page()
                     continue
@@ -7706,6 +7872,11 @@ class AstraCradleApp(ctk.CTk):
                     if key_n:
                         self._proc_lookup_in_flight.discard(key_n)
                         self._proc_lookup_cache_ui[key_n] = res.brief_description
+                    if explicit:
+                        self.finish_task_progress(
+                            "proc_lookup",
+                            f"Process lookup complete: {res.name} ({res.status})",
+                        )
                     if explicit and hasattr(self, "hunter_lookup_result_lbl"):
                         pid_str = f"PID {res.pid} · " if res.pid is not None else ""
                         res_txt = (
@@ -7775,6 +7946,12 @@ class AstraCradleApp(ctk.CTk):
                     self.latest_report = report
                     self.latest_playbook = pb
                     self._update_diagnosis_overview(report, pb)
+                    if "deep_scan" in getattr(self, "_active_tasks", {}):
+                        self.finish_task_progress(
+                            "deep_scan",
+                            f"Deep Scan complete — Equilibrium {report.health_score}/100 ({len(report.findings)} findings).",
+                            notify_title="Deep Scan Complete",
+                        )
                     import time as _t
                     persist_now = (_t.time() - self._last_history_write) > 15.0
                     self.history_db.record_tick(snap, pb.health_score, persist_db=persist_now)
@@ -7824,7 +8001,11 @@ class AstraCradleApp(ctk.CTk):
                 elif self.current_nav == "modules" and self.current_module_tab in ("Processes", "Processes & Firewall"):
                     self._render_processes_module()
                 fs_tag = f" · Focus Guard ({focus.process_name})" if (self.config_obj.pause_during_fullscreen and focus.is_fullscreen) else ""
-                self.topbar_status.configure(text=f"Live · {snap.timestamp.split('T')[-1]}{fs_tag}")
+                if not getattr(self, "_active_tasks", None):
+                    self.topbar_status.configure(
+                        text=f"Live · {snap.timestamp.split('T')[-1]}{fs_tag}",
+                        text_color=self.palette.text_muted,
+                    )
         except queue.Empty:
             pass
         if self.winfo_exists():
@@ -7944,9 +8125,8 @@ class AstraCradleApp(ctk.CTk):
         update_snapshot_findings_inplace(self, report, pb)
 
     def on_deep_scan(self) -> None:
-        self.topbar_status.configure(text="Deep scanning 8 subsystems...")
+        self.begin_task_progress("deep_scan", "Deep scanning 8 subsystems...")
         self.refresh_telemetry_async(include_dns=True, also_scan=True)
-        self.show_toast("Deep Scan complete — Playbook & AI Hunter updated!")
 
     def on_execute_playbook_step(self, step: PlaybookStep) -> None:
         if not step.action_id:
@@ -9186,7 +9366,7 @@ class AstraCradleApp(ctk.CTk):
         self.refresh_telemetry_async(include_dns=False, also_scan=False)
 
     def _on_sync_pihole_lists(self) -> None:
-        self.show_toast("Downloading standard Pi-hole blocklists (with YouTube playback safety)...")
+        self.begin_task_progress("pihole", "Downloading standard Pi-hole blocklists (with YouTube playback safety)...")
 
         def worker() -> None:
             ok, msg, cnt = self.adblock_shield.download_pihole_blocklists(timeout=12.0)
@@ -9269,7 +9449,7 @@ class AstraCradleApp(ctk.CTk):
         self._render_modules()
 
     def _on_scan_lan_tvs(self) -> None:
-        self.show_toast("Scanning Wi-Fi/LAN for Smart TVs and Bluetooth devices...")
+        self.begin_task_progress("lan_tv", "Scanning Wi-Fi/LAN for Smart TVs and Bluetooth devices...")
 
         def _worker() -> None:
             devs = self.lan_tv_shield.scan_lan_devices(self.adblock_shield, ssdp_timeout=0.8)
