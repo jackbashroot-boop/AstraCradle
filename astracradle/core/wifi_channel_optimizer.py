@@ -10,6 +10,7 @@ import platform
 import re
 import shutil
 import subprocess
+import time
 from typing import Any
 
 from .elevation import ElevationRunner
@@ -70,15 +71,20 @@ class WifiOptimizationResult:
     notes: list[str] = field(default_factory=list)
     channel_scores: list[ChannelScore] = field(default_factory=list)
     aps: list[WifiApObservation] = field(default_factory=list)
+    hold_active: bool = False
+    hold_remaining_sec: float = 0.0
 
 
 class WifiChannelOptimizer:
     """Scans Wi-Fi congestion, picks cleanest channels/BSSIDs, and integrates with CachyOS + Fish."""
 
+    DEFAULT_MIN_HOLD_SEC: float = 600.0  # 10-minute minimum channel hold to prevent flapping
+
     def __init__(self, journal: ForensicJournal | None = None, state_dir: Path | None = None) -> None:
         self.journal = journal
         self.state_dir = state_dir or (journal.cfg_mgr.base_dir if journal is not None else Path.home() / ".astracradle")
         self.rollback_path = self.state_dir / "wifi_rollback_state.json"
+        self.hold_state_path = self.state_dir / "wifi_channel_hold.json"
 
     @staticmethod
     def _freq_to_band_and_chan(freq_mhz: int, chan_hint: int = 0) -> tuple[str, int]:
@@ -383,6 +389,76 @@ class WifiChannelOptimizer:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.rollback_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
+    def clear_channel_hold(self) -> None:
+        self.hold_state_path.unlink(missing_ok=True)
+
+    def record_channel_hold(
+        self,
+        ssid: str,
+        bssid: str,
+        channel: int,
+        band: str,
+        min_hold_sec: float = DEFAULT_MIN_HOLD_SEC,
+        now_epoch: float | None = None,
+    ) -> dict[str, Any]:
+        """Persists a minimum channel hold window (>= 10 minutes by default) after selecting a channel."""
+        hold_sec = max(self.DEFAULT_MIN_HOLD_SEC, float(min_hold_sec))
+        now = float(now_epoch) if now_epoch is not None else time.time()
+        payload = {
+            "locked_at_epoch": now,
+            "locked_at_iso": utc_now_iso(),
+            "ssid": str(ssid or ""),
+            "bssid": str(bssid or ""),
+            "channel": int(channel or 0),
+            "band": str(band or ""),
+            "min_hold_sec": hold_sec,
+        }
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.hold_state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return payload
+
+    def get_channel_hold_status(
+        self,
+        ssid: str = "",
+        current_channel: int = 0,
+        min_hold_sec: float = DEFAULT_MIN_HOLD_SEC,
+        now_epoch: float | None = None,
+    ) -> dict[str, Any]:
+        """Returns whether the current SSID/channel is still inside its minimum hold window."""
+        hold_sec = max(self.DEFAULT_MIN_HOLD_SEC, float(min_hold_sec))
+        if not self.hold_state_path.exists():
+            return {"active": False, "remaining_sec": 0.0, "min_hold_sec": hold_sec, "remaining_min_str": "0m 00s"}
+        try:
+            st = json.loads(self.hold_state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {"active": False, "remaining_sec": 0.0, "min_hold_sec": hold_sec, "remaining_min_str": "0m 00s"}
+
+        locked_ssid = str(st.get("ssid") or "")
+        locked_chan = int(st.get("channel") or 0)
+        locked_band = str(st.get("band") or "")
+        locked_bssid = str(st.get("bssid") or "")
+        locked_at = float(st.get("locked_at_epoch") or 0.0)
+        eff_hold = max(hold_sec, float(st.get("min_hold_sec") or hold_sec))
+        now = float(now_epoch) if now_epoch is not None else time.time()
+        elapsed = max(0.0, now - locked_at)
+        remaining = max(0.0, eff_hold - elapsed)
+
+        same_ssid = (not ssid) or (not locked_ssid) or (ssid == locked_ssid)
+        same_chan = (current_channel <= 0) or (locked_chan <= 0) or (int(current_channel) == locked_chan)
+        active = bool(remaining > 0.0 and same_ssid and same_chan)
+        mins = int(remaining // 60)
+        secs = int(remaining % 60)
+        return {
+            "active": active,
+            "remaining_sec": remaining,
+            "min_hold_sec": eff_hold,
+            "remaining_min_str": f"{mins}m {secs:02d}s",
+            "ssid": locked_ssid,
+            "bssid": locked_bssid,
+            "channel": locked_chan,
+            "band": locked_band,
+        }
+
     def optimize_connection(
         self,
         dry_run: bool = False,
@@ -391,6 +467,9 @@ class WifiChannelOptimizer:
         min_improvement: float = 12.0,
         rescan: bool = True,
         aps_override: list[WifiApObservation] | None = None,
+        min_hold_sec: float = DEFAULT_MIN_HOLD_SEC,
+        force_switch: bool = False,
+        now_epoch: float | None = None,
     ) -> WifiOptimizationResult:
         """Evaluates current channel congestion and switches/tunes Wi-Fi to the cleanest BSSID/band."""
         if aps_override is not None:
@@ -417,6 +496,15 @@ class WifiChannelOptimizer:
         score_lookup = {(c.band, c.channel): c.interference_score for c in all_scores}
         cur_interf = score_lookup.get((cur_band, cur_chan), 0.0) if cur_ap else 0.0
 
+        hold_info = self.get_channel_hold_status(
+            ssid=cur_ssid,
+            current_channel=cur_chan,
+            min_hold_sec=min_hold_sec,
+            now_epoch=now_epoch,
+        )
+        hold_active = bool(hold_info.get("active", False) and not force_switch)
+        hold_rem_sec = float(hold_info.get("remaining_sec") or 0.0) if hold_active else 0.0
+
         # Candidate BSSIDs sharing the exact same SSID (e.g. dual-band 2.4/5/6 GHz or mesh nodes)
         same_ssid = [
             a
@@ -424,8 +512,14 @@ class WifiChannelOptimizer:
             if cur_ssid and a.ssid == cur_ssid and a.bssid and a.bssid != cur_bssid and a.signal_pct >= 32
         ]
 
+        def _external_interf(ap: WifiApObservation) -> float:
+            raw = score_lookup.get((ap.band, ap.channel), 25.0)
+            if ap.in_use:
+                return raw
+            return max(0.0, raw - max(10.0, float(ap.signal_pct)))
+
         def _candidate_rank(ap: WifiApObservation) -> float:
-            ch_pen = score_lookup.get((ap.band, ap.channel), 25.0)
+            ch_pen = _external_interf(ap)
             band_bonus = -22.0 if (prefer_5ghz and ap.band in ("5GHz", "6GHz")) else 0.0
             sig_bonus = -0.25 * float(ap.signal_pct)
             return ch_pen + band_bonus + sig_bonus
@@ -445,8 +539,16 @@ class WifiChannelOptimizer:
             notes.append(
                 f"Active link: '{cur_ssid}' ({cur_bssid}) on {cur_band} ch {cur_chan} (Signal {cur_sig}%, Interference {cur_interf:.1f})."
             )
-            if best_alt is not None:
-                alt_interf = score_lookup.get((best_alt.band, best_alt.channel), 25.0)
+            if hold_active:
+                notes.append(
+                    f"Channel hold active ({hold_info['remaining_min_str']} remaining of {int(hold_info['min_hold_sec'] // 60)}m min hold): "
+                    f"keeping {cur_band} Ch {cur_chan}."
+                )
+                actions.append(
+                    f"Channel hold active: keeping {cur_band} Ch {cur_chan} ({hold_info['remaining_min_str']} left)"
+                )
+            elif best_alt is not None:
+                alt_interf = _external_interf(best_alt)
                 should_switch = (
                     (prefer_5ghz and cur_band == "2.4GHz" and best_alt.band in ("5GHz", "6GHz") and best_alt.signal_pct >= 40)
                     or ((cur_interf - alt_interf) >= min_improvement)
@@ -486,18 +588,47 @@ class WifiChannelOptimizer:
                             )
                             if proc.returncode == 0:
                                 switched = True
+                                self.record_channel_hold(
+                                    cur_ssid,
+                                    best_alt.bssid,
+                                    best_alt.channel,
+                                    best_alt.band,
+                                    min_hold_sec=min_hold_sec,
+                                    now_epoch=now_epoch,
+                                )
+                                hold_active = True
+                                hold_rem_sec = max(self.DEFAULT_MIN_HOLD_SEC, float(min_hold_sec))
                                 actions.append(
-                                    f"Switched '{cur_ssid}' -> cleaner BSSID {best_alt.bssid} (ch {best_alt.channel}, {best_alt.band})"
+                                    f"Switched '{cur_ssid}' -> cleaner BSSID {best_alt.bssid} (ch {best_alt.channel}, {best_alt.band}); "
+                                    f"holding channel for min {int(hold_rem_sec // 60)}m"
                                 )
                             else:
                                 notes.append(f"Roam notice: {(proc.stderr or proc.stdout).strip()}")
                         except Exception as exc:
                             notes.append(f"Roam error: {exc}")
                 else:
+                    if not dry_run:
+                        self.record_channel_hold(
+                            cur_ssid,
+                            cur_bssid,
+                            cur_chan,
+                            cur_band,
+                            min_hold_sec=min_hold_sec,
+                            now_epoch=now_epoch,
+                        )
                     notes.append("Current BSSID is already on the cleanest available channel for this SSID.")
             else:
+                if not dry_run:
+                    self.record_channel_hold(
+                        cur_ssid,
+                        cur_bssid,
+                        cur_chan,
+                        cur_band,
+                        min_hold_sec=min_hold_sec,
+                        now_epoch=now_epoch,
+                    )
                 notes.append(
-                    f"Single-AP SSID detected; set router/AP to ch {best5} (5GHz) / ch {best24} (2.4GHz) for lowest congestion."
+                    f"Single-AP SSID detected; keeping Ch {cur_chan} (router optimal: ch {best5} 5GHz / ch {best24} 2.4GHz)."
                 )
 
         if disable_powersave and link_meta.get("powersave") is True and _IFACE_RE.match(iface):
@@ -518,13 +649,14 @@ class WifiChannelOptimizer:
                     pass
 
         action_str = "; ".join(actions) if actions else f"Optimal channels verified (2.4GHz ch {best24}, 5GHz ch {best5})"
-        self.journal.log_event(
-            "WifiChannelOptimizer",
-            "optimize_connection",
-            action_str,
-            "Select cleanest Wi-Fi channel/BSSID on connect and during traffic congestion checks",
-            "ok",
-        )
+        if self.journal is not None:
+            self.journal.log_event(
+                "WifiChannelOptimizer",
+                "optimize_connection",
+                action_str,
+                "Select cleanest Wi-Fi channel/BSSID on connect and hold for minimum 10 minutes",
+                "ok",
+            )
         return WifiOptimizationResult(
             ok=True,
             interface=iface,
@@ -544,6 +676,8 @@ class WifiChannelOptimizer:
             notes=notes,
             channel_scores=all_scores,
             aps=aps,
+            hold_active=hold_active,
+            hold_remaining_sec=hold_rem_sec,
         )
 
     def recommend_channels(
@@ -552,6 +686,8 @@ class WifiChannelOptimizer:
         disable_powersave: bool = True,
         rescan: bool = True,
         aps_override: list[WifiApObservation] | None = None,
+        min_hold_sec: float = DEFAULT_MIN_HOLD_SEC,
+        now_epoch: float | None = None,
     ) -> dict[str, Any]:
         """Scans channels non-destructively and builds a 1-button Yes/No recommendation when less traffic is found."""
         res = self.optimize_connection(
@@ -560,11 +696,18 @@ class WifiChannelOptimizer:
             disable_powersave=disable_powersave,
             rescan=rescan,
             aps_override=aps_override,
+            min_hold_sec=min_hold_sec,
+            now_epoch=now_epoch,
         )
-        can_roam = bool(res.best_bssid_for_ssid and "DRY-RUN:" in res.action_taken)
+        can_roam = bool((not res.hold_active) and res.best_bssid_for_ssid and "DRY-RUN:" in res.action_taken)
         powersave_note = "Wi-Fi power_save is ON (can disable for lower latency)" if "power_save" in res.action_taken else ""
         has_rec = bool(can_roam or powersave_note)
-        if can_roam:
+        if res.hold_active:
+            summary = (
+                f"Channel hold active on '{res.connected_ssid}' ({res.connected_band} Ch {res.connected_channel}) — "
+                f"keeping channel for {int(res.hold_remaining_sec // 60)}m {int(res.hold_remaining_sec % 60):02d}s more."
+            )
+        elif can_roam:
             summary = (
                 f"Switch '{res.connected_ssid}' from {res.connected_band} Ch {res.connected_channel} "
                 f"to cleaner {res.best_bssid_band} Ch {res.best_bssid_channel} ({res.best_bssid_for_ssid})?"
@@ -585,6 +728,8 @@ class WifiChannelOptimizer:
         return {
             "has_recommendation": has_rec,
             "can_roam": can_roam,
+            "hold_active": res.hold_active,
+            "hold_remaining_sec": res.hold_remaining_sec,
             "summary": summary,
             "details": details,
             "best_24_channel": res.best_24_channel,
@@ -620,6 +765,7 @@ class WifiChannelOptimizer:
             subprocess.run(["iw", "dev", iface, "set", "power_save", "on"], capture_output=True, text=True, timeout=3, check=False)
             notes.append(f"Restored power_save on {iface}")
         self.rollback_path.unlink(missing_ok=True)
+        self.clear_channel_hold()
         msg = "Wi-Fi overrides restored cleanly" + (f" ({'; '.join(notes)})" if notes else "")
         self.journal.log_event("WifiChannelOptimizer", "restore_wifi", msg, "User reverted Wi-Fi optimizer overrides", "ok")
         return True, msg

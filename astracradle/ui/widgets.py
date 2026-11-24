@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import time
 import tkinter as tk
 
 import customtkinter as ctk
@@ -11,9 +12,11 @@ from PIL import Image, ImageSequence, ImageTk
 
 from ..theme import ThemePalette
 
+_GIF_SYNC_EPOCH = time.monotonic()
+
 
 class AnimatedGifLabel(tk.Label):
-    """Plays a multi-frame animated GIF smoothly inside a native Tk/CTk frame."""
+    """Plays a multi-frame animated GIF smoothly and phase-synced inside a native Tk/CTk frame."""
 
     def __init__(
         self,
@@ -26,24 +29,45 @@ class AnimatedGifLabel(tk.Label):
         super().__init__(master, bg=bg, bd=0, highlightthickness=0, **kwargs)
         self._frames: list[ImageTk.PhotoImage] = []
         self._delays: list[int] = []
+        self._cum_ms: list[int] = []
+        self._total_ms: int = 0
         self._idx = 0
+        self._paused = False
         self._after_id: str | None = None
 
         if gif_path.exists():
             try:
-                im = Image.open(gif_path)
-                for frame in ImageSequence.Iterator(im):
-                    fr = frame.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
-                    self._frames.append(ImageTk.PhotoImage(fr, master=self))
-                    self._delays.append(max(35, int(frame.info.get("duration", 55))))
+                with Image.open(gif_path) as im:
+                    for frame in ImageSequence.Iterator(im):
+                        fr = frame.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
+                        self._frames.append(ImageTk.PhotoImage(fr, master=self))
+                        d = max(25, int(frame.info.get("duration", 35) or 35))
+                        self._delays.append(d)
+                        self._total_ms += d
+                        self._cum_ms.append(self._total_ms)
             except Exception:
                 self._frames = []
+                self._delays = []
+                self._cum_ms = []
+                self._total_ms = 0
 
         if self._frames:
             self.configure(image=self._frames[0])
             if len(self._frames) > 1:
                 self._schedule_next()
         self.bind("<Destroy>", self._on_destroy, add="+")
+
+    def set_paused(self, paused: bool) -> None:
+        self._paused = bool(paused)
+        if self._paused:
+            if self._after_id is not None:
+                try:
+                    self.after_cancel(self._after_id)
+                except Exception:
+                    pass
+                self._after_id = None
+        elif self._after_id is None and len(self._frames) > 1:
+            self._advance()
 
     def _on_destroy(self, _event=None) -> None:
         if self._after_id is not None:
@@ -53,19 +77,33 @@ class AnimatedGifLabel(tk.Label):
                 pass
             self._after_id = None
 
-    def _schedule_next(self) -> None:
-        if not self.winfo_exists() or not self._frames:
+    def _frame_for_clock(self) -> tuple[int, int]:
+        """Returns `(frame_index, ms_until_next_frame)` aligned to shared monotonic clock."""
+        if not self._total_ms or len(self._frames) <= 1:
+            return 0, 40
+        elapsed_ms = int((time.monotonic() - _GIF_SYNC_EPOCH) * 1000.0) % self._total_ms
+        # Binary-like linear scan on <=64 frames is microsecond-fast
+        for i, end_ms in enumerate(self._cum_ms):
+            if elapsed_ms < end_ms:
+                rem = max(16, end_ms - elapsed_ms)
+                return i, rem
+        return 0, max(16, self._delays[0])
+
+    def _schedule_next(self, wait_ms: int | None = None) -> None:
+        if self._paused or not self.winfo_exists() or not self._frames:
             return
-        delay = self._delays[self._idx % len(self._delays)]
-        self._after_id = self.after(delay, self._advance)
+        delay = wait_ms if wait_ms is not None else self._delays[self._idx % len(self._delays)]
+        self._after_id = self.after(max(16, int(delay)), self._advance)
 
     def _advance(self) -> None:
         self._after_id = None
-        if not self.winfo_exists() or not self._frames:
+        if self._paused or not self.winfo_exists() or not self._frames:
             return
-        self._idx = (self._idx + 1) % len(self._frames)
-        self.configure(image=self._frames[self._idx])
-        self._schedule_next()
+        idx, wait_ms = self._frame_for_clock()
+        if idx != self._idx:
+            self._idx = idx
+            self.configure(image=self._frames[idx])
+        self._schedule_next(wait_ms)
 
 
 class EquilibriumGauge(tk.Canvas):

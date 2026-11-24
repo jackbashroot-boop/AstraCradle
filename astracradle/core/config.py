@@ -316,6 +316,7 @@ class AppConfig:
     wifi_auto_optimize: bool = True
     wifi_prompt_before_apply: bool = True
     wifi_check_interval_min: int = 10
+    wifi_min_channel_hold_min: int = 10
     wifi_prefer_5ghz: bool = True
     wifi_disable_powersave: bool = True
     confirm_important_prompts: bool = True
@@ -351,6 +352,7 @@ class AppConfig:
     consent_privacy_scan: bool = False
     consent_auto_remediate: bool = False
     consent_crash_diagnostics: bool = True
+    consent_wifi_auto_channel: bool = False
     app_auto_detect_enabled: bool = False
     auto_detect_rules: dict[str, str] = field(
         default_factory=lambda: {

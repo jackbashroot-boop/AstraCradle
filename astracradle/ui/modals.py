@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import time
 import tkinter as tk
 from typing import Callable
 
@@ -125,6 +126,7 @@ class ConsentAutomationDialog(ctk.CTkToplevel):
         self.v_bloat = tk.BooleanVar(value=config.consent_bloat_scan)
         self.v_crash = tk.BooleanVar(value=config.consent_crash_diagnostics)
         self.v_auto = tk.BooleanVar(value=config.consent_auto_remediate)
+        self.v_wifi_auto = tk.BooleanVar(value=bool(getattr(config, "consent_wifi_auto_channel", False)))
 
         opts = [
             (self.v_tel, "Hardware, Telemetry & Latency (CPU, GPU/VRAM, RAM, SMART Disk, DNS, DPC/IRQs)"),
@@ -133,6 +135,7 @@ class ConsentAutomationDialog(ctk.CTkToplevel):
             (self.v_bloat, "Storage Bloat & AI/Dev Model Vault (Reclaimable caches & large dev caches)"),
             (self.v_crash, "Crash & 48h Driver Post-Mortem (Diagnose hangs/reboots locally)"),
             (self.v_auto, "Automate Safe Optimizations (Auto-quarantine stale caches & trim logs silently)"),
+            (self.v_wifi_auto, "Auto-Select Best Wi-Fi Channel (Hold chosen channel for at least 10 minutes)"),
         ]
         for var, txt in opts:
             ctk.CTkCheckBox(
@@ -179,6 +182,7 @@ class ConsentAutomationDialog(ctk.CTkToplevel):
         self.v_bloat.set(True)
         self.v_crash.set(True)
         self.v_auto.set(True)
+        self.v_wifi_auto.set(True)
         self._save_selected(run_full_scan=True, grant_privacy=True)
 
     def _decline_minimal(self) -> None:
@@ -188,6 +192,7 @@ class ConsentAutomationDialog(ctk.CTkToplevel):
         self.v_bloat.set(False)
         self.v_crash.set(False)
         self.v_auto.set(False)
+        self.v_wifi_auto.set(False)
         self._save_selected(run_full_scan=False, grant_privacy=False)
 
     def _save_selected(self, run_full_scan: bool | None = None, grant_privacy: bool | None = None) -> None:
@@ -201,6 +206,7 @@ class ConsentAutomationDialog(ctk.CTkToplevel):
             "consent_bloat_scan": bool(self.v_bloat.get()),
             "consent_crash_diagnostics": bool(self.v_crash.get()),
             "consent_auto_remediate": bool(self.v_auto.get()),
+            "consent_wifi_auto_channel": bool(self.v_wifi_auto.get()),
             "_trigger_full_discovery": bool(should_scan),
         }
         if grant_privacy is not None:
@@ -1739,16 +1745,29 @@ class FloatingMiniOrbWindow(ctk.CTkToplevel):
         self.canvas.pack(fill="both", expand=True)
 
         self._frames = []
+        self._frame_dur_sec = 0.035
         if gif_path and gif_path.exists():
             try:
                 from PIL import Image, ImageSequence, ImageTk
 
                 with Image.open(gif_path) as im:
+                    self._frame_dur_sec = max(0.025, float(im.info.get("duration", 30) or 30) / 1000.0)
                     for fr in ImageSequence.Iterator(im):
-                        self._frames.append(ImageTk.PhotoImage(fr.convert("RGBA").resize((56, 56)), master=self.canvas))
+                        self._frames.append(
+                            ImageTk.PhotoImage(fr.convert("RGBA").resize((56, 56), Image.Resampling.LANCZOS), master=self.canvas)
+                        )
             except Exception:
                 self._frames = []
         self._frame_idx = 0
+        self._anim_acc = 0.0
+        self._last_tick_ts = time.monotonic()
+        self._img_item = None
+        self._score_item = None
+        if self._frames:
+            self._img_item = self.canvas.create_image(34, 34, image=self._frames[0])
+        self._score_item = self.canvas.create_text(
+            34, 58, text=f"{self.score}", fill=palette.accent_brass, font=("DejaVu Sans", 8, "bold")
+        )
 
         self.canvas.bind("<Enter>", lambda _e: setattr(self, "_hover", True))
         self.canvas.bind("<Leave>", lambda _e: setattr(self, "_hover", False))
@@ -1801,22 +1820,31 @@ class FloatingMiniOrbWindow(ctk.CTkToplevel):
                 return
         except Exception:
             return
-        self.canvas.delete("all")
+        now = time.monotonic()
+        dt = min(0.15, max(0.005, now - self._last_tick_ts))
+        self._last_tick_ts = now
         p = self.palette
-        if self._frames:
-            if self._hover:
-                self._frame_idx = (self._frame_idx + 1) % len(self._frames)
-            self.canvas.create_image(34, 34, image=self._frames[self._frame_idx])
+        if self._frames and self._img_item is not None:
+            speed = 2.0 if self._hover else 1.0
+            self._anim_acc += dt * speed
+            step = int(self._anim_acc / self._frame_dur_sec)
+            if step > 0:
+                self._anim_acc -= step * self._frame_dur_sec
+                self._frame_idx = (self._frame_idx + step) % len(self._frames)
+                self.canvas.itemconfigure(self._img_item, image=self._frames[self._frame_idx])
         else:
+            self.canvas.delete("fallback")
             cx = cy = 34.0
             r = 24.0
-            self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=p.accent_cyan, width=2.0)
+            self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=p.accent_cyan, width=2.0, tags="fallback")
             px = cx + r * math.cos(self._phase)
             py = cy + r * math.sin(self._phase)
-            self.canvas.create_oval(px - 3, py - 3, px + 3, py + 3, fill=p.accent_jade, outline="")
-        self.canvas.create_text(34, 58, text=f"{self.score}", fill=p.accent_brass, font=("DejaVu Sans", 8, "bold"))
-        self._phase = (self._phase + (0.24 if self._hover else 0.08)) % (2.0 * math.pi)
-        self._after_id = self.after(36 if self._hover else 90, self._tick)
+            self.canvas.create_oval(px - 3, py - 3, px + 3, py + 3, fill=p.accent_jade, outline="", tags="fallback")
+            self._phase = (self._phase + dt * (5.5 if self._hover else 2.2)) % (2.0 * math.pi)
+        if self._score_item is not None:
+            self.canvas.itemconfigure(self._score_item, text=f"{self.score}")
+            self.canvas.tag_raise(self._score_item)
+        self._after_id = self.after(35, self._tick)
 
 
 class DesktopTelemetryWidget(ctk.CTkToplevel):
@@ -1897,10 +1925,13 @@ class DesktopTelemetryWidget(ctk.CTkToplevel):
                 with Image.open(gif_path) as im:
                     for fr in ImageSequence.Iterator(im):
                         self._frames.append(
-                            ImageTk.PhotoImage(fr.convert("RGBA").resize((24, 24)), master=self.crest_canvas)
+                            ImageTk.PhotoImage(fr.convert("RGBA").resize((24, 24), Image.Resampling.LANCZOS), master=self.crest_canvas)
                         )
             except Exception:
                 self._frames = []
+        self._crest_img_item = self.crest_canvas.create_image(14, 14, image=self._frames[0]) if self._frames else None
+        self._crest_last_ts = time.monotonic()
+        self._crest_acc = 0.0
 
         self.title_lbl = ctk.CTkLabel(
             self.hdr, text="AstraCradle", font=fonts["body_bold"], text_color=palette.text_primary
@@ -2219,15 +2250,22 @@ class DesktopTelemetryWidget(ctk.CTkToplevel):
         try:
             if not self.winfo_exists():
                 return
-            self.crest_canvas.delete("all")
-            if self._frames:
-                if self._hover:
-                    self._frame_idx = (self._frame_idx + 1) % len(self._frames)
-                self.crest_canvas.create_image(14, 14, image=self._frames[self._frame_idx])
-            else:
+            now = time.monotonic()
+            dt = min(0.2, max(0.005, now - getattr(self, "_crest_last_ts", now)))
+            self._crest_last_ts = now
+            if self._frames and getattr(self, "_crest_img_item", None) is not None:
+                speed = 2.0 if self._hover else 0.85
+                self._crest_acc = getattr(self, "_crest_acc", 0.0) + dt * speed
+                step = int(self._crest_acc / 0.035)
+                if step > 0:
+                    self._crest_acc -= step * 0.035
+                    self._frame_idx = (self._frame_idx + step) % len(self._frames)
+                    self.crest_canvas.itemconfigure(self._crest_img_item, image=self._frames[self._frame_idx])
+            elif not self._frames:
+                self.crest_canvas.delete("all")
                 self.crest_canvas.create_oval(4, 4, 24, 24, outline=self.palette.accent_cyan, width=2)
                 self.crest_canvas.create_oval(11, 11, 17, 17, fill=self.palette.accent_jade, outline="")
-            self._after_id = self.after(55 if self._hover else 240, self._tick)
+            self._after_id = self.after(35 if self._hover else 70, self._tick)
         except Exception:
             self._after_id = None
 

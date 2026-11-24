@@ -612,23 +612,43 @@ def run_cli(args: argparse.Namespace) -> int:
             return 0 if ok_i else 1
         if args.wifi_watch:
             mins = max(1, int(cfg.wifi_check_interval_min))
-            print(f"AstraWiFi Watchdog active (checking every {mins}m; Ctrl+C to stop)...")
+            min_hold_sec = max(600.0, float(getattr(cfg, "wifi_min_channel_hold_min", 10)) * 60.0)
+            print(f"AstraWiFi Watchdog active (checking every {mins}m, min channel hold {int(min_hold_sec // 60)}m; Ctrl+C to stop)...")
             try:
                 while True:
-                    res = wopt.optimize_connection(
-                        dry_run=cfg.dry_run_default,
-                        prefer_5ghz=cfg.wifi_prefer_5ghz,
-                        disable_powersave=cfg.wifi_disable_powersave,
-                    )
-                    print(f"[{res.interface}] {res.action_taken}")
+                    if getattr(cfg, "consent_wifi_auto_channel", False) or not getattr(cfg, "wifi_prompt_before_apply", True):
+                        res = wopt.optimize_connection(
+                            dry_run=cfg.dry_run_default,
+                            prefer_5ghz=cfg.wifi_prefer_5ghz,
+                            disable_powersave=cfg.wifi_disable_powersave,
+                            min_hold_sec=min_hold_sec,
+                        )
+                        print(f"[{res.interface}] {res.action_taken}")
+                    else:
+                        rec = wopt.recommend_channels(
+                            prefer_5ghz=cfg.wifi_prefer_5ghz,
+                            disable_powersave=cfg.wifi_disable_powersave,
+                            min_hold_sec=min_hold_sec,
+                        )
+                        print(f"[Recommendation] {rec['summary']}")
                     _time.sleep(mins * 60)
             except KeyboardInterrupt:
                 return 0
         if args.wifi_optimize:
+            min_hold_sec = max(600.0, float(getattr(cfg, "wifi_min_channel_hold_min", 10)) * 60.0)
+            if not (getattr(cfg, "consent_wifi_auto_channel", False) or not getattr(cfg, "wifi_prompt_before_apply", True) or bool(args.yes)):
+                rec = wopt.recommend_channels(
+                    prefer_5ghz=cfg.wifi_prefer_5ghz,
+                    disable_powersave=cfg.wifi_disable_powersave,
+                    min_hold_sec=min_hold_sec,
+                )
+                print(f"[Permission required for auto-switch; use --yes or grant permission] {rec['summary']}")
+                return 0
             res = wopt.optimize_connection(
                 dry_run=cfg.dry_run_default,
                 prefer_5ghz=cfg.wifi_prefer_5ghz,
                 disable_powersave=cfg.wifi_disable_powersave,
+                min_hold_sec=min_hold_sec,
             )
             print(f"[{res.interface}] {res.action_taken}")
             for n in res.notes:

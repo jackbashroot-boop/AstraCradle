@@ -709,7 +709,7 @@ class AstraCradleApp(ctk.CTk):
             self.bind(f"<Control-Key-{key_num}>", lambda _e, key=k: self.switch_nav(key))
 
     def _set_animations_paused(self, paused: bool) -> None:
-        for attr in ("gauge", "category_emblem", "hero_motion_canvas", "rf_wave_chart", "solar_backdrop"):
+        for attr in ("gauge", "category_emblem", "hero_motion_canvas", "rf_wave_chart", "solar_backdrop", "sidebar_gif", "about_gif"):
             w = getattr(self, attr, None)
             if w is not None and hasattr(w, "set_paused"):
                 try:
@@ -1200,11 +1200,19 @@ class AstraCradleApp(ctk.CTk):
         try:
             if not self.winfo_exists() or not self._hover_icon_frames:
                 return
-            fr = self._hover_icon_frames[self._hover_icon_idx % len(self._hover_icon_frames)]
+            n = len(self._hover_icon_frames)
+            # Align to 35ms (hover boost) or 90ms (idle) monotonic phase so taskbar 3D rotation never stutters
+            interval_ms = 35 if self._hover_icon_boost else 90
+            now = time.monotonic()
+            last_t = getattr(self, "_hover_icon_last_ts", now)
+            self._hover_icon_last_ts = now
+            dt_ms = max(16.0, min(180.0, (now - last_t) * 1000.0))
+            step = max(1, int(round(dt_ms / float(interval_ms)))) if hasattr(self, "_hover_icon_started") else 1
+            self._hover_icon_started = True
+            self._hover_icon_idx = (self._hover_icon_idx + step) % n
+            fr = self._hover_icon_frames[self._hover_icon_idx]
             self.wm_iconphoto(True, fr)
             self.tray.pulse_icon_frame(self._hover_icon_idx)
-            self._hover_icon_idx = (self._hover_icon_idx + 1) % len(self._hover_icon_frames)
-            interval_ms = 55 if self._hover_icon_boost else 150
             self._hover_icon_after_id = self.after(interval_ms, self._step_hover_icon_anim)
         except Exception:
             self._hover_icon_after_id = None
@@ -1843,6 +1851,15 @@ class AstraCradleApp(ctk.CTk):
             for k, v in perms.items():
                 if hasattr(self.config_obj, k):
                     setattr(self.config_obj, k, v)
+            if "consent_wifi_auto_channel" in perms:
+                if perms["consent_wifi_auto_channel"]:
+                    self.config_obj.wifi_auto_optimize = True
+                    self.config_obj.wifi_prompt_before_apply = False
+                    self.config_obj.wifi_min_channel_hold_min = max(
+                        10, int(getattr(self.config_obj, "wifi_min_channel_hold_min", 10))
+                    )
+                else:
+                    self.config_obj.wifi_prompt_before_apply = True
             self.config_obj.consent_prompted = True
             self.cfg_mgr.save(self.config_obj)
             mode = scan_mode or ("full" if trigger_full else ("selected" if any(perms.values()) else "minimal"))
@@ -1853,6 +1870,8 @@ class AstraCradleApp(ctk.CTk):
                 "User configured explicit local telemetry, PC discovery, and automation consent",
                 "ok",
             )
+            if perms.get("consent_wifi_auto_channel") and getattr(self.config_obj, "wifi_auto_optimize", True):
+                self._auto_wifi_optimize_async(periodic=False)
             if mode == "full" or (mode == "selected" and any(perms.values())):
                 self.show_toast("Permission granted — running full local PC baseline discovery...")
                 self.run_full_pc_discovery_async(show_dialog=True)
@@ -4709,11 +4728,28 @@ class AstraCradleApp(ctk.CTk):
             render_wifi_mesh_section(self, self.wifi_scroll)
             return
 
-        # Live Link Summary
+        # Live Link Summary + 10m Minimum Channel Hold Status
+        min_hold_sec = max(600.0, float(getattr(self.config_obj, "wifi_min_channel_hold_min", 10)) * 60.0)
+        hold_st = self.wifi_optimizer.get_channel_hold_status(
+            ssid=res.connected_ssid,
+            current_channel=res.connected_channel,
+            min_hold_sec=min_hold_sec,
+        )
+        hold_txt = (
+            f"Channel Hold Lock: Active ({hold_st['remaining_min_str']} remaining of {int(hold_st['min_hold_sec'] // 60)}m min hold)"
+            if hold_st.get("active")
+            else f"Channel Hold Lock: Ready (keeps auto-selected channel for min {int(min_hold_sec // 60)}m)"
+        )
+        perm_txt = (
+            "Auto-Select Permitted (switches automatically & holds >= 10m)"
+            if getattr(self.config_obj, "consent_wifi_auto_channel", False)
+            else "Prompt Mode (grant Wi-Fi permission in Permissions to auto-select)"
+        )
         link_txt = (
             f"Interface: {res.interface} · Connected: {res.connected_ssid or 'Not associated'} "
             f"({res.connected_band} Ch {res.connected_channel or '--'} · {res.connected_signal}% signal)\n"
             f"Cleanest Channels -> 2.4 GHz: Ch {res.best_24_channel} | 5 GHz: Ch {res.best_5_channel} | 6 GHz: Ch {res.best_6_channel}\n"
+            f"{hold_txt} · {perm_txt}\n"
             f"Status: {res.action_taken}"
         )
         ctk.CTkLabel(
@@ -4825,13 +4861,19 @@ class AstraCradleApp(ctk.CTk):
 
     def _auto_wifi_optimize_async(self, periodic: bool = False) -> None:
         self._last_wifi_check_ts = time.monotonic()
+        min_hold_sec = max(600.0, float(getattr(self.config_obj, "wifi_min_channel_hold_min", 10)) * 60.0)
+        can_auto_select = bool(
+            getattr(self.config_obj, "consent_wifi_auto_channel", False)
+            and not getattr(self.config_obj, "wifi_prompt_before_apply", True)
+        )
 
         def _worker() -> None:
-            if getattr(self.config_obj, "wifi_prompt_before_apply", True):
+            if not can_auto_select:
                 rec = self.wifi_optimizer.recommend_channels(
                     prefer_5ghz=bool(getattr(self.config_obj, "wifi_prefer_5ghz", True)),
                     disable_powersave=bool(getattr(self.config_obj, "wifi_disable_powersave", True)),
                     rescan=(not periodic),
+                    min_hold_sec=min_hold_sec,
                 )
                 self._ui_queue.put(("wifi_recommended", rec, periodic))
             else:
@@ -4840,6 +4882,7 @@ class AstraCradleApp(ctk.CTk):
                     prefer_5ghz=bool(getattr(self.config_obj, "wifi_prefer_5ghz", True)),
                     disable_powersave=bool(getattr(self.config_obj, "wifi_disable_powersave", True)),
                     rescan=(not periodic),
+                    min_hold_sec=min_hold_sec,
                 )
                 self._ui_queue.put(("wifi_scanned", res, periodic))
 
@@ -4847,12 +4890,14 @@ class AstraCradleApp(ctk.CTk):
 
     def _on_scan_wifi_channels(self) -> None:
         self.show_toast("Scanning 2.4 / 5 / 6 GHz Wi-Fi channels for congestion...")
+        min_hold_sec = max(600.0, float(getattr(self.config_obj, "wifi_min_channel_hold_min", 10)) * 60.0)
 
         def _worker() -> None:
             rec = self.wifi_optimizer.recommend_channels(
                 prefer_5ghz=bool(getattr(self.config_obj, "wifi_prefer_5ghz", True)),
                 disable_powersave=bool(getattr(self.config_obj, "wifi_disable_powersave", True)),
                 rescan=True,
+                min_hold_sec=min_hold_sec,
             )
             self._ui_queue.put(("wifi_recommended", rec, False))
 
@@ -4864,11 +4909,13 @@ class AstraCradleApp(ctk.CTk):
 
     def _on_apply_wifi_rec_now(self) -> None:
         self._latest_wifi_rec = None
+        min_hold_sec = max(600.0, float(getattr(self.config_obj, "wifi_min_channel_hold_min", 10)) * 60.0)
         res = self.wifi_optimizer.optimize_connection(
             dry_run=bool(self.dry_run_var.get()),
             prefer_5ghz=bool(getattr(self.config_obj, "wifi_prefer_5ghz", True)),
             disable_powersave=bool(getattr(self.config_obj, "wifi_disable_powersave", True)),
             rescan=False,
+            min_hold_sec=min_hold_sec,
         )
         self._latest_wifi_res = res
         self.show_toast(res.action_taken)
@@ -4881,8 +4928,15 @@ class AstraCradleApp(ctk.CTk):
 
     def _on_toggle_wifi_prompt(self, enable: bool) -> None:
         self.config_obj.wifi_prompt_before_apply = bool(enable)
+        if not enable:
+            self.config_obj.consent_wifi_auto_channel = True
+            self.config_obj.wifi_min_channel_hold_min = max(10, int(getattr(self.config_obj, "wifi_min_channel_hold_min", 10)))
         self.cfg_mgr.save(self.config_obj)
-        self.show_toast(f"Wi-Fi Yes/No Prompt {'ENABLED' if enable else 'DISABLED (auto-switch)'}.")
+        self.show_toast(
+            "Wi-Fi Yes/No Prompt ENABLED."
+            if enable
+            else "Wi-Fi Auto-Select ENABLED (keeps chosen channel for at least 10 minutes)."
+        )
 
     def _on_install_cachyos_fish_wifi(self) -> None:
         ok, items = self.wifi_optimizer.install_cachyos_fish_integration(
