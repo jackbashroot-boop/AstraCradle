@@ -59,12 +59,22 @@ if errorlevel 1 (
 
 echo [3/4] Running 7-invariant self-check and creating Start Menu shortcut...
 python -m astracradle --self-check
-set "ADD_DESKTOP="
-set /p "ADD_DESKTOP=Create an AstraCradle icon on your Desktop? [y/N]: "
-if /i "%ADD_DESKTOP%"=="y" (
-    python -m astracradle --install-shortcuts --desktop-icon
+set "MEM_DESK=ask"
+for /f "usebackq delims=" %%M in (`python -c "import json,pathlib; p=pathlib.Path.home()/'.astracradle/machine_install_memory.json'; d=json.loads(p.read_text()) if p.exists() else {}; v=d.get('desktop_icon'); print('yes' if v is True else ('no' if v is False else 'ask'))" 2^>nul`) do set "MEM_DESK=%%M"
+if /i "%MEM_DESK%"=="yes" (
+    echo [Memory] Remembered Desktop Icon preference: YES
+    python -m astracradle --install-shortcuts --desktop-icon --reapply-memory --install-method bat --install-dir "%CD%"
+) else if /i "%MEM_DESK%"=="no" (
+    echo [Memory] Remembered Desktop Icon preference: Menu Only
+    python -m astracradle --install-shortcuts --no-desktop-icon --reapply-memory --install-method bat --install-dir "%CD%"
 ) else (
-    python -m astracradle --install-shortcuts
+    set "ADD_DESKTOP="
+    set /p "ADD_DESKTOP=Create an AstraCradle icon on your Desktop? [y/N]: "
+    if /i "!ADD_DESKTOP!"=="y" (
+        python -m astracradle --install-shortcuts --desktop-icon --reapply-memory --install-method bat --install-dir "%CD%"
+    ) else (
+        python -m astracradle --install-shortcuts --no-desktop-icon --reapply-memory --install-method bat --install-dir "%CD%"
+    )
 )
 
 echo [4/4] Setup complete! Launching AstraCradle v2.5.1...

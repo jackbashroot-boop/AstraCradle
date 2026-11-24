@@ -53,18 +53,26 @@ for bin_name in astracradle astracradle-gui astracradle-wifi; do
   fi
 done
 
-echo "[4/5] Running self-check & App Menu setup..."
+echo "[4/5] Running self-check & App Menu setup (using Machine Update Memory)..."
 ./.venv/bin/python -m astracradle --self-check
-if [ "$DESKTOP_ICON" -eq 0 ] && [ -t 0 ]; then
+MEM_DESK="$(./.venv/bin/python -c "import json,pathlib; p=pathlib.Path.home()/'.astracradle/machine_install_memory.json'; d=json.loads(p.read_text()) if p.exists() else {}; v=d.get('desktop_icon'); print('yes' if v is True else ('no' if v is False else 'ask'))" 2>/dev/null || echo ask)"
+if [ "$DESKTOP_ICON" -eq 1 ]; then
+  ./.venv/bin/python -m astracradle --install-shortcuts --desktop-icon --reapply-memory --install-method bash --install-dir "$(pwd)"
+elif [ "$MEM_DESK" = "yes" ]; then
+  echo "[Memory] Remembered Desktop Icon preference from previous install: YES"
+  ./.venv/bin/python -m astracradle --install-shortcuts --desktop-icon --reapply-memory --install-method bash --install-dir "$(pwd)"
+elif [ "$MEM_DESK" = "no" ]; then
+  echo "[Memory] Remembered Desktop Icon preference from previous install: Menu Only"
+  ./.venv/bin/python -m astracradle --install-shortcuts --no-desktop-icon --reapply-memory --install-method bash --install-dir "$(pwd)"
+elif [ -t 0 ]; then
   read -r -p "Create an AstraCradle icon on your Desktop? [y/N] " ans || true
   if [[ "${ans:-}" =~ ^[Yy]$ ]]; then
-    DESKTOP_ICON=1
+    ./.venv/bin/python -m astracradle --install-shortcuts --desktop-icon --reapply-memory --install-method bash --install-dir "$(pwd)"
+  else
+    ./.venv/bin/python -m astracradle --install-shortcuts --no-desktop-icon --reapply-memory --install-method bash --install-dir "$(pwd)"
   fi
-fi
-if [ "$DESKTOP_ICON" -eq 1 ]; then
-  ./.venv/bin/python -m astracradle --install-shortcuts --desktop-icon
 else
-  ./.venv/bin/python -m astracradle --install-shortcuts
+  ./.venv/bin/python -m astracradle --install-shortcuts --no-desktop-icon --reapply-memory --install-method bash --install-dir "$(pwd)"
 fi
 
 echo "[5/5] Setup complete!"

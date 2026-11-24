@@ -524,3 +524,84 @@ def test_task_progress_and_completion_toasts_for_tv_bluetooth_and_buttons() -> N
         finally:
             app.destroy()
 
+
+def test_persistent_machine_install_memory_and_wifi_mesh_password_toggle() -> None:
+    """Verifies persistent machine update memory auto-reapply AND Wi-Fi Mesh password Hide/Show toggle."""
+    from unittest.mock import patch
+    from astracradle.core.config import ConfigManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.lifecycle import LifecycleManager
+    from astracradle.core.rollback import RollbackManager
+    from astracradle.core.scripts_engine import ScriptsEngine
+    from astracradle.core.executor import GuardedExecutor
+    from astracradle.core.updater import ModuleAndUpdateManager
+    from astracradle.ui.app import AstraCradleApp
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg_mgr = ConfigManager(base_dir=td)
+        cfg = cfg_mgr.load()
+        journal = ForensicJournal(cfg_mgr)
+        rb = RollbackManager(cfg_mgr)
+        ex = GuardedExecutor(cfg_mgr, rb, journal)
+        sc = ScriptsEngine(cfg_mgr, ex, journal)
+        lc = LifecycleManager(cfg_mgr, rb, journal, sc)
+        upd = ModuleAndUpdateManager(cfg_mgr, journal)
+
+        repo_root = Path(__file__).resolve().parents[1]
+        mem = upd.record_install_memory(
+            install_dir=repo_root,
+            install_method="fish",
+            desktop_icon=True,
+            shortcuts_installed=True,
+            cachyos_fish_wifi_hooks=True,
+            shell_links_installed=True,
+            step_note="Initial machine setup",
+            config=cfg,
+        )
+        assert upd.install_memory_path.exists()
+        assert mem["desktop_icon"] is True
+        assert "cachyos_fish_wifi_hooks" in mem["remembered_steps"]
+
+        # Simulate update on the same machine: remembered steps & desktop_icon=True auto-reapply without prompting
+        with patch.object(lc, "install_shortcuts", return_value=[Path(td) / "astracradle.desktop"]) as m_short:
+            reapplied, mem2 = upd.reapply_remembered_setup(cfg, lc, repo_dir=repo_root)
+            m_short.assert_called_once_with(repo_root, include_desktop_icon=True)
+            assert any("Desktop Icon: YES" in s for s in reapplied)
+            assert len(mem2["update_history"]) >= 2
+
+        # Verify Wi-Fi Mesh password Hide/Show toggle in UI (hidden by default, reveals & masks cleanly)
+        app = AstraCradleApp(base_dir=td, show_startup_popups=False)
+        try:
+            app.switch_nav("wifi")
+            app.update()
+            assert hasattr(app, "mesh_pass_entry") and hasattr(app, "mesh_pass_toggle_btn")
+            assert app.mesh_pass_hidden_var.get() is True
+            assert app.mesh_pass_entry.cget("show") == "•"
+            assert app.mesh_pass_toggle_btn.cget("text") == "Show"
+
+            app.mesh_pass_var.set("SuperSecretMeshKey99")
+            # Build plan while hidden -> plan label masks passphrase
+            plan = app.wifi_mesh.build_mesh_plan(
+                uplink_input="eth0",
+                mesh_ssid="AstraMesh-Array",
+                passphrase="SuperSecretMeshKey99",
+            )
+            app._latest_mesh_plan = plan
+            app.mesh_pass_toggle_btn.invoke()
+            app.update()
+            assert app.mesh_pass_hidden_var.get() is False
+            assert app.mesh_pass_entry.cget("show") == ""
+            assert app.mesh_pass_toggle_btn.cget("text") == "Hide"
+            assert "SuperSecretMeshKey99" in app.mesh_plan_lbl.cget("text")
+
+            # Toggle back to hidden -> masks entry and plan label again
+            app.mesh_pass_toggle_btn.invoke()
+            app.update()
+            assert app.mesh_pass_hidden_var.get() is True
+            assert app.mesh_pass_entry.cget("show") == "•"
+            assert app.mesh_pass_toggle_btn.cget("text") == "Show"
+            assert "SuperSecretMeshKey99" not in app.mesh_plan_lbl.cget("text")
+            assert "••••••••••••" in app.mesh_plan_lbl.cget("text")
+        finally:
+            app.destroy()
+

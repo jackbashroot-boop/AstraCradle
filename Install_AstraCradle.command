@@ -42,14 +42,23 @@ echo "[2/4] Installing AstraCradle v2.5.1..."
 
 echo "[3/4] Verifying self-healing invariants & creating Applications shortcut..."
 ./.venv/bin/python -m astracradle --self-check
-ADD_DESKTOP="n"
-if [ -t 0 ]; then
-  read -r -p "Create an AstraCradle icon on your Desktop? [y/N] " ADD_DESKTOP || true
-fi
-if [[ "${ADD_DESKTOP:-n}" =~ ^[Yy]$ ]]; then
-  ./.venv/bin/python -m astracradle --install-shortcuts --desktop-icon
+MEM_DESK="$(./.venv/bin/python -c "import json,pathlib; p=pathlib.Path.home()/'.astracradle/machine_install_memory.json'; d=json.loads(p.read_text()) if p.exists() else {}; v=d.get('desktop_icon'); print('yes' if v is True else ('no' if v is False else 'ask'))" 2>/dev/null || echo ask)"
+if [ "$MEM_DESK" = "yes" ]; then
+  echo "[Memory] Remembered Desktop Icon preference: YES"
+  ./.venv/bin/python -m astracradle --install-shortcuts --desktop-icon --reapply-memory --install-method macos_command --install-dir "$(pwd)"
+elif [ "$MEM_DESK" = "no" ]; then
+  echo "[Memory] Remembered Desktop Icon preference: Menu Only"
+  ./.venv/bin/python -m astracradle --install-shortcuts --no-desktop-icon --reapply-memory --install-method macos_command --install-dir "$(pwd)"
 else
-  ./.venv/bin/python -m astracradle --install-shortcuts
+  ADD_DESKTOP="n"
+  if [ -t 0 ]; then
+    read -r -p "Create an AstraCradle icon on your Desktop? [y/N] " ADD_DESKTOP || true
+  fi
+  if [[ "${ADD_DESKTOP:-n}" =~ ^[Yy]$ ]]; then
+    ./.venv/bin/python -m astracradle --install-shortcuts --desktop-icon --reapply-memory --install-method macos_command --install-dir "$(pwd)"
+  else
+    ./.venv/bin/python -m astracradle --install-shortcuts --no-desktop-icon --reapply-memory --install-method macos_command --install-dir "$(pwd)"
+  fi
 fi
 
 echo "[4/4] Setup complete! Launching AstraCradle v2.5.1..."

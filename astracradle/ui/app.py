@@ -1958,7 +1958,8 @@ class AstraCradleApp(ctk.CTk):
 
     def on_create_shortcuts(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        want_desktop = False
+        mem = self.updater.load_install_memory()
+        want_desktop = bool(mem.get("desktop_icon", False)) if mem.get("desktop_icon") is not None else False
         if self._show_startup_popups:
             want_desktop = self.confirm_yes_no(
                 "Add Desktop Icon Shortcut?",
@@ -1968,6 +1969,15 @@ class AstraCradleApp(ctk.CTk):
                 force_prompt=True,
             )
         created = self.lifecycle.install_shortcuts(repo_root, include_desktop_icon=want_desktop)
+        self.updater.record_install_memory(
+            install_dir=repo_root,
+            install_method=str(mem.get("install_method") or "gui_shortcuts"),
+            desktop_icon=want_desktop,
+            shortcuts_installed=True,
+            step_note="Created App Menu / Launcher shortcuts",
+            config=self.config_obj,
+        )
+        self._refresh_install_memory_label()
         self.show_toast(f"Created {len(created)} Application Menu / Launcher shortcut(s)!")
 
     def open_consent_wizard(self, first_run: bool = False) -> None:
@@ -5068,6 +5078,13 @@ class AstraCradleApp(ctk.CTk):
             interval_min=int(getattr(self.config_obj, "wifi_check_interval_min", 10)),
             elevation=self.elevation if self._show_startup_popups else None,
         )
+        if ok:
+            self.updater.record_install_memory(
+                cachyos_fish_wifi_hooks=True,
+                step_note="Installed CachyOS + Fish Wi-Fi auto-hooks",
+                config=self.config_obj,
+            )
+            self._refresh_install_memory_label()
         self.show_toast(
             f"Installed {len(items)} CachyOS + Fish Wi-Fi optimizer component(s)!" if ok else "Wi-Fi hook install finished with notes."
         )
@@ -7026,6 +7043,39 @@ class AstraCradleApp(ctk.CTk):
             font=self.fonts["caption"],
         ).pack(side="left", fill="x", expand=True)
 
+        mem_row = ctk.CTkFrame(upd_card, fg_color=p.bg_elevated, corner_radius=8)
+        mem_row.pack(fill="x", padx=16, pady=(0, 8))
+        self.machine_mem_lbl = ctk.CTkLabel(
+            mem_row,
+            text=self._format_install_memory_summary(),
+            font=self.fonts["mono_small"],
+            text_color=p.text_secondary,
+            justify="left",
+            wraplength=self._content_wrap(280),
+            anchor="w",
+        )
+        self.machine_mem_lbl.pack(side="left", fill="x", expand=True, padx=10, pady=8)
+        ctk.CTkButton(
+            mem_row,
+            text="Clear Memory",
+            width=98,
+            height=26,
+            fg_color=p.bg_card,
+            hover_color=p.border_strong,
+            font=self.fonts["caption"],
+            command=self._on_clear_install_memory,
+        ).pack(side="right", padx=(4, 10), pady=6)
+        ctk.CTkButton(
+            mem_row,
+            text="Re-Apply Remembered Steps",
+            width=180,
+            height=26,
+            fg_color=p.accent_jade,
+            text_color="#071510",
+            font=self.fonts["caption"],
+            command=self._on_reapply_install_memory,
+        ).pack(side="right", padx=4, pady=6)
+
         for mod in self.updater.list_modules():
             mrow = ctk.CTkFrame(upd_card, fg_color=p.bg_elevated, corner_radius=8)
             mrow.pack(fill="x", padx=16, pady=2)
@@ -8384,7 +8434,12 @@ class AstraCradleApp(ctk.CTk):
                 ):
                     ok, msg = self.updater.pull_from_github_and_update(self.config_obj, repo_dir=repo_root)
                     if ok:
-                        self.lifecycle.install_shortcuts(repo_root)
+                        reapplied, _ = self.updater.reapply_remembered_setup(
+                            self.config_obj, self.lifecycle, repo_dir=repo_root, wifi_optimizer=self.wifi_optimizer
+                        )
+                        if reapplied:
+                            msg = f"{msg} ({'; '.join(reapplied)})"
+                        self._refresh_install_memory_label()
                         new_info = self.updater.get_local_build_info(repo_dir=repo_root)
                         if hasattr(self, "settings_ver_lbl") and self.settings_ver_lbl.winfo_exists():
                             self.settings_ver_lbl.configure(text=f"{__app_name__} · {new_info['display_version']}")
@@ -8407,7 +8462,12 @@ class AstraCradleApp(ctk.CTk):
                 ):
                     ok, msg = self.updater.install_update_bundle(bundle_cand, self.config_obj)
                     if ok:
-                        self.lifecycle.install_shortcuts(repo_root)
+                        reapplied, _ = self.updater.reapply_remembered_setup(
+                            self.config_obj, self.lifecycle, repo_dir=repo_root, wifi_optimizer=self.wifi_optimizer
+                        )
+                        if reapplied:
+                            msg = f"{msg} ({'; '.join(reapplied)})"
+                        self._refresh_install_memory_label()
                     self.upd_status_lbl.configure(text=msg)
                     self.show_toast(msg)
                     return
@@ -8431,6 +8491,36 @@ class AstraCradleApp(ctk.CTk):
         if self._show_startup_popups:
             messagebox.showinfo("AstraCradle is Up to Date", f"{up_msg}\n\n{res.status_message}")
 
+    def _format_install_memory_summary(self) -> str:
+        mem = self.updater.load_install_memory()
+        steps = ", ".join(mem.get("remembered_steps") or []) or "none yet (auto-recorded on install/update)"
+        desk = mem.get("desktop_icon")
+        desk_txt = "Yes" if desk is True else ("No (Menu Only)" if desk is False else "Not set")
+        hist_cnt = len(mem.get("update_history") or [])
+        inst_dir = str(mem.get("install_dir") or "(not recorded)")
+        return (
+            f"Machine Update Memory: Install Dir: {inst_dir} · Desktop Icon: {desk_txt}\n"
+            f"Remembered Steps: {steps} · Recorded Updates: {hist_cnt}"
+        )
+
+    def _refresh_install_memory_label(self) -> None:
+        if hasattr(self, "machine_mem_lbl") and self.machine_mem_lbl.winfo_exists():
+            self.machine_mem_lbl.configure(text=self._format_install_memory_summary())
+
+    def _on_reapply_install_memory(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        reapplied, _ = self.updater.reapply_remembered_setup(
+            self.config_obj, self.lifecycle, repo_dir=repo_root, wifi_optimizer=self.wifi_optimizer
+        )
+        self._refresh_install_memory_label()
+        msg = "; ".join(reapplied) if reapplied else "Remembered machine setup steps verified & refreshed."
+        self.show_toast(msg, color=self.palette.accent_jade)
+
+    def _on_clear_install_memory(self) -> None:
+        self.updater.clear_install_memory()
+        self._refresh_install_memory_label()
+        self.show_toast("Cleared remembered machine install history.")
+
     def on_install_update_bundle(self) -> None:
         picked = filedialog.askopenfilename(
             title="Select AstraCradle Update Bundle (.zip or .tar.gz)",
@@ -8442,6 +8532,14 @@ class AstraCradleApp(ctk.CTk):
         if not picked:
             return
         ok, msg = self.updater.install_update_bundle(Path(picked), self.config_obj)
+        if ok:
+            repo_root = Path(__file__).resolve().parents[2]
+            reapplied, _ = self.updater.reapply_remembered_setup(
+                self.config_obj, self.lifecycle, repo_dir=repo_root, wifi_optimizer=self.wifi_optimizer
+            )
+            if reapplied:
+                msg = f"{msg} ({'; '.join(reapplied)})"
+            self._refresh_install_memory_label()
         if ok:
             self.lifecycle.install_shortcuts(Path(__file__).resolve().parents[2])
         self.upd_status_lbl.configure(text=msg)
@@ -9513,6 +9611,13 @@ class AstraCradleApp(ctk.CTk):
                 if hasattr(self, "set_reboot_persist_var"):
                     self.set_reboot_persist_var.set(True)
         self.cfg_mgr.save(self.config_obj)
+        if ok:
+            self.updater.record_install_memory(
+                reboot_persistence=bool(self.config_obj.reboot_persistence_enabled),
+                step_note=("Enabled reboot persistence" if self.config_obj.reboot_persistence_enabled else "Removed reboot persistence"),
+                config=self.config_obj,
+            )
+            self._refresh_install_memory_label()
         if hasattr(self, "reboot_persist_btn") and self.reboot_persist_btn.winfo_exists():
             now_inst, _ = self.lifecycle.reboot_persistence_status()
             self.reboot_persist_btn.configure(

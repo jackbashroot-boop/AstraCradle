@@ -57,18 +57,26 @@ if not contains ~/.local/bin $PATH
     fish_add_path ~/.local/bin
 end
 
-echo "[5/6] Running full self-check & App Menu setup..."
+echo "[5/6] Running full self-check & App Menu setup (using Machine Update Memory)..."
 ./.venv/bin/python -m astracradle --self-check
-if test $desktop_icon -eq 0; and isatty stdin
+set -l mem_desk (./.venv/bin/python -c "import json,pathlib; p=pathlib.Path.home()/'.astracradle/machine_install_memory.json'; d=json.loads(p.read_text()) if p.exists() else {}; v=d.get('desktop_icon'); print('yes' if v is True else ('no' if v is False else 'ask'))" 2>/dev/null)
+if test $desktop_icon -eq 1
+    ./.venv/bin/python -m astracradle --install-shortcuts --desktop-icon --reapply-memory --install-method fish --install-dir (pwd)
+else if test "$mem_desk" = "yes"
+    echo "[Memory] Remembered Desktop Icon preference from previous install: YES"
+    ./.venv/bin/python -m astracradle --install-shortcuts --desktop-icon --reapply-memory --install-method fish --install-dir (pwd)
+else if test "$mem_desk" = "no"
+    echo "[Memory] Remembered Desktop Icon preference from previous install: Menu Only (No Desktop Icon)"
+    ./.venv/bin/python -m astracradle --install-shortcuts --no-desktop-icon --reapply-memory --install-method fish --install-dir (pwd)
+else if isatty stdin
     read -l -P "Create an AstraCradle icon on your Desktop? [y/N] " ans
     if string match -qr '^[Yy]' -- "$ans"
-        set desktop_icon 1
+        ./.venv/bin/python -m astracradle --install-shortcuts --desktop-icon --reapply-memory --install-method fish --install-dir (pwd)
+    else
+        ./.venv/bin/python -m astracradle --install-shortcuts --no-desktop-icon --reapply-memory --install-method fish --install-dir (pwd)
     end
-end
-if test $desktop_icon -eq 1
-    ./.venv/bin/python -m astracradle --install-shortcuts --desktop-icon
 else
-    ./.venv/bin/python -m astracradle --install-shortcuts
+    ./.venv/bin/python -m astracradle --install-shortcuts --no-desktop-icon --reapply-memory --install-method fish --install-dir (pwd)
 end
 
 if test $no_launch -eq 0

@@ -297,14 +297,84 @@ def run_cli(args: argparse.Namespace) -> int:
         print(msg)
         return 0 if ok else 1
 
+    if args.show_install_memory:
+        from .core.updater import ModuleAndUpdateManager
+
+        upd = ModuleAndUpdateManager(cfg_mgr, journal)
+        mem = upd.load_install_memory()
+        print("AstraCradle Persistent Machine Update Memory:")
+        print(f"  Memory File : {upd.install_memory_path}")
+        print(f"  Install Dir : {mem.get('install_dir') or '(not recorded yet)'}")
+        print(f"  Method      : {mem.get('install_method') or '(none)'}")
+        print(f"  Last Build  : {mem.get('last_build_display') or '(none)'}")
+        print(f"  Desktop Icon: {mem.get('desktop_icon')}")
+        print(f"  Steps Saved : {', '.join(mem.get('remembered_steps') or []) or 'none'}")
+        return 0
+
     if args.install_shortcuts:
+        from .core.updater import ModuleAndUpdateManager
+
         pkg_root = Path(__file__).resolve().parent
         repo_root = Path(__file__).resolve().parents[1]
         base_root = repo_root if (repo_root / "assets").exists() else pkg_root
-        created = lifecycle.install_shortcuts(base_root, include_desktop_icon=bool(args.desktop_icon))
-        print(f"Created {len(created)} AstraCradle shortcut(s):")
+        upd = ModuleAndUpdateManager(cfg_mgr, journal)
+        mem = upd.load_install_memory()
+        if args.desktop_icon:
+            want_desk = True
+        elif args.no_desktop_icon:
+            want_desk = False
+        elif args.reapply_memory and mem.get("desktop_icon") is not None:
+            want_desk = bool(mem.get("desktop_icon"))
+        else:
+            want_desk = False
+        created = lifecycle.install_shortcuts(base_root, include_desktop_icon=want_desk)
+        upd.record_install_memory(
+            install_dir=(Path(args.install_dir) if args.install_dir else base_root),
+            install_method=(args.install_method or ""),
+            desktop_icon=want_desk,
+            shortcuts_installed=True,
+            shell_links_installed=True,
+            step_note="Installed/updated App Menu shortcuts",
+            config=cfg,
+        )
+        print(f"Created {len(created)} AstraCradle shortcut(s) (Desktop Icon={'YES' if want_desk else 'NO'}):")
         for c in created:
             print(f"  - {c}")
+        if args.reapply_memory:
+            from .core.wifi_channel_optimizer import WifiChannelOptimizer
+
+            reapplied, _ = upd.reapply_remembered_setup(
+                cfg, lifecycle, repo_dir=base_root, wifi_optimizer=WifiChannelOptimizer(journal)
+            )
+            for rline in reapplied:
+                print(f"  [Memory] {rline}")
+        return 0
+
+    if args.record_install:
+        from .core.updater import ModuleAndUpdateManager
+        from .core.wifi_channel_optimizer import WifiChannelOptimizer
+
+        upd = ModuleAndUpdateManager(cfg_mgr, journal)
+        target_dir = Path(args.install_dir) if args.install_dir else Path(__file__).resolve().parents[1]
+        desk_opt = True if args.desktop_icon else (False if args.no_desktop_icon else None)
+        mem = upd.record_install_memory(
+            install_dir=target_dir,
+            install_method=(args.install_method or "installer"),
+            desktop_icon=desk_opt,
+            shell_links_installed=True,
+            step_note="Recorded installer completion on this machine",
+            config=cfg,
+        )
+        if args.reapply_memory:
+            reapplied, mem = upd.reapply_remembered_setup(
+                cfg, lifecycle, repo_dir=target_dir, wifi_optimizer=WifiChannelOptimizer(journal)
+            )
+            for rline in reapplied:
+                print(f"  [Memory] {rline}")
+        print(
+            f"Machine Update Memory saved -> {upd.install_memory_path} "
+            f"(steps: {', '.join(mem.get('remembered_steps') or []) or 'none'})"
+        )
         return 0
 
     if args.mesh_status or args.mesh_plan is not None:
@@ -849,6 +919,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--self-check", action="store_true", help="Run silent 7-invariant self-heal & forensic audit.")
     parser.add_argument("--install-shortcuts", action="store_true", help="Create App Menu shortcuts (add --desktop-icon to also place a Desktop icon).")
     parser.add_argument("--desktop-icon", action="store_true", help="Include a Desktop shortcut when running --install-shortcuts.")
+    parser.add_argument("--no-desktop-icon", action="store_true", help="Explicitly remember menu-only shortcuts without a Desktop icon.")
+    parser.add_argument("--record-install", action="store_true", help="Persist machine install/update memory for seamless future updates.")
+    parser.add_argument("--reapply-memory", action="store_true", help="Re-apply previously remembered setup steps on this machine.")
+    parser.add_argument("--show-install-memory", action="store_true", help="Print persistent machine update memory.")
+    parser.add_argument("--install-method", type=str, default=None, help="Installer method tag stored in machine memory.")
+    parser.add_argument("--install-dir", type=str, default=None, help="Install/source directory stored in machine memory.")
     parser.add_argument("--mesh-status", action="store_true", help="Inspect PC Wi-Fi radios for AP+STA / 802.11s / Dual-Radio Mesh capability.")
     parser.add_argument("--mesh-plan", type=str, default=None, help="Generate a PC Wi-Fi Mesh plan from a source Wi-Fi SSID/interface or Ethernet uplink.")
     parser.add_argument("--mesh-ssid", type=str, default=None, help="Mesh Array SSID name for --mesh-plan.")
@@ -909,6 +985,8 @@ def main(argv: list[str] | None = None) -> int:
         or args.export_ai_bundle
         or args.self_check
         or args.install_shortcuts
+        or args.record_install
+        or args.show_install_memory
         or args.mesh_status
         or args.mesh_plan is not None
         or args.setup_reboot

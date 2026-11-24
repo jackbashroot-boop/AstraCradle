@@ -6,8 +6,10 @@ import ast
 import hashlib
 import json
 from pathlib import Path
+import platform
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -20,7 +22,7 @@ from .. import __version__
 from .config import AppConfig, ConfigManager
 from .crypto import verify_ed25519
 from .journal import ForensicJournal
-from .models import PluginModuleInfo, UpdateCheckResult
+from .models import PluginModuleInfo, UpdateCheckResult, utc_now_iso
 
 
 class ModuleAndUpdateManager:
@@ -29,6 +31,183 @@ class ModuleAndUpdateManager:
     def __init__(self, cfg_mgr: ConfigManager, journal: ForensicJournal) -> None:
         self.cfg_mgr = cfg_mgr
         self.journal = journal
+        self.install_memory_path = self.cfg_mgr.base_dir / "machine_install_memory.json"
+
+    def load_install_memory(self) -> dict[str, object]:
+        """Loads persistent machine install & update memory from ~/.astracradle/machine_install_memory.json."""
+        defaults: dict[str, object] = {
+            "schema": 1,
+            "hostname": socket.gethostname(),
+            "os_platform": platform.system(),
+            "install_dir": "",
+            "venv_python": "",
+            "install_method": "",
+            "desktop_icon": None,
+            "shortcuts_installed": False,
+            "cachyos_fish_wifi_hooks": False,
+            "reboot_persistence": False,
+            "shell_links_installed": False,
+            "last_version": "",
+            "last_build_display": "",
+            "first_installed_at": "",
+            "last_updated_at": "",
+            "remembered_steps": [],
+            "update_history": [],
+        }
+        if not self.install_memory_path.exists():
+            return defaults
+        try:
+            raw = json.loads(self.install_memory_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                merged = dict(defaults)
+                merged.update(raw)
+                if not isinstance(merged.get("remembered_steps"), list):
+                    merged["remembered_steps"] = []
+                if not isinstance(merged.get("update_history"), list):
+                    merged["update_history"] = []
+                return merged
+        except Exception:
+            pass
+        return defaults
+
+    def save_install_memory(self, mem: dict[str, object]) -> None:
+        self.cfg_mgr.ensure_directories()
+        tmp = self.install_memory_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(mem, indent=2), encoding="utf-8")
+        tmp.replace(self.install_memory_path)
+
+    def clear_install_memory(self) -> None:
+        self.install_memory_path.unlink(missing_ok=True)
+
+    def record_install_memory(
+        self,
+        *,
+        install_dir: Path | None = None,
+        install_method: str = "",
+        desktop_icon: bool | None = None,
+        shortcuts_installed: bool | None = None,
+        cachyos_fish_wifi_hooks: bool | None = None,
+        reboot_persistence: bool | None = None,
+        shell_links_installed: bool | None = None,
+        step_note: str = "",
+        config: AppConfig | None = None,
+    ) -> dict[str, object]:
+        """Persists remembered machine setup steps across updates and reinstalls on the same machine."""
+        mem = self.load_install_memory()
+        now_iso = utc_now_iso()
+        binfo = self.get_local_build_info(repo_dir=install_dir)
+        mem["hostname"] = socket.gethostname()
+        mem["os_platform"] = platform.system()
+        if install_dir is not None:
+            mem["install_dir"] = str(Path(install_dir).expanduser().resolve())
+        mem["venv_python"] = sys.executable
+        if install_method:
+            mem["install_method"] = str(install_method)
+        if desktop_icon is not None:
+            mem["desktop_icon"] = bool(desktop_icon)
+        if shortcuts_installed is not None:
+            mem["shortcuts_installed"] = bool(shortcuts_installed)
+        if cachyos_fish_wifi_hooks is not None:
+            mem["cachyos_fish_wifi_hooks"] = bool(cachyos_fish_wifi_hooks)
+        if reboot_persistence is not None:
+            mem["reboot_persistence"] = bool(reboot_persistence)
+        if shell_links_installed is not None:
+            mem["shell_links_installed"] = bool(shell_links_installed)
+
+        if not mem.get("first_installed_at"):
+            mem["first_installed_at"] = now_iso
+        mem["last_updated_at"] = now_iso
+        mem["last_version"] = binfo.get("version") or __version__
+        mem["last_build_display"] = binfo.get("display_version") or f"v{__version__}"
+
+        steps = [str(s) for s in (mem.get("remembered_steps") or []) if str(s).strip()]
+        for flag_val, label in (
+            (mem.get("shortcuts_installed"), "app_menu_shortcuts"),
+            (mem.get("desktop_icon") is True, "desktop_icon"),
+            (mem.get("shell_links_installed"), "cli_shell_links"),
+            (mem.get("cachyos_fish_wifi_hooks"), "cachyos_fish_wifi_hooks"),
+            (mem.get("reboot_persistence"), "reboot_persistence"),
+        ):
+            if flag_val and label not in steps:
+                steps.append(label)
+        if mem.get("desktop_icon") is False and "desktop_icon" in steps:
+            steps.remove("desktop_icon")
+        mem["remembered_steps"] = steps
+
+        if config is not None:
+            mem["saved_permissions"] = {
+                "consent_prompted": bool(config.consent_prompted),
+                "consent_wifi_auto_channel": bool(getattr(config, "consent_wifi_auto_channel", False)),
+                "wifi_auto_optimize": bool(config.wifi_auto_optimize),
+                "minimize_to_tray": bool(config.minimize_to_tray),
+                "show_tray_icon": bool(config.show_tray_icon),
+            }
+
+        history = list(mem.get("update_history") or [])
+        history.append(
+            {
+                "timestamp": now_iso,
+                "version": mem["last_version"],
+                "short_sha": binfo.get("short_sha", ""),
+                "display_version": mem["last_build_display"],
+                "method": str(mem.get("install_method") or "update"),
+                "install_dir": str(mem.get("install_dir") or ""),
+                "note": step_note or "Recorded machine install state",
+            }
+        )
+        mem["update_history"] = history[-25:]
+        self.save_install_memory(mem)
+        if self.journal is not None:
+            self.journal.log_event(
+                component="MachineInstallMemory",
+                action="record_install_memory",
+                how=f"Saved machine install memory ({mem['last_build_display']}, steps={steps})",
+                why="Remember setup steps automatically when updating on the same machine",
+                outcome="ok",
+            )
+        return mem
+
+    def reapply_remembered_setup(
+        self,
+        config: AppConfig,
+        lifecycle,
+        repo_dir: Path | None = None,
+        wifi_optimizer=None,
+    ) -> tuple[list[str], dict[str, object]]:
+        """Automatically re-applies previously remembered setup steps after an update on the same machine."""
+        mem = self.load_install_memory()
+        target_repo = repo_dir or (Path(str(mem["install_dir"])) if mem.get("install_dir") else Path(__file__).resolve().parents[2])
+        reapplied: list[str] = []
+
+        if mem.get("shortcuts_installed") or mem.get("desktop_icon") is not None:
+            want_desk = bool(mem.get("desktop_icon", False))
+            try:
+                created = lifecycle.install_shortcuts(target_repo, include_desktop_icon=want_desk)
+                reapplied.append(
+                    f"Re-applied {len(created)} App Menu shortcut(s) (Desktop Icon: {'YES' if want_desk else 'NO'})"
+                )
+            except Exception:
+                pass
+
+        if mem.get("cachyos_fish_wifi_hooks") and wifi_optimizer is not None:
+            try:
+                ok_w, items_w = wifi_optimizer.install_cachyos_fish_integration(
+                    install_dispatcher=False,
+                    enable_timer=True,
+                    interval_min=int(getattr(config, "wifi_check_interval_min", 10)),
+                )
+                if ok_w:
+                    reapplied.append(f"Refreshed {len(items_w)} CachyOS/Fish Wi-Fi auto-hook(s)")
+            except Exception:
+                pass
+
+        updated_mem = self.record_install_memory(
+            install_dir=target_repo,
+            install_method=str(mem.get("install_method") or "auto_reapply"),
+            step_note=("; ".join(reapplied) if reapplied else "Verified remembered machine memory"),
+            config=config,
+        )
+        return reapplied, updated_mem
 
     def list_modules(self) -> list[PluginModuleInfo]:
         modules = [
@@ -548,6 +727,12 @@ class ModuleAndUpdateManager:
                             timeout=120,
                             check=False,
                         )
+                    self.record_install_memory(
+                        install_dir=base_dir,
+                        install_method="github_pull",
+                        step_note=f"Updated from GitHub to {info['display_version']}",
+                        config=config,
+                    )
                     return True, f"Updated from GitHub to {info['display_version']}! Restart AstraCradle to load changes."
             except Exception:
                 pass
@@ -723,6 +908,11 @@ class ModuleAndUpdateManager:
                 shutil.copy2(bundle, applied_dir / bundle.name)
 
             ver_lbl = f"v{new_ver}" + (f" · commit {commit_sha[:7]}" if commit_sha else "")
+            self.record_install_memory(
+                install_method="in_app_bundle",
+                step_note=f"Installed update bundle {bundle.name} -> {ver_lbl}",
+                config=config,
+            )
             self.journal.log_event(
                 component="Updater",
                 action="install_update_bundle",
