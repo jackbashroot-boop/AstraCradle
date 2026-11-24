@@ -27,7 +27,7 @@ from astracradle.ui.app import AstraCradleApp
 
 
 def test_v1_8_apex_features_widget_modes_triggers_proof_and_backup(monkeypatch) -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     with tempfile.TemporaryDirectory() as td:
         base = Path(td) / ".astracradle"
         cfg_mgr = ConfigManager(base_dir=base)

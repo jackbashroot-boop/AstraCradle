@@ -37,7 +37,7 @@ from astracradle.ui.widgets import DysonOrbitalBeacon, DysonSunburstWidget, Equi
 
 
 def test_storage_deep_smart_vault_sunburst_and_dead_sweeper(tmp_path: Path) -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     adapter = get_os_adapter(custom_protected_paths=[str(tmp_path / "protected")])
 
     # 1. SMART / NVMe monitor never crashes

@@ -41,6 +41,16 @@ def run_cli(args: argparse.Namespace) -> int:
     lifecycle = LifecycleManager(cfg_mgr, rollback_mgr, journal, scripts_engine)
     self_heal = SelfHealEngine(cfg_mgr, rollback_mgr, journal)
 
+    if args.quit:
+        from .core.single_instance import SingleInstanceManager
+
+        killed = SingleInstanceManager(cfg_mgr).terminate_existing_instances(timeout_sec=3.0)
+        if killed:
+            print(f"Closed {len(killed)} running AstraCradle instance(s): {killed}")
+        else:
+            print("No running AstraCradle GUI instance found.")
+        return 0
+
     if args.apply_boot_toggles:
         ok, notes = lifecycle.apply_boot_toggles(adapter, cfg, dry_run=cfg.dry_run_default)
         for ln in notes:
@@ -802,6 +812,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--comprehensive-setup", type=str, default=None, help="Apply a comprehensive studio setup preset (e.g. 'Recommended All-Rounder').")
     parser.add_argument("--export-ai-bundle", action="store_true", help="Consolidate old logs and export an AI-ready diagnostic report.")
     parser.add_argument("--minimized", action="store_true", help="Start AstraCradle minimized in the bottom-right system tray.")
+    parser.add_argument("--quit", action="store_true", help="Gracefully close any running AstraCradle GUI instance and exit.")
     parser.add_argument("--widget", action="store_true", help="Launch AstraCradle with the cross-OS floating Desktop Widget active.")
     parser.add_argument("--widget-status", action="store_true", help="Print Waybar/Polybar-ready JSON telemetry status and exit.")
     parser.add_argument("--bufferbloat-test", action="store_true", help="Measure gateway/DNS idle vs loaded RTT and grade bufferbloat.")
@@ -905,6 +916,7 @@ def main(argv: list[str] | None = None) -> int:
         or args.uninstall
         or args.apply_preset
         or args.run_pipeline
+        or args.quit
     ):
         return run_cli(args)
 

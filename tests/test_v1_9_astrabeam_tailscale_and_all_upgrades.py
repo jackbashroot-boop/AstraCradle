@@ -38,7 +38,7 @@ def _build_dns_query(domain: str) -> bytes:
 
 
 def test_v1_9_astrabeam_tailscale_and_all_11_upgrades(monkeypatch) -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     with tempfile.TemporaryDirectory() as td:
         base = Path(td) / ".astracradle"
         cfg_mgr = ConfigManager(base_dir=base)

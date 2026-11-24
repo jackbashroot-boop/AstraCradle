@@ -114,6 +114,27 @@ class LifecycleManager:
         if sys_name == "Linux":
             # Install multi-size XDG hicolor & pixmaps icons so KDE/GNOME/CachyOS menus & taskbars render crisp AstraCradle artwork
             hicolor_base = home / ".local" / "share" / "icons" / "hicolor"
+            hicolor_theme = hicolor_base / "index.theme"
+            if not hicolor_theme.exists():
+                sys_hicolor_theme = Path("/usr/share/icons/hicolor/index.theme")
+                try:
+                    hicolor_base.mkdir(parents=True, exist_ok=True)
+                    if sys_hicolor_theme.exists():
+                        shutil.copy2(sys_hicolor_theme, hicolor_theme)
+                    else:
+                        hicolor_theme.write_text(
+                            "[Icon Theme]\n"
+                            "Name=Hicolor\n"
+                            "Comment=Fallback icon theme\n"
+                            "Directories=32x32/apps,64x64/apps,128x128/apps,256x256/apps\n\n"
+                            "[32x32/apps]\nSize=32\nContext=Applications\nType=Fixed\n\n"
+                            "[64x64/apps]\nSize=64\nContext=Applications\nType=Fixed\n\n"
+                            "[128x128/apps]\nSize=128\nContext=Applications\nType=Fixed\n\n"
+                            "[256x256/apps]\nSize=256\nContext=Applications\nType=Fixed\n",
+                            encoding="utf-8",
+                        )
+                except OSError:
+                    pass
             for sz, fname in (
                 ("32x32", "astracradle_emblem_32.png"),
                 ("64x64", "astracradle_emblem_64.png"),
@@ -167,6 +188,19 @@ class LifecycleManager:
                 "Terminal=false\n"
                 "Categories=Utility;System;\n"
                 "Keywords=system;optimizer;diagnostics;telemetry;astracradle;\n"
+                "Actions=Open;Diagnose;FixSafe;Quit;\n\n"
+                "[Desktop Action Open]\n"
+                "Name=Open AstraCradle\n"
+                f"Exec={exec_cmd}\n\n"
+                "[Desktop Action Diagnose]\n"
+                "Name=Run Equilibrium Scan\n"
+                f"Exec={exec_cmd} --diagnose\n\n"
+                "[Desktop Action FixSafe]\n"
+                "Name=1-Click Fix Everything Safe\n"
+                f"Exec={exec_cmd} --fix-safe\n\n"
+                "[Desktop Action Quit]\n"
+                "Name=Quit AstraCradle\n"
+                f"Exec={exec_cmd} --quit\n"
             )
             linux_targets = [home / ".local" / "share" / "applications" / "astracradle.desktop"]
             if include_desktop_icon:

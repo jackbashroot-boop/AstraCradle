@@ -1,5 +1,5 @@
 cask "astracradle" do
-  version "2.5.0"
+  version "2.5.1"
   sha256 :no_check
 
   url "https://github.com/jackbashroot-boop/AstraCradle/releases/download/v#{version}/AstraCradle-macOS.zip"

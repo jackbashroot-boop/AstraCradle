@@ -254,7 +254,7 @@ def test_github_commit_version_tracking_simple_mode_and_command_deck_temps(monke
         upd = ModuleAndUpdateManager(cfg_mgr, j)
 
         info = upd.get_local_build_info()
-        assert info["version"] == "2.5.0"
+        assert info["version"] == "2.5.1"
         assert "display_version" in info
 
         # Commit-matching GitHub push -> reports fully updated
@@ -308,7 +308,7 @@ def test_github_commit_version_tracking_simple_mode_and_command_deck_temps(monke
 
             app.switch_nav("settings")
             app.update()
-            assert hasattr(app, "settings_ver_lbl") and "v2.5.0" in app.settings_ver_lbl.cget("text")
+            assert hasattr(app, "settings_ver_lbl") and "v2.5.1" in app.settings_ver_lbl.cget("text")
             assert hasattr(app, "settings_gh_ver_lbl")
 
             # Applying settings must preserve custom geometry, maximized & fullscreen state
@@ -418,7 +418,7 @@ def test_v1_1_autostart_failsafe_tv_bluetooth_and_restart(monkeypatch) -> None:
     from astracradle.core.lan_tv_shield import BluetoothDeviceInfo, LanDeviceInfo, LanTvAdShield
     from astracradle.ui.app import AstraCradleApp
 
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
 
     with tempfile.TemporaryDirectory() as td:
         base = Path(td) / "ac"
@@ -518,7 +518,7 @@ def test_v1_2_forensic_crash_log_export_comprehensive_setup_and_smooth_ui() -> N
     from astracradle.core.safeguard_plus import AIDiagnosticArchiveExporter
     from astracradle.ui.app import AstraCradleApp
 
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     with tempfile.TemporaryDirectory() as td:
         base = Path(td) / "ac"
         cfg_mgr = ConfigManager(base_dir=base)
@@ -578,7 +578,7 @@ def test_v1_3_wifi_channel_optimizer_cachyos_fish_and_special_category(monkeypat
     from astracradle.core.wifi_channel_optimizer import WifiApObservation, WifiChannelOptimizer
     from astracradle.ui.app import AstraCradleApp
 
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     with tempfile.TemporaryDirectory() as td:
         fake_home = Path(td) / "home"
         fake_home.mkdir(parents=True, exist_ok=True)

@@ -73,7 +73,7 @@ def test_ed25519_rfc8032_vector_and_signed_update(tmp_path: Path) -> None:
     digest = hashlib.sha256(pkg_bytes).hexdigest()
     sig = sign_ed25519(sk, pkg_bytes)
     manifest = {
-        "version": "2.5.0",
+        "version": "2.5.1",
         "package_file": pkg.name,
         "sha256": digest,
         "public_key_hex": pk_expected.hex(),
@@ -229,7 +229,7 @@ def test_scheduler_alerts_tweak_snapshots_elevation_and_crash_codes(tmp_path: Pa
 
 
 def test_i18n_high_contrast_help_search_packaging_and_gui_tooltips(tmp_path: Path) -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     # High Contrast theme + scaled fonts
     hc = get_palette("High Contrast")
     assert hc.bg_canvas == "#000000" and hc.text_primary == "#FFFFFF"

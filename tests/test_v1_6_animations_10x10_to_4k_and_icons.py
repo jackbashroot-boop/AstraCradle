@@ -23,7 +23,7 @@ from astracradle.ui.modals import (
 
 
 def test_v1_6_boot_splash_hover_gif_icons_drag_inertia_and_10x10_to_4k(monkeypatch) -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     with tempfile.TemporaryDirectory() as td:
         fake_home = Path(td) / "home"
         fake_home.mkdir(parents=True, exist_ok=True)

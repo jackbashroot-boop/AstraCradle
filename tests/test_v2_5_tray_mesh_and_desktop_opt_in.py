@@ -18,7 +18,7 @@ from astracradle.ui.tray import TrayController
 
 
 def test_tray_latin1_sanitization_and_crash_log_archiving() -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
 
     # 1. Verify tray title/notification strings never fail latin-1 encoding (X11 WM_NAME fix)
     bad_str = "AstraCradle — Dyson-Core · ✦ Status"

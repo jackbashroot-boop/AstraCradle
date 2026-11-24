@@ -188,7 +188,14 @@ class AstraCradleApp(ctk.CTk):
         from ..core.mobile_continuity import DeviceRegistryManager, MobileCompanionEngine
         from ..core.network_failover import NetworkFailoverEngine
         from ..core.process_lookup import ProcessIntelligenceLookup
+        from ..core.single_instance import SingleInstanceManager
         from ..core.wifi_mesh import WifiMeshAssistantEngine
+
+        self.single_instance = SingleInstanceManager(self.cfg_mgr)
+        if show_startup_popups:
+            self.single_instance.terminate_existing_instances(timeout_sec=3.0)
+            self.single_instance.acquire()
+            self._install_signal_handlers()
 
         self.command_db = CommandDatabaseManager(self.cfg_mgr, self.journal)
         self.dep_lib = DependencyLibraryManager(self.journal, elevation=self.elevation)
@@ -284,6 +291,7 @@ class AstraCradleApp(ctk.CTk):
         self._hover_icon_frames: list[ImageTk.PhotoImage] = []
         self._hover_icon_idx: int = 0
         self._hover_icon_after_id: str | None = None
+        self._hover_icon_boost: bool = False
         self._mini_orb = None
         self._desktop_widget = None
         self._resize_after_id: str | None = None
@@ -315,6 +323,7 @@ class AstraCradleApp(ctk.CTk):
             on_toggle_astrashield=lambda: self._ui_queue.put(("toggle_astrashield", None, None)),
             on_pause_shield_5m=lambda: self._ui_queue.put(("pause_shield_5m", None, None)),
             on_toggle_widget=lambda: self._ui_queue.put(("toggle_widget", None, None)),
+            on_context_menu=lambda rx, ry: self._ui_queue.put(("show_tray_menu", (rx, ry), None)),
         )
         self._astrabeam_server: AstraBeamServer | None = None
         self._global_hotkeys = GlobalHotkeyManager()
@@ -351,6 +360,8 @@ class AstraCradleApp(ctk.CTk):
         self.configure(fg_color=self.palette.bg_canvas)
         self._set_window_icon()
         self.after(80, self._set_window_icon)
+        if show_startup_popups and not (start_minimized or self.config_obj.start_minimized):
+            self.after(450, lambda: self._start_hover_icon_anim(boost=False))
 
         self.current_nav = "dashboard"
         self.current_hw_tab = "Component Library & Presets"
@@ -703,6 +714,10 @@ class AstraCradleApp(ctk.CTk):
                         w.set_paused(paused)
                 except Exception:
                     pass
+        if paused:
+            self._stop_hover_icon_anim()
+        elif self._show_startup_popups:
+            self._start_hover_icon_anim(boost=False)
 
     def _show_mini_orb(self) -> None:
         if not getattr(self.config_obj, "floating_orb_on_minimize", True):
@@ -721,6 +736,7 @@ class AstraCradleApp(ctk.CTk):
                 self.palette,
                 on_restore=lambda: self._ui_queue.put(("show_window", None, None)),
                 gif_path=self.assets_dir / "astracradle_hover.gif",
+                on_context_menu=lambda rx, ry: self._ui_queue.put(("show_tray_menu", (rx, ry), None)),
             )
             if self.latest_report:
                 self._mini_orb.set_score(self.latest_report.health_score)
@@ -900,6 +916,103 @@ class AstraCradleApp(ctk.CTk):
         except Exception:
             pass
 
+    def _show_tray_context_menu(self, rx: int = 0, ry: int = 0) -> None:
+        """Displays a sleek native dark context menu on right-click of the tray icon or floating orb."""
+        p = self.palette
+        try:
+            old = getattr(self, "_tray_ctx_menu", None)
+            if old is not None:
+                try:
+                    old.destroy()
+                except Exception:
+                    pass
+            menu = tk.Menu(
+                self,
+                tearoff=0,
+                bg=p.bg_card,
+                fg=p.text_primary,
+                activebackground=p.accent_cyan,
+                activeforeground="#0B1018",
+                relief="flat",
+                borderwidth=1,
+            )
+            menu.add_command(
+                label="Open AstraCradle",
+                command=lambda: self._ui_queue.put(("show_window", None, None)),
+            )
+            menu.add_command(
+                label="Run Equilibrium Scan",
+                command=lambda: self._ui_queue.put(("trigger_scan", None, None)),
+            )
+            menu.add_command(
+                label="1-Click Fix Everything Safe",
+                command=lambda: self._ui_queue.put(("fix_safe", None, None)),
+            )
+            prof_menu = tk.Menu(
+                menu,
+                tearoff=0,
+                bg=p.bg_card,
+                fg=p.text_primary,
+                activebackground=p.accent_cyan,
+                activeforeground="#0B1018",
+            )
+            for prof_name in ("Balanced Daily", "Gaming / Low-Latency", "Battery Endurance"):
+                prof_menu.add_command(
+                    label=prof_name,
+                    command=lambda pn=prof_name: self._ui_queue.put(("switch_profile", pn, None)),
+                )
+            menu.add_cascade(label="Switch Profile", menu=prof_menu)
+            menu.add_separator()
+            menu.add_command(
+                label="Toggle ProBalance",
+                command=lambda: self._ui_queue.put(("toggle_probalance", None, None)),
+            )
+            menu.add_command(
+                label="Toggle AstraShield",
+                command=lambda: self._ui_queue.put(("toggle_astrashield", None, None)),
+            )
+            menu.add_command(
+                label="Toggle Desktop Widget",
+                command=lambda: self._ui_queue.put(("toggle_widget", None, None)),
+            )
+            menu.add_separator()
+            menu.add_command(
+                label="Quit AstraCradle",
+                command=lambda: self.on_close(force_quit=True),
+            )
+            self._tray_ctx_menu = menu
+            px = int(rx) if int(rx) > 0 else int(self.winfo_pointerx())
+            py = int(ry) if int(ry) > 0 else int(self.winfo_pointery())
+            self.update_idletasks()
+            menu.tk_popup(px, py)
+        except Exception:
+            pass
+        finally:
+            try:
+                if getattr(self, "_tray_ctx_menu", None) is not None:
+                    self._tray_ctx_menu.grab_release()
+            except Exception:
+                pass
+
+    def _install_signal_handlers(self) -> None:
+        if threading.current_thread() is not threading.main_thread():
+            return
+        import signal
+
+        def _handle_exit(_signum, _frame) -> None:
+            try:
+                self._ui_queue.put(("quit_app", None, None))
+            except Exception:
+                pass
+
+        for sig_name in ("SIGTERM", "SIGINT"):
+            sig = getattr(signal, sig_name, None)
+            if sig is not None:
+                try:
+                    signal.signal(sig, _handle_exit)
+                except Exception:
+                    pass
+
     def on_close(self, force_quit: bool = False) -> None:
         if not force_quit and self.config_obj.minimize_to_tray:
             if not self.tray.running:
@@ -928,6 +1041,8 @@ class AstraCradleApp(ctk.CTk):
                 outcome="ok",
             )
             self.crash_analyzer.mark_clean_shutdown()
+            if hasattr(self, "single_instance"):
+                self.single_instance.release()
         finally:
             self.destroy()
 
@@ -1064,9 +1179,14 @@ class AstraCradleApp(ctk.CTk):
             except Exception:
                 self._hover_icon_frames = []
 
-    def _start_hover_icon_anim(self) -> None:
-        if not getattr(self.config_obj, "hover_icon_animation", True) or not getattr(self.config_obj, "animations_enabled", True):
+    def _start_hover_icon_anim(self, boost: bool = True) -> None:
+        if (
+            not getattr(self.config_obj, "hover_icon_animation", True)
+            or not getattr(self.config_obj, "animations_enabled", True)
+            or getattr(self.config_obj, "low_power_ui_mode", False)
+        ):
             return
+        self._hover_icon_boost = bool(boost)
         if self._hover_icon_after_id is not None or not self._hover_icon_frames:
             return
         self._step_hover_icon_anim()
@@ -1080,11 +1200,13 @@ class AstraCradleApp(ctk.CTk):
             self.wm_iconphoto(True, fr)
             self.tray.pulse_icon_frame(self._hover_icon_idx)
             self._hover_icon_idx = (self._hover_icon_idx + 1) % len(self._hover_icon_frames)
-            self._hover_icon_after_id = self.after(95, self._step_hover_icon_anim)
+            interval_ms = 55 if self._hover_icon_boost else 150
+            self._hover_icon_after_id = self.after(interval_ms, self._step_hover_icon_anim)
         except Exception:
             self._hover_icon_after_id = None
 
     def _stop_hover_icon_anim(self) -> None:
+        self._hover_icon_boost = False
         if self._hover_icon_after_id is not None:
             try:
                 self.after_cancel(self._hover_icon_after_id)
@@ -1385,8 +1507,13 @@ class AstraCradleApp(ctk.CTk):
             and getattr(self.config_obj, "motion_style", "Hybrid Solar + Fluid") != "Reduced Motion",
         )
         self.solar_backdrop.place(x=0, y=0, relwidth=1, relheight=1)
-        self.topbar.bind("<Enter>", lambda _e: self._start_hover_icon_anim(), add="+")
-        self.topbar.bind("<Leave>", lambda _e: self._stop_hover_icon_anim(), add="+")
+        self.topbar.bind("<Enter>", lambda _e: self._start_hover_icon_anim(boost=True), add="+")
+        self.topbar.bind("<Leave>", lambda _e: setattr(self, "_hover_icon_boost", False), add="+")
+        self.bind("<Enter>", lambda _e: self._start_hover_icon_anim(boost=True), add="+")
+        self.bind("<Leave>", lambda _e: setattr(self, "_hover_icon_boost", False), add="+")
+        if hasattr(self, "sidebar_gif"):
+            self.sidebar_gif.bind("<Enter>", lambda _e: self._start_hover_icon_anim(boost=True), add="+")
+            self.sidebar_gif.bind("<Leave>", lambda _e: setattr(self, "_hover_icon_boost", False), add="+")
 
         self.page_container = ctk.CTkFrame(self.bg_layer, fg_color="transparent")
         self.page_container.grid(row=0, column=0, sticky="nsew", padx=16, pady=12)
@@ -7379,6 +7506,10 @@ class AstraCradleApp(ctk.CTk):
                 if first == "toggle_widget":
                     self.toggle_desktop_widget()
                     continue
+                if first == "show_tray_menu":
+                    coords = item[1] if isinstance(item[1], (tuple, list)) and len(item[1]) >= 2 else (0, 0)
+                    self._show_tray_context_menu(int(coords[0] or 0), int(coords[1] or 0))
+                    continue
                 if first == "quit_app":
                     self.on_close(force_quit=True)
                     return
@@ -9149,5 +9280,9 @@ def launch_gui(
     start_minimized: bool = False,
     start_widget: bool = False,
 ) -> None:
+    from ..core.single_instance import SingleInstanceManager
+
+    si = SingleInstanceManager(ConfigManager(base_dir=base_dir))
+    si.terminate_existing_instances(timeout_sec=3.0)
     app = AstraCradleApp(base_dir=base_dir, start_minimized=start_minimized, start_widget=start_widget)
     app.mainloop()

@@ -36,7 +36,7 @@ from astracradle.core.thermal_spc import ThermalSpcMonitor
 
 
 def test_interrupt_dpc_latency_guard(tmp_path: Path) -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     cfg_mgr = ConfigManager(base_dir=tmp_path / "ac_irq")
     journal = ForensicJournal(cfg_mgr)
     guard = InterruptAndDpcGuard(cfg_mgr, journal)

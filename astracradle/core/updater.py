@@ -148,6 +148,7 @@ class ModuleAndUpdateManager:
 
         base_dir = repo_dir or Path(__file__).resolve().parents[2]
         if (base_dir / ".git").exists() and shutil.which("git"):
+            info["version"] = __version__
             try:
                 proc = subprocess.run(
                     [

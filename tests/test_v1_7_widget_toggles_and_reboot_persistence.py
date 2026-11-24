@@ -18,7 +18,7 @@ from astracradle.ui.app import AstraCradleApp
 
 
 def test_v1_7_desktop_widget_all_toggles_sections_and_reboot_persistence(monkeypatch) -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     with tempfile.TemporaryDirectory() as td:
         fake_home = Path(td) / "home"
         fake_home.mkdir(parents=True, exist_ok=True)

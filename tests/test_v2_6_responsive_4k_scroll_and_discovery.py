@@ -254,21 +254,21 @@ def test_cross_os_start_menu_icons_and_bundle_updater(monkeypatch) -> None:
         assert (fake_appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "AstraCradle.bat").exists()
         assert len(win_created) >= 2
 
-        # 4. Update bundle discovery & safe verification (v2.5.1 zip)
+        # 4. Update bundle discovery & safe verification (v2.6.0 zip)
         upd = ModuleAndUpdateManager(cfg_mgr, journal)
         cfg = cfg_mgr.load()
-        zpath = fake_home / "Downloads" / "AstraCradle-v2.5.1-bundle.zip"
+        zpath = fake_home / "Downloads" / "AstraCradle-v2.6.0-bundle.zip"
         zpath.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zpath, "w") as zf:
-            zf.writestr("AstraCradle-v2.5.1/pyproject.toml", '[project]\nname = "astracradle"\nversion = "2.5.1"\n')
-            zf.writestr("AstraCradle-v2.5.1/astracradle/__init__.py", '__version__ = "2.5.1"\n')
+            zf.writestr("AstraCradle-v2.6.0/pyproject.toml", '[project]\nname = "astracradle"\nversion = "2.6.0"\n')
+            zf.writestr("AstraCradle-v2.6.0/astracradle/__init__.py", '__version__ = "2.6.0"\n')
 
         res = upd.check_for_updates(cfg)
         assert res.update_available is True
-        assert res.latest_version == "2.5.1"
+        assert res.latest_version == "2.6.0"
 
         ok, msg = upd.install_update_bundle(zpath, cfg, run_pip=False)
-        assert ok is True and "2.5.1" in msg
+        assert ok is True and "2.6.0" in msg
         assert (cfg_mgr.updates_dir / "applied" / zpath.name).exists()
 
         # Verify zip path-traversal protection
@@ -344,9 +344,9 @@ def test_github_first_then_local_fallback_updater(monkeypatch) -> None:
             lambda owner, repo, timeout=3.5: (None, None, f"GitHub {owner}/{repo} unreachable (URLError); falling back to local"),
         )
         manifest = cfg_mgr.updates_dir / "manifest.json"
-        manifest.write_text('{"version": "2.5.1", "notes": "Local fallback update"}', encoding="utf-8")
+        manifest.write_text('{"version": "2.6.0", "notes": "Local fallback update"}', encoding="utf-8")
         res_loc = upd.check_for_updates(cfg, check_remote=True)
         assert res_loc.update_available is True
-        assert res_loc.latest_version == "2.5.1"
+        assert res_loc.latest_version == "2.6.0"
         assert "falling back to local" in res_loc.status_message
 

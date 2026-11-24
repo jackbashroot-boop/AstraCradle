@@ -16,7 +16,7 @@ for arg in "$@"; do
 done
 
 echo "============================================================"
-echo "  AstraCradle v2.5.0 — Dyson-Core OS Equilibrium Studio"
+echo "  AstraCradle v2.5.1 — Dyson-Core OS Equilibrium Studio"
 echo "============================================================"
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -35,11 +35,13 @@ if ! python3 -c "import tkinter" 2>/dev/null; then
 fi
 
 if [ ! -x ".venv/bin/python" ]; then
-  echo "[1/5] Creating isolated virtual environment (.venv)..."
-  python3 -m venv .venv
+  echo "[1/5] Creating virtual environment (.venv)..."
+  python3 -m venv --system-site-packages .venv
+elif [ -f ".venv/pyvenv.cfg" ]; then
+  sed -i 's/include-system-site-packages = false/include-system-site-packages = true/' .venv/pyvenv.cfg 2>/dev/null || true
 fi
 
-echo "[2/5] Installing AstraCradle v2.5.0 and dependencies..."
+echo "[2/5] Installing AstraCradle v2.5.1 and dependencies..."
 ./.venv/bin/python -m pip install --quiet --upgrade pip
 ./.venv/bin/python -m pip install --quiet -e .
 
@@ -67,7 +69,7 @@ fi
 
 echo "[5/5] Setup complete!"
 if [ "$NO_LAUNCH" -eq 0 ]; then
-  echo "Launching AstraCradle v2.5.0 (detached GUI — safe to close this terminal)..."
+  echo "Launching AstraCradle v2.5.1 (detached GUI — safe to close this terminal)..."
   if [ -x ".venv/bin/astracradle-gui" ] && [ "${#PASS_ARGS[@]}" -eq 0 ]; then
     nohup ./.venv/bin/astracradle-gui >/dev/null 2>&1 &
   else

@@ -1,4 +1,4 @@
-# AstraCradle v2.5.0 — Beginner's Step-by-Step Installation Guide
+# AstraCradle v2.5.1 — Beginner's Step-by-Step Installation Guide
 
 Welcome! This guide is written for **anyone—even if you have never installed software from GitHub or a ZIP file before**. Just follow the section for your computer (**Windows**, **Mac**, or **Linux**).
 
@@ -16,7 +16,7 @@ Pick **one** of these two easy ways:
 ### Way 1: Download the ZIP File from GitHub (Easiest — No Commands Needed)
 1. Open the AstraCradle GitHub page in your web browser.
 2. Click the green **`<> Code`** button near the top right (or click **Releases** on the right side).
-3. Click **Download ZIP** (or download `AstraCradle-v2.5.0-bundle.zip` from Releases).
+3. Click **Download ZIP** (or download `AstraCradle-v2.5.1-bundle.zip` from Releases).
 4. Wait until the download finishes—the file will be in your **Downloads** folder.
 
 ### Way 2: Clone with Git (Optional)
@@ -28,7 +28,7 @@ If you already use Git, clone the repository to your home folder and open the fo
 
 ### 1. Unzip (Extract) the Downloaded File
 1. Open **File Explorer** (the yellow folder icon on your bottom bar) and click **Downloads** on the left.
-2. Find the file named `AstraCradle-v2.5.0-bundle.zip` (or `AstraCradle-main.zip`).
+2. Find the file named `AstraCradle-v2.5.1-bundle.zip` (or `AstraCradle-main.zip`).
    - **Important:** Do **not** double-click inside the ZIP and run files from there! You must **Extract** it first.
 3. **Right-click** the ZIP file and click **Extract All...**.
 4. A small window asks where to put the files. Click **Extract** (or change the folder to `C:\Users\YourName\AstraCradle`).
@@ -57,7 +57,7 @@ If you already use Git, clone the repository to your home folder and open the fo
 
 ### 1. Open the Downloaded Folder
 1. Click **Finder** (the smiling face icon in your Dock) and click **Downloads** on the left.
-2. If you see `AstraCradle-v2.5.0-bundle.zip` and it hasn't unzipped automatically, **double-click** it. Mac will turn it into a blue folder.
+2. If you see `AstraCradle-v2.5.1-bundle.zip` and it hasn't unzipped automatically, **double-click** it. Mac will turn it into a blue folder.
 3. Open that folder until you see **`Install_AstraCradle.command`**.
 
 ### 2. Run the 1-Click Installer
@@ -97,11 +97,11 @@ Copy and paste this into Terminal (works in **bash**, **zsh**, and **fish**):
 
 ```bash
 mkdir -p "$HOME/AstraCradle"
-unzip -oq "$HOME/Downloads/AstraCradle-v2.5.0-bundle.zip" -d "$HOME/AstraCradle"
-bash "$HOME/AstraCradle/AstraCradle-v2.5.0/install_astracradle.sh"
+unzip -oq "$HOME/Downloads/AstraCradle-v2.5.1-bundle.zip" -d "$HOME/AstraCradle"
+bash "$HOME/AstraCradle/AstraCradle-v2.5.1/install_astracradle.sh"
 ```
 
-*(If you downloaded `AstraCradle-main.zip` using GitHub's green Code button instead of Releases, replace `AstraCradle-v2.5.0-bundle.zip` with `AstraCradle-main.zip` and `AstraCradle-v2.5.0` with `AstraCradle-main`.)*
+*(If you downloaded `AstraCradle-main.zip` using GitHub's green Code button instead of Releases, replace `AstraCradle-v2.5.1-bundle.zip` with `AstraCradle-main.zip` and `AstraCradle-v2.5.1` with `AstraCradle-main`.)*
 
 ### 3. Opening AstraCradle Later
 - Press your **Super / Windows key**, type **AstraCradle**, and click its icon in your **Applications Menu** (just like Steam or Discord—no terminal stays open!).
@@ -126,7 +126,7 @@ If you ever want to remove AstraCradle completely:
 - **Or use the uninstaller script inside your AstraCradle folder:**
   - **Windows:** Double-click `Uninstall_AstraCradle.bat`
   - **macOS:** Right-click -> Open `Uninstall_AstraCradle.command`
-  - **Linux:** Run `bash ~/AstraCradle/AstraCradle-v2.5.0/uninstall_astracradle.sh`
+  - **Linux:** Run `bash ~/AstraCradle/AstraCradle-v2.5.1/uninstall_astracradle.sh`
 
 During uninstall, AstraCradle automatically:
 1. Reverts any active performance tweaks back to **Balanced Daily**.

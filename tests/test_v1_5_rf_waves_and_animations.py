@@ -16,7 +16,7 @@ from astracradle.ui.widgets import CategoryMotionEmblem, InteractiveFluidSolarCa
 
 
 def test_v1_5_rf_bandwidth_wave_scanner_and_category_animations(monkeypatch) -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     with tempfile.TemporaryDirectory() as td:
         base = Path(td) / ".astracradle"
         cfg_mgr = ConfigManager(base_dir=base)

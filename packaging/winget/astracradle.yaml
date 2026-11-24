@@ -1,5 +1,5 @@
 PackageIdentifier: AstraCradle.AstraCradle
-PackageVersion: 2.5.0
+PackageVersion: 2.5.1
 PackageName: AstraCradle
 Publisher: AstraCradle Local Studio
 License: MIT
@@ -12,7 +12,7 @@ Installers:
     NestedInstallerFiles:
       - RelativeFilePath: AstraCradle.exe
         PortableCommandAlias: astracradle
-    InstallerUrl: https://github.com/jackbashroot-boop/AstraCradle/releases/download/v2.5.0/AstraCradle-Windows.zip
+    InstallerUrl: https://github.com/jackbashroot-boop/AstraCradle/releases/download/v2.5.1/AstraCradle-Windows.zip
     InstallerSha256: REPLACE_WITH_RELEASE_SHA256
 ManifestType: singleton
-ManifestVersion: 2.5.0
+ManifestVersion: 2.5.1

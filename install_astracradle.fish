@@ -1,5 +1,5 @@
 #!/usr/bin/env fish
-# AstraCradle v2.5.0 — Native Fish Shell Full Installer (Linux / CachyOS / Arch / Ubuntu / Fedora)
+# AstraCradle v2.5.1 — Native Fish Shell Full Installer (Linux / CachyOS / Arch / Ubuntu / Fedora)
 cd (dirname (status -f))
 
 set -l no_launch 0
@@ -16,7 +16,7 @@ for arg in $argv
 end
 
 echo "============================================================"
-echo "  AstraCradle v2.5.0 — Fish Full Installer & Companion Setup"
+echo "  AstraCradle v2.5.1 — Fish Full Installer & Companion Setup"
 echo "============================================================"
 
 if not command -q python3
@@ -24,23 +24,25 @@ if not command -q python3
     exit 1
 end
 
-if not python3 -c "import tkinter" 2>/dev/null
-    echo "[1/6] Installing Python/Tk & system dependencies..."
+if not python3 -c "import tkinter" 2>/dev/null; or not python3 -c "import gi; gi.require_version('AyatanaAppIndicator3', '0.1')" 2>/dev/null
+    echo "[1/6] Installing Python/Tk, native tray & system dependencies..."
     if command -q pacman
-        sudo pacman -Syu --needed --noconfirm python python-pip tk openssl bluez bluez-utils networkmanager iw android-tools scrcpy flatpak curl
+        sudo pacman -Syu --needed --noconfirm python python-pip tk openssl bluez bluez-utils networkmanager iw android-tools scrcpy flatpak curl libayatana-appindicator python-gobject
     else if command -q apt-get
-        sudo apt-get update; and sudo apt-get install -y python3 python3-venv python3-tk openssl bluez rfkill network-manager iw android-tools-adb scrcpy flatpak curl
+        sudo apt-get update; and sudo apt-get install -y python3 python3-venv python3-tk openssl bluez rfkill network-manager iw android-tools-adb scrcpy flatpak curl gir1.2-ayatanaappindicator3-0.1 python3-gi
     else if command -q dnf
-        sudo dnf install -y python3 python3-tkinter openssl bluez NetworkManager iw android-tools flatpak curl
+        sudo dnf install -y python3 python3-tkinter openssl bluez NetworkManager iw android-tools flatpak curl libayatana-appindicator-gtk3 python3-gobject
     end
 end
 
 if not test -x .venv/bin/python
-    echo "[2/6] Creating isolated virtual environment (.venv)..."
-    python3 -m venv .venv
+    echo "[2/6] Creating virtual environment (.venv)..."
+    python3 -m venv --system-site-packages .venv
+else if test -f .venv/pyvenv.cfg
+    sed -i 's/include-system-site-packages = false/include-system-site-packages = true/' .venv/pyvenv.cfg 2>/dev/null; or true
 end
 
-echo "[3/6] Installing AstraCradle v2.5.0..."
+echo "[3/6] Installing AstraCradle v2.5.1..."
 ./.venv/bin/python -m pip install --quiet --upgrade pip
 ./.venv/bin/python -m pip install --quiet -e .
 

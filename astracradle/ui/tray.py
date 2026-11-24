@@ -2,10 +2,64 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import platform
 import threading
 from typing import Callable
+
+
+def _has_linux_appindicator() -> bool:
+    """Returns True if GI AyatanaAppIndicator3 or AppIndicator3 is importable."""
+    if platform.system() != "Linux":
+        return False
+    try:
+        import gi  # type: ignore[import-not-found]
+
+        for ns in ("AyatanaAppIndicator3", "AppIndicator3"):
+            try:
+                gi.require_version(ns, "0.1")
+                __import__(f"gi.repository.{ns}")
+                return True
+            except Exception:
+                continue
+    except Exception:
+        return False
+    return False
+
+
+def prepare_xorg_tray_image(img, size: tuple[int, int] = (32, 32), bg_rgba: tuple[int, int, int, int] = (30, 36, 43, 255)):
+    """Alpha-composites RGBA tray artwork onto a clean dark panel backdrop and converts to RGB.
+
+    `pystray._xorg` calls `Image.new('RGB', ...).paste(rgba)` without an alpha mask, which leaks
+    hidden alpha=0 RGB values and turns transparent emblems into a solid square on KDE/X11.
+    """
+    from PIL import Image
+
+    w = max(24, int(size[0]))
+    h = max(24, int(size[1]))
+    rgba = img.convert("RGBA").resize((w, h), Image.LANCZOS)
+    backdrop = Image.new("RGBA", (w, h), bg_rgba)
+    composited = Image.alpha_composite(backdrop, rgba)
+    return composited.convert("RGB")
+
+
+def build_net_wm_icon_data(img, sizes: tuple[int, ...] = (32, 64)) -> list[int]:
+    """Builds an X11 `_NET_WM_ICON` CARDINAL array `[width, height, ARGB...]` for RGBA tray icons."""
+    from PIL import Image
+
+    rgba_src = img.convert("RGBA")
+    data: list[int] = []
+    for sz in sizes:
+        dim = max(16, int(sz))
+        scaled = rgba_src.resize((dim, dim), Image.LANCZOS)
+        data.append(dim)
+        data.append(dim)
+        raw = scaled.tobytes()
+        for i in range(0, len(raw), 4):
+            r, g, b, a = raw[i], raw[i + 1], raw[i + 2], raw[i + 3]
+            data.append(((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF))
+    return data
 
 
 class TrayController:
@@ -23,6 +77,7 @@ class TrayController:
         on_toggle_astrashield: Callable[[], None] | None = None,
         on_pause_shield_5m: Callable[[], None] | None = None,
         on_toggle_widget: Callable[[], None] | None = None,
+        on_context_menu: Callable[[int, int], None] | None = None,
     ) -> None:
         self.icon_path = self._resolve_platform_icon(icon_path)
         self.on_show = on_show
@@ -34,14 +89,21 @@ class TrayController:
         self.on_toggle_astrashield = on_toggle_astrashield
         self.on_pause_shield_5m = on_pause_shield_5m
         self.on_toggle_widget = on_toggle_widget
+        self.on_context_menu = on_context_menu
         self._icon = None
         self._thread: threading.Thread | None = None
         self.available = False
         self.last_error: str = ""
         self.backend_name: str = ""
 
+        # Prefer native AppIndicator / StatusNotifierItem on Linux KDE/GNOME when available
+        if platform.system() == "Linux" and not os.environ.get("PYSTRAY_BACKEND"):
+            if _has_linux_appindicator():
+                os.environ["PYSTRAY_BACKEND"] = "appindicator"
+
         try:
             import pystray  # noqa: F401
+
             self.available = True
             self.backend_name = getattr(getattr(pystray, "Icon", None), "__module__", "pystray")
         except Exception as exc:
@@ -74,6 +136,10 @@ class TrayController:
     def running(self) -> bool:
         return self._icon is not None
 
+    @property
+    def is_xorg_backend(self) -> bool:
+        return self.backend_name.endswith("_xorg")
+
     def ensure_running(self) -> bool:
         if self.running:
             return True
@@ -88,7 +154,8 @@ class TrayController:
 
     def pulse_icon_frame(self, frame_idx: int = 0) -> None:
         """Cycles animated tray icon frame safely from astracradle_hover.gif when active."""
-        if self._icon is None:
+        if self._icon is None or self.is_xorg_backend:
+            # Skip live icon swaps on X11 XEmbed (`_xorg`): KDE xembedsniproxy flickers/resizes on rapid swaps
             return
         try:
             from PIL import Image, ImageSequence
@@ -104,6 +171,66 @@ class TrayController:
         except Exception:
             pass
 
+    @staticmethod
+    def _patch_xorg_icon(icon, rgba_img, on_context_menu: Callable[[int, int], None] | None = None) -> None:
+        """Upgrades pystray._xorg window geometry (32x32 + _NET_WM_ICON), alpha-safe rendering & right-click menu."""
+        from PIL import Image
+
+        wm_icon_data = build_net_wm_icon_data(rgba_img, sizes=(32, 64))
+        win = getattr(icon, "_window", None)
+        disp = getattr(icon, "_display", None)
+        if win is not None and disp is not None:
+            try:
+                import Xlib.X
+
+                win.configure(width=32, height=32)
+                win.change_attributes(
+                    event_mask=(
+                        Xlib.X.ExposureMask
+                        | Xlib.X.StructureNotifyMask
+                        | Xlib.X.ButtonPressMask
+                    )
+                )
+                if wm_icon_data:
+                    net_wm_icon = disp.intern_atom("_NET_WM_ICON")
+                    cardinal = disp.intern_atom("CARDINAL")
+                    win.change_property(net_wm_icon, cardinal, 32, wm_icon_data)
+                disp.sync()
+            except Exception:
+                pass
+
+        # Hook ButtonPress so right-click (detail == 3) opens the native Tk tray menu on X11/KDE
+        handlers = getattr(icon, "_message_handlers", None)
+        if isinstance(handlers, dict):
+            try:
+                import Xlib.X
+
+                def _on_button_press(event) -> None:
+                    detail = getattr(event, "detail", 0)
+                    if detail == 1:
+                        icon()
+                    elif detail == 3 and on_context_menu is not None:
+                        rx = int(getattr(event, "root_x", 0) or 0)
+                        ry = int(getattr(event, "root_y", 0) or 0)
+                        on_context_menu(rx, ry)
+
+                handlers[Xlib.X.ButtonPress] = _on_button_press
+            except Exception:
+                pass
+
+        def _patched_assert_icon_data(width, height):
+            w = max(1, int(width or 32))
+            h = max(1, int(height or 32))
+            if getattr(icon, "_icon_data", None) is not None and icon._icon_data.size == (w, h):
+                return
+            rendered = prepare_xorg_tray_image(rgba_img, size=(max(24, w), max(24, h)))
+            if rendered.size != (w, h):
+                rendered = rendered.resize((w, h), Image.LANCZOS)
+            icon._icon_data = rendered
+            icon._icon_data.tostring = icon._icon_data.tobytes
+
+        icon._assert_icon_data = _patched_assert_icon_data
+
     def start(self) -> bool:
         if not self.available or self._icon is not None:
             return False
@@ -111,11 +238,13 @@ class TrayController:
             from PIL import Image
             import pystray
 
-            img = (
+            rgba_img = (
                 Image.open(self.icon_path).convert("RGBA")
                 if self.icon_path.exists()
                 else Image.new("RGBA", (64, 64), (72, 216, 224, 255))
             )
+            tray_img = prepare_xorg_tray_image(rgba_img, size=(32, 32)) if self.is_xorg_backend else rgba_img
+
             items = [
                 pystray.MenuItem("Open AstraCradle", lambda _icon, _item: self.on_show(), default=True),
                 pystray.MenuItem("Run Equilibrium Scan", lambda _icon, _item: self.on_scan()),
@@ -155,7 +284,9 @@ class TrayController:
             )
             menu = pystray.Menu(*items)
             safe_title = self._safe_tray_text("AstraCradle - OS Equilibrium Studio", max_len=64)
-            self._icon = pystray.Icon("AstraCradle", img, safe_title, menu)
+            self._icon = pystray.Icon("AstraCradle", tray_img, safe_title, menu)
+            if self.is_xorg_backend:
+                self._patch_xorg_icon(self._icon, rgba_img, on_context_menu=self.on_context_menu)
             self._thread = threading.Thread(target=self._run_safe, daemon=True)
             self._thread.start()
             return True

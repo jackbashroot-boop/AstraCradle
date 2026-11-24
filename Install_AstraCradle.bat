@@ -1,9 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
-title AstraCradle v2.5.0 — Easy 1-Click Installer
+title AstraCradle v2.5.1 — Easy 1-Click Installer
 cd /d "%~dp0"
 echo ============================================================
-echo   AstraCradle v2.5.0 — Dyson-Core OS Equilibrium Studio
+echo   AstraCradle v2.5.1 — Dyson-Core OS Equilibrium Studio
 echo ============================================================
 echo.
 
@@ -47,7 +47,7 @@ if not exist ".venv\Scripts\python.exe" (
     )
 )
 
-echo [2/4] Installing AstraCradle v2.5.0 and local libraries...
+echo [2/4] Installing AstraCradle v2.5.1 and local libraries...
 call ".venv\Scripts\activate.bat"
 python -m pip install --quiet --upgrade pip
 python -m pip install --quiet -e .
@@ -67,7 +67,7 @@ if /i "%ADD_DESKTOP%"=="y" (
     python -m astracradle --install-shortcuts
 )
 
-echo [4/4] Setup complete! Launching AstraCradle v2.5.0...
+echo [4/4] Setup complete! Launching AstraCradle v2.5.1...
 if exist ".venv\Scripts\astracradle-gui.exe" (
     start "" ".venv\Scripts\astracradle-gui.exe"
 ) else (

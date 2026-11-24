@@ -24,7 +24,7 @@ from astracradle.theme import get_palette, get_ui_fonts
 
 
 def test_v1_4_wifi_recommend_yes_no_scanner_and_catalog(monkeypatch) -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         drive_a = root / "drive_c"

@@ -15,7 +15,7 @@ from astracradle.ui.app import AstraCradleApp
 
 
 def test_v2_3_ethernet_wifi_failover_5min_recovery_self_heal_and_fish() -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     repo_root = Path(__file__).resolve().parents[1]
     fish_inst = repo_root / "install_astracradle.fish"
     assert fish_inst.exists()

@@ -1666,10 +1666,12 @@ class FloatingMiniOrbWindow(ctk.CTkToplevel):
         palette: ThemePalette,
         on_restore: Callable[[], None],
         gif_path: Path | None = None,
+        on_context_menu: Callable[[int, int], None] | None = None,
     ) -> None:
         super().__init__(master)
         self.palette = palette
         self.on_restore = on_restore
+        self.on_context_menu = on_context_menu
         self.score = 100
         self._hover = False
         self._phase = 0.0
@@ -1714,6 +1716,7 @@ class FloatingMiniOrbWindow(ctk.CTkToplevel):
         self.canvas.bind("<ButtonPress-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.canvas.bind("<ButtonPress-3>", self._on_right_click)
         self.bind("<Destroy>", self._on_destroy, add="+")
         self._tick()
 
@@ -1737,6 +1740,12 @@ class FloatingMiniOrbWindow(ctk.CTkToplevel):
     def _on_release(self, _event=None) -> None:
         if not self._moved and self.on_restore:
             self.on_restore()
+
+    def _on_right_click(self, event=None) -> None:
+        if self.on_context_menu is not None:
+            rx = int(getattr(event, "x_root", 0) or 0)
+            ry = int(getattr(event, "y_root", 0) or 0)
+            self.on_context_menu(rx, ry)
 
     def _on_destroy(self, _event=None) -> None:
         if self._after_id is not None:

@@ -20,7 +20,7 @@ from astracradle.ui.pages.dashboard_snapshot import toggle_dash_diag_item, toggl
 
 
 def test_process_intelligence_web_lookup_pid_and_cache() -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     with tempfile.TemporaryDirectory() as td:
         cfg_mgr = ConfigManager(base_dir=Path(td))
         pil = ProcessIntelligenceLookup(cfg_mgr)

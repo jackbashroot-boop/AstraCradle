@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "============================================================"
-echo "  AstraCradle v2.5.0 — Dyson-Core OS Equilibrium Studio"
+echo "  AstraCradle v2.5.1 — Dyson-Core OS Equilibrium Studio"
 echo "============================================================"
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -36,7 +36,7 @@ if [ ! -x ".venv/bin/python" ]; then
   python3 -m venv .venv
 fi
 
-echo "[2/4] Installing AstraCradle v2.5.0..."
+echo "[2/4] Installing AstraCradle v2.5.1..."
 ./.venv/bin/python -m pip install --quiet --upgrade pip
 ./.venv/bin/python -m pip install --quiet -e .
 
@@ -52,7 +52,7 @@ else
   ./.venv/bin/python -m astracradle --install-shortcuts
 fi
 
-echo "[4/4] Setup complete! Launching AstraCradle v2.5.0..."
+echo "[4/4] Setup complete! Launching AstraCradle v2.5.1..."
 if [[ "${1:-}" != "--no-launch" ]]; then
   if [ -x ".venv/bin/astracradle-gui" ]; then
     nohup ./.venv/bin/astracradle-gui >/dev/null 2>&1 &

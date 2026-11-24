@@ -21,7 +21,7 @@ from astracradle.ui.app import AstraCradleApp
 
 
 def test_v2_1_command_db_proximity_bt_handshake_custom_devices_and_self_heal() -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     with tempfile.TemporaryDirectory() as td:
         base = Path(td) / ".astracradle"
         cfg_mgr = ConfigManager(base_dir=base)

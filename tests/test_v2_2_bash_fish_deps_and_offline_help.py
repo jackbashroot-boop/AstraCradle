@@ -18,7 +18,7 @@ from astracradle.ui.modals import HelpSearchDialog
 
 
 def test_v2_2_linux_bash_fish_deps_autoinstall_and_offline_help(monkeypatch) -> None:
-    assert __version__ == "2.5.0"
+    assert __version__ == "2.5.1"
     with tempfile.TemporaryDirectory() as td:
         base = Path(td) / ".astracradle"
         cfg_mgr = ConfigManager(base_dir=base)
