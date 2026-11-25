@@ -1149,6 +1149,26 @@ def test_windows_11_pythonw_null_stdio_and_installer_resilience(monkeypatch) -> 
         assert (Path(td) / "logs" / "gui_stdio.log").exists()
 
 
+def test_first_load_windows_lag_fixes_and_pnp_throttle() -> None:
+    from astracradle.core.usb_guard import UsbAndPeripheralGuard
+
+    repo_root = Path(__file__).resolve().parents[1]
+    app_txt = (repo_root / "astracradle" / "ui" / "app.py").read_text(encoding="utf-8")
+    dash_txt = (repo_root / "astracradle" / "ui" / "pages" / "dashboard_snapshot.py").read_text(encoding="utf-8")
+    usb_txt = (repo_root / "astracradle" / "core" / "usb_guard.py").read_text(encoding="utf-8")
+
+    # No synchronous nvidia-smi calls on the main UI thread
+    assert "GpuPowerAndFanController.probe_live_power_and_fan()" not in dash_txt
+    assert "gpu_live = sensors.get(\"gpu_live\") or {}" in app_txt
+    # Background worker guard + Fix Everything Safe off main thread + capped UI drain
+    assert "_telemetry_in_flight" in app_txt
+    assert '("fix_safe_done"' in app_txt
+    assert "while processed < 8:" in app_txt
+    # Windows PnP PowerShell scan throttled & hidden console
+    assert "CREATE_NO_WINDOW" in usb_txt and "_win_pnp_cache" in usb_txt
+    assert hasattr(UsbAndPeripheralGuard, "_win_pnp_cache")
+
+
 
 
 

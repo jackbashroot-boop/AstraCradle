@@ -81,6 +81,7 @@ class TelemetryCollector:
         process_limit: int = 30,
         consent_telemetry: bool = True,
         consent_processes: bool = True,
+        include_process_details: bool = True,
     ) -> SystemSnapshot:
         if not consent_telemetry:
             return SystemSnapshot(
@@ -187,9 +188,12 @@ class TelemetryCollector:
         total_procs = 0
         own_pid = os.getpid()
         if consent_processes:
-            for proc in psutil.process_iter(
+            attrs = (
                 ["pid", "name", "username", "cpu_percent", "memory_info", "memory_percent", "status", "cmdline"]
-            ):
+                if include_process_details
+                else ["pid", "name", "cpu_percent", "memory_info", "memory_percent", "status"]
+            )
+            for proc in psutil.process_iter(attrs):
                 total_procs += 1
                 try:
                     info = proc.info
@@ -199,7 +203,7 @@ class TelemetryCollector:
                     mem_mb = round((mem_info.rss / (1024 * 1024)) if mem_info else 0.0, 1)
                     cpu_p = round(float(info.get("cpu_percent") or 0.0), 1)
                     mem_p = round(float(info.get("memory_percent") or 0.0), 1)
-                    cmd_list = info.get("cmdline") or []
+                    cmd_list = (info.get("cmdline") or []) if include_process_details else []
                     cmdline = " ".join(cmd_list[:8]) if isinstance(cmd_list, list) else str(cmd_list)
                     is_prot = (
                         pid <= 4
@@ -210,7 +214,7 @@ class TelemetryCollector:
                     pobj = ProcessInfo(
                         pid=pid,
                         name=name,
-                        username=str(info.get("username") or "-"),
+                        username=str((info.get("username") if include_process_details else None) or "-"),
                         cpu_percent=cpu_p,
                         memory_mb=mem_mb,
                         memory_percent=mem_p,
@@ -312,43 +316,52 @@ class TelemetryCollector:
         nvsmi = shutil.which("nvidia-smi")
         if nvsmi:
             try:
-                proc = subprocess.run(
-                    [
-                        nvsmi,
-                        "--query-gpu=name,temperature.gpu,fan.speed,power.draw,clocks.current.graphics,clocks.current.memory,memory.used,memory.total",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=1.5,
-                    check=False,
-                )
-                line = (proc.stdout or "").strip().splitlines()[0] if proc.stdout and proc.stdout.strip() else ""
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 8:
-                    gtemp = float(parts[1])
-                    gpu_live = {
-                        "name": parts[0],
-                        "temp_c": round(gtemp, 1),
-                        "fan_percent": None if parts[2].startswith("[") else float(parts[2]),
-                        "power_draw_w": None if parts[3].startswith("[") else round(float(parts[3]), 1),
-                        "gpu_clock_mhz": None if parts[4].startswith("[") else float(parts[4]),
-                        "mem_clock_mhz": None if parts[5].startswith("[") else float(parts[5]),
-                        "vram_used_mb": float(parts[6]),
-                        "vram_total_mb": float(parts[7]),
-                    }
-                    if not any(t.get("category") == "gpu" for t in temps_out):
-                        temps_out.append(
-                            {
-                                "chip": "nvidia",
-                                "label": f"{parts[0]} Core",
-                                "category": "gpu",
-                                "current_c": round(gtemp, 1),
-                                "high_c": 83.0,
-                                "critical_c": 93.0,
-                                "status": "crit" if gtemp >= 90 else ("warn" if gtemp >= 80 else "ok"),
-                            }
-                        )
+                cached = getattr(TelemetryCollector, "_nvsmi_cache", None)
+                now_m = time.monotonic()
+                if cached and (now_m - cached[0]) < 4.0:
+                    gpu_live = dict(cached[1])
+                else:
+                    proc = subprocess.run(
+                        [
+                            nvsmi,
+                            "--query-gpu=name,temperature.gpu,fan.speed,power.draw,clocks.current.graphics,clocks.current.memory,memory.used,memory.total",
+                            "--format=csv,noheader,nounits",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=1.5,
+                        check=False,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                    line = (proc.stdout or "").strip().splitlines()[0] if proc.stdout and proc.stdout.strip() else ""
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 8:
+                        gtemp = float(parts[1])
+                        gpu_live = {
+                            "available": True,
+                            "name": parts[0],
+                            "temp_c": round(gtemp, 1),
+                            "fan_percent": None if parts[2].startswith("[") else float(parts[2]),
+                            "power_draw_w": None if parts[3].startswith("[") else round(float(parts[3]), 1),
+                            "gpu_clock_mhz": None if parts[4].startswith("[") else float(parts[4]),
+                            "mem_clock_mhz": None if parts[5].startswith("[") else float(parts[5]),
+                            "vram_used_mb": float(parts[6]),
+                            "vram_total_mb": float(parts[7]),
+                        }
+                        TelemetryCollector._nvsmi_cache = (now_m, dict(gpu_live))  # type: ignore[attr-defined]
+                if gpu_live and gpu_live.get("temp_c") is not None and not any(t.get("category") == "gpu" for t in temps_out):
+                    gtemp_v = float(gpu_live["temp_c"])  # type: ignore[arg-type]
+                    temps_out.append(
+                        {
+                            "chip": "nvidia",
+                            "label": f"{gpu_live.get('name', 'NVIDIA')} Core",
+                            "category": "gpu",
+                            "current_c": round(gtemp_v, 1),
+                            "high_c": 83.0,
+                            "critical_c": 93.0,
+                            "status": "crit" if gtemp_v >= 90 else ("warn" if gtemp_v >= 80 else "ok"),
+                        }
+                    )
             except Exception:
                 pass
 

@@ -41,9 +41,13 @@ class GpuTelemetryCollector:
 
     _nvidia_checked: bool = False
     _nvidia_bin: str | None = None
+    _gpu_cache: tuple[float, GpuTelemetry] | None = None
 
     @classmethod
     def collect(cls) -> GpuTelemetry:
+        now_m = time.monotonic()
+        if cls._gpu_cache is not None and (now_m - cls._gpu_cache[0]) < 4.0:
+            return cls._gpu_cache[1]
         if not cls._nvidia_checked:
             cls._nvidia_bin = shutil.which("nvidia-smi")
             cls._nvidia_checked = True
@@ -57,7 +61,8 @@ class GpuTelemetryCollector:
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=2,
+                    timeout=1.5,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 if proc.returncode == 0 and proc.stdout.strip():
                     parts = [p.strip() for p in proc.stdout.strip().splitlines()[0].split(",")]
@@ -69,7 +74,7 @@ class GpuTelemetryCollector:
                                 return None
 
                         throt = "Thermal Slowdown Active" if (len(parts) > 5 and parts[5].lower() == "active") else None
-                        return GpuTelemetry(
+                        res_gpu = GpuTelemetry(
                             available=True,
                             name=parts[0],
                             utilization_percent=_f(1),
@@ -78,6 +83,8 @@ class GpuTelemetryCollector:
                             temperature_c=_f(4),
                             throttling_reason=throt,
                         )
+                        cls._gpu_cache = (now_m, res_gpu)
+                        return res_gpu
             except Exception:
                 pass
 

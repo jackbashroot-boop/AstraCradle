@@ -459,7 +459,8 @@ class AstraCradleApp(ctk.CTk):
         else:
             if show_startup_popups and self.config_obj.consent_telemetry and not self.config_obj.first_run_scan_completed:
                 self.after(200, lambda: self.run_full_pc_discovery_async(show_dialog=False))
-            self.refresh_telemetry_async(include_dns=True, also_scan=True)
+            else:
+                self.refresh_telemetry_async(include_dns=True, also_scan=True)
             self._schedule_telemetry_poll()
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -2204,7 +2205,6 @@ class AstraCradleApp(ctk.CTk):
 
             if self.config_obj.consent_telemetry:
                 self.run_full_pc_discovery_async(show_dialog=False)
-                self.refresh_telemetry_async(include_dns=True, also_scan=True)
                 self._schedule_telemetry_poll()
             else:
                 self.dash_headline.configure(text="Setup Complete (Minimal Scan Mode)")
@@ -8135,8 +8135,10 @@ class AstraCradleApp(ctk.CTk):
 
     def _drain_ui_queue(self) -> None:
         try:
-            while True:
+            processed = 0
+            while processed < 8:
                 item = self._ui_queue.get_nowait()
+                processed += 1
                 first = item[0]
                 if first == "show_window":
                     self._restore_main_window()
@@ -8233,16 +8235,29 @@ class AstraCradleApp(ctk.CTk):
                     self._last_latency_report = out.latency_report
                     self._last_autoruns = out.autoruns
                     self._last_ghosts = out.ghost_drivers
-                    self._update_telemetry_cards(out.snapshot)
+                    self._update_telemetry_cards(out.snapshot, getattr(self, "_latest_gpu", None))
                     self._update_diagnosis_overview(out.report, out.playbook)
                     self.finish_task_progress(
                         "full_discovery",
                         f"Full PC Discovery complete ({len(out.baseline.subsystems_checked)} local subsystems baselined)!",
                         notify_title="Full PC Discovery Complete",
                     )
-                    self.refresh_telemetry_async(include_dns=True, also_scan=False)
                     if show_dlg:
                         FullDiscoveryResultDialog(self, self.palette, self.fonts, out.baseline)
+                    continue
+                if first == "fix_safe_done":
+                    summary, proof_summary, notes = item[1], item[2], item[3]
+                    self.finish_task_progress("fix_safe", f"{summary} ({proof_summary})")
+                    if self._show_startup_popups:
+                        messagebox.showinfo(summary, f"{proof_summary}\n\n" + "\n".join(f"• {n}" for n in notes))
+                    self.refresh_telemetry_async(include_dns=False, also_scan=True)
+                    continue
+                if first == "fix_safe_err":
+                    self.finish_task_progress(
+                        "fix_safe",
+                        f"Fix Everything Safe note: {item[1]}",
+                        color=self.palette.accent_coral,
+                    )
                     continue
                 if first == "full_discovery_err":
                     self.finish_task_progress(
@@ -8522,34 +8537,66 @@ class AstraCradleApp(ctk.CTk):
                 pass
 
     def refresh_telemetry_async(self, include_dns: bool = False, also_scan: bool = False) -> None:
+        if getattr(self, "_telemetry_in_flight", False) and not also_scan:
+            return
+        self._telemetry_in_flight = True
         dry_now = bool(self.dry_run_var.get()) if hasattr(self, "dry_run_var") else bool(self.config_obj.dry_run_default)
         probe_dns = bool(include_dns or not getattr(self, "_initial_dns_probed", False))
         self._initial_dns_probed = True
+        now_m = time.monotonic()
+        last_heavy = float(getattr(self, "_last_heavy_probe_ts", 0.0) or 0.0)
+        run_heavy = bool(also_scan or (now_m - last_heavy) >= 10.0)
+        if run_heavy:
+            self._last_heavy_probe_ts = now_m
 
         def worker():
-            adapter = self._active_adapter()
-            snap = self.telemetry.collect(
-                adapter,
-                include_dns=probe_dns,
-                consent_telemetry=self.config_obj.consent_telemetry,
-                consent_processes=self.config_obj.consent_process_scan,
-            )
             try:
-                self._bg_focus_state = FullscreenFocusDetector.detect()
-            except Exception:
-                pass
-            gpu = GpuTelemetryCollector.collect()
-            sensors = TelemetryCollector.collect_detailed_sensors() if self.config_obj.consent_telemetry else {}
-            conflicts = self.conflict_detector.scan_conflicts() if self.config_obj.consent_process_scan else []
-            usb_events = (
-                self.usb_guard.poll_and_guard(self.config_obj, dry_run=dry_now)
-                if self.config_obj.consent_telemetry
-                else []
-            )
-            peripherals = self.usb_guard.scan_all_peripherals() if self.config_obj.consent_telemetry else []
-            report = self.diagnostics.run_scan(snap, adapter, self.config_obj) if also_scan else None
-            pb = self.playbook_builder.build(report, self.config_obj) if report else None
-            self._ui_queue.put((snap, report, pb, gpu, sensors, conflicts, peripherals, usb_events))
+                adapter = self._active_adapter()
+                snap = self.telemetry.collect(
+                    adapter,
+                    include_dns=probe_dns,
+                    consent_telemetry=self.config_obj.consent_telemetry,
+                    consent_processes=self.config_obj.consent_process_scan,
+                    include_process_details=bool(also_scan),
+                )
+                try:
+                    self._bg_focus_state = FullscreenFocusDetector.detect()
+                except Exception:
+                    pass
+                gpu = (
+                    GpuTelemetryCollector.collect()
+                    if run_heavy or getattr(self, "_latest_gpu", None) is None
+                    else self._latest_gpu
+                )
+                sensors = (
+                    TelemetryCollector.collect_detailed_sensors()
+                    if (self.config_obj.consent_telemetry and (run_heavy or not self._latest_sensors))
+                    else (self._latest_sensors or {})
+                )
+                conflicts = (
+                    self.conflict_detector.scan_conflicts()
+                    if (self.config_obj.consent_process_scan and run_heavy)
+                    else (self._latest_conflicts or [])
+                )
+                usb_events = (
+                    self.usb_guard.poll_and_guard(self.config_obj, dry_run=dry_now)
+                    if (self.config_obj.consent_telemetry and run_heavy)
+                    else []
+                )
+                peripherals = (
+                    list(self.usb_guard._known_keys.values())
+                    if (self.config_obj.consent_telemetry and run_heavy and self.usb_guard._known_keys)
+                    else (
+                        self.usb_guard.scan_all_peripherals()
+                        if (self.config_obj.consent_telemetry and run_heavy)
+                        else (self._latest_peripherals or [])
+                    )
+                )
+                report = self.diagnostics.run_scan(snap, adapter, self.config_obj) if also_scan else None
+                pb = self.playbook_builder.build(report, self.config_obj) if report else None
+                self._ui_queue.put((snap, report, pb, gpu, sensors, conflicts, peripherals, usb_events))
+            finally:
+                self._telemetry_in_flight = False
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -8568,7 +8615,7 @@ class AstraCradleApp(ctk.CTk):
     def _update_telemetry_cards(self, snap: SystemSnapshot, gpu=None) -> None:
         sensors = self._latest_sensors or {}
         cpu_temp = self._num_or_none(sensors.get("cpu_temp_c")) or self._num_or_none(snap.temperature_c)
-        gpu_live = sensors.get("gpu_live") or GpuPowerAndFanController.probe_live_power_and_fan()
+        gpu_live = sensors.get("gpu_live") or {}
         gpu_temp = self._num_or_none(sensors.get("gpu_temp_c")) or self._num_or_none(gpu_live.get("temp_c"))
         nvme_temp = self._num_or_none(sensors.get("nvme_temp_c"))
 
@@ -8610,8 +8657,8 @@ class AstraCradleApp(ctk.CTk):
         )
         self.net_spark.push(min(100.0, (snap.dns_latency_ms or 35.0) / 3.0))
 
-        gpu = gpu if gpu is not None else GpuTelemetryCollector.collect()
-        if gpu.available:
+        gpu = gpu if gpu is not None else getattr(self, "_latest_gpu", None)
+        if gpu is not None and gpu.available:
             util = gpu.utilization_percent or 0.0
             vram_txt = (
                 f"VRAM {gpu.vram_used_mb:.0f}/{gpu.vram_total_mb:.0f} MB"
@@ -8629,7 +8676,7 @@ class AstraCradleApp(ctk.CTk):
             self._set_text_if_changed(
                 self.gpu_val_lbl, "Integrated" + (f" · {gpu_temp:.0f}°C" if gpu_temp is not None else "")
             )
-            self._set_text_if_changed(self.gpu_sub_lbl, gpu.name)
+            self._set_text_if_changed(self.gpu_sub_lbl, gpu.name if gpu is not None else str(gpu_live.get("name", "Probing GPU...")))
             self.gpu_spark.push(snap.cpu_percent * 0.35)
 
         self._update_command_deck_diagnostics(snap, gpu)
@@ -9328,22 +9375,29 @@ class AstraCradleApp(ctk.CTk):
             self.show_toast(f"Exported configuration to {dest}")
 
     def on_fix_everything_safe(self) -> None:
-        adapter = self._active_adapter()
-        pre_snap = self.latest_snapshot or self.telemetry.collect(adapter, include_dns=False)
+        dry_now = bool(self.dry_run_var.get()) if hasattr(self, "dry_run_var") else bool(self.config_obj.dry_run_default)
+        pre_snap_cached = self.latest_snapshot
         pre_score = self.latest_report.health_score if self.latest_report else 90
-        baseline = self.autopilot.capture_proof_baseline(pre_snap, pre_score)
-        _, summary, notes = self.safe_fixer.run_fix_everything_safe(
-            adapter,
-            self.config_obj,
-            dry_run=bool(self.dry_run_var.get()),
-        )
-        post_snap = self.telemetry.collect(adapter, include_dns=False)
-        post_rep = self.diagnostics.run_scan(post_snap, adapter, self.config_obj)
-        proof = self.autopilot.compare_proof_scorecard("Fix Everything Safe", baseline, post_snap, post_rep.health_score)
-        self.show_toast(f"{summary} ({proof.summary})")
-        if self._show_startup_popups:
-            messagebox.showinfo(summary, f"{proof.summary}\n\n" + "\n".join(f"• {n}" for n in notes))
-        self.refresh_telemetry_async(include_dns=False, also_scan=True)
+        self.begin_task_progress("fix_safe", "Running 1-Click Fix Everything Safe...")
+
+        def _worker() -> None:
+            try:
+                adapter = self._active_adapter()
+                pre_snap = pre_snap_cached or self.telemetry.collect(adapter, include_dns=False, include_process_details=False)
+                baseline = self.autopilot.capture_proof_baseline(pre_snap, pre_score)
+                _, summary, notes = self.safe_fixer.run_fix_everything_safe(
+                    adapter,
+                    self.config_obj,
+                    dry_run=dry_now,
+                )
+                post_snap = self.telemetry.collect(adapter, include_dns=False, include_process_details=False)
+                post_rep = self.diagnostics.run_scan(post_snap, adapter, self.config_obj)
+                proof = self.autopilot.compare_proof_scorecard("Fix Everything Safe", baseline, post_snap, post_rep.health_score)
+                self._ui_queue.put(("fix_safe_done", summary, proof.summary, notes))
+            except Exception as exc:
+                self._ui_queue.put(("fix_safe_err", str(exc)))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_export_script_pack(self) -> None:
         dest = filedialog.asksaveasfilename(
