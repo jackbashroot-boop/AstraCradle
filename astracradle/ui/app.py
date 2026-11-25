@@ -38,6 +38,7 @@ from ..core.pc_extras import (
     StartupDelayManager as StartupFileDelayManager,
 )
 from ..core.advanced_controls import (
+    ActiveWindowState,
     FullscreenFocusDetector,
     GpuPowerAndFanController,
     GpuThermalProfile,
@@ -52,6 +53,14 @@ from ..core.i18n import SUPPORTED_LANGUAGES, Translator
 from ..core.journal import ForensicJournal
 from ..core.latency_guard import InterruptAndDpcGuard
 from ..core.lifecycle import LifecycleManager
+from ..core.modules import (
+    ASTRA_MODULES,
+    INSTALL_BUNDLE_PRESETS,
+    MODULE_BY_ID,
+    NAV_KEY_TO_MODULE_ID,
+    allowed_nav_keys,
+    normalize_enabled_modules,
+)
 from ..core.models import (
     CrashPostMortem,
     OptimizationScript,
@@ -129,6 +138,7 @@ from .modals import (
     HelpSearchDialog,
     PipelineEditorDialog,
     ProcessExplanationDialog,
+    SetupWizardDialog,
     SudoPasswordDialog,
     UninstallDialog,
     YesNoActionDialog,
@@ -173,6 +183,7 @@ class AstraCradleApp(ctk.CTk):
         show_startup_popups: bool = True,
         start_minimized: bool = False,
         start_widget: bool = False,
+        open_setup_wizard: bool = False,
     ) -> None:
         super().__init__(className="AstraCradle")
 
@@ -426,7 +437,16 @@ class AstraCradleApp(ctk.CTk):
         self._drain_ui_queue()
 
         # Respect explicit permission before first full-computer diagnostic pull on interactive first launch
-        if show_startup_popups and not self.config_obj.consent_prompted:
+        if show_startup_popups and not self.config_obj.setup_wizard_completed:
+            self.dash_headline.configure(text="Setup Wizard Ready — Choose Your Modules")
+            self.dash_summary.configure(
+                text=(
+                    "Welcome to AstraCradle! Pick which modular features you want active, "
+                    "configure local scan permissions, and optionally install menu/desktop shortcuts."
+                )
+            )
+            self.topbar_status.configure(text="Awaiting Setup Wizard")
+        elif show_startup_popups and not self.config_obj.consent_prompted:
             self.dash_headline.configure(text="Permission Required for First-Load Local PC Scan")
             self.dash_summary.configure(
                 text=(
@@ -454,19 +474,23 @@ class AstraCradleApp(ctk.CTk):
                 self.after(20, self._launch_boot_star_gather_splash)
             if self.startup_crash_report is not None:
                 self.after(350, lambda: CrashRecoveryDialog(self, self.palette, self.fonts, self.startup_crash_report))
+                if open_setup_wizard or not self.config_obj.setup_wizard_completed:
+                    self.after(550, lambda: self.open_setup_wizard(first_run=not self.config_obj.setup_wizard_completed))
+            elif open_setup_wizard or not self.config_obj.setup_wizard_completed:
+                self.after(300, lambda: self.open_setup_wizard(first_run=not self.config_obj.setup_wizard_completed))
             elif not self.config_obj.consent_prompted:
                 self.after(300, lambda: self.open_consent_wizard(first_run=True))
-            if self.config_obj.astrashield_auto_start and (
+            if self.config_obj.is_module_enabled("privacy_shield") and self.config_obj.astrashield_auto_start and (
                 self.config_obj.astrashield_enabled
                 or self.config_obj.astrashield_dns_enabled
                 or self.config_obj.astrashield_lan_tv_mode
             ):
                 self.after(450, self._auto_start_astrashield_async)
-            else:
+            elif self.config_obj.is_module_enabled("privacy_shield"):
                 fs_msg = self.lan_tv_shield.check_and_run_startup_failsafe(self.adblock_shield)
                 if fs_msg:
                     self.after(600, lambda m=fs_msg: self.show_toast(m))
-            if getattr(self.config_obj, "wifi_auto_optimize", True):
+            if self.config_obj.is_module_enabled("wifi_failover_mesh") and getattr(self.config_obj, "wifi_auto_optimize", True):
                 self.after(900, self._auto_wifi_optimize_async)
             if start_widget or getattr(self.config_obj, "desktop_widget_enabled", False):
                 self.after(140, self.show_desktop_widget)
@@ -909,6 +933,8 @@ class AstraCradleApp(ctk.CTk):
     def _on_window_unmap(self, event) -> None:
         if event.widget is not self:
             return
+        if time.monotonic() < float(getattr(self, "_restoring_until", 0.0)):
+            return
         try:
             if self.state() == "iconic":
                 self._set_animations_paused(True)
@@ -919,6 +945,37 @@ class AstraCradleApp(ctk.CTk):
                     self.withdraw()
                     self._show_mini_orb()
                     self.tray.notify("AstraCradle", "Minimized to the bottom-right system tray.")
+        except Exception:
+            pass
+
+    def _restore_main_window(self) -> None:
+        self._restoring_until = time.monotonic() + 0.9
+        self._hide_mini_orb()
+        try:
+            self.deiconify()
+        except Exception:
+            pass
+        try:
+            self.state("normal")
+        except Exception:
+            pass
+        try:
+            self.update_idletasks()
+            self.lift()
+            self.attributes("-topmost", True)
+            self.after(90, lambda: self._clear_topmost_safe())
+        except Exception:
+            pass
+        try:
+            self.focus_force()
+        except Exception:
+            pass
+        self._set_animations_paused(False)
+
+    def _clear_topmost_safe(self) -> None:
+        try:
+            if self.winfo_exists():
+                self.attributes("-topmost", False)
         except Exception:
             pass
 
@@ -1777,6 +1834,15 @@ class AstraCradleApp(ctk.CTk):
             return True
         if not force_prompt and not getattr(self.config_obj, "confirm_important_prompts", True):
             return True
+        try:
+            is_hidden = str(self.state()) in ("withdrawn", "iconic")
+        except Exception:
+            is_hidden = False
+        if is_hidden:
+            if not force_prompt:
+                # Never block the event loop with a hidden transient grab dialog while minimized to tray
+                return False
+            self._restore_main_window()
         dlg = YesNoActionDialog(
             self,
             self.palette,
@@ -1791,6 +1857,15 @@ class AstraCradleApp(ctk.CTk):
         return bool(dlg.approved)
 
     def switch_nav(self, key: str) -> None:
+        allowed_keys = allowed_nav_keys(getattr(self.config_obj, "enabled_modules", None))
+        if key not in allowed_keys:
+            mod_id = NAV_KEY_TO_MODULE_ID.get(key, "")
+            mod_name = MODULE_BY_ID[mod_id].name if mod_id in MODULE_BY_ID else key
+            self.show_toast(
+                f"Module '{mod_name}' is disabled. Enable it in Settings -> Modular Features.",
+                color=self.palette.accent_brass,
+            )
+            key = "dashboard"
         p = self.palette
         self.current_nav = key
         titles = {
@@ -1872,6 +1947,7 @@ class AstraCradleApp(ctk.CTk):
 
     def _apply_simple_mode(self, initial: bool = False) -> None:
         simple = bool(getattr(self.config_obj, "simple_mode", True))
+        allowed_keys = allowed_nav_keys(getattr(self.config_obj, "enabled_modules", None))
         if hasattr(self, "simple_mode_var") and bool(self.simple_mode_var.get()) != simple:
             self.simple_mode_var.set(simple)
         if hasattr(self, "nav_buttons") and hasattr(self, "_nav_order") and hasattr(self, "_sidebar_spacer"):
@@ -1882,6 +1958,8 @@ class AstraCradleApp(ctk.CTk):
             for k in self._nav_order:
                 btn = self.nav_buttons.get(k)
                 if btn is None:
+                    continue
+                if k not in allowed_keys:
                     continue
                 if simple and k in getattr(self, "_advanced_nav_keys", ()):
                     continue
@@ -1901,7 +1979,10 @@ class AstraCradleApp(ctk.CTk):
             else:
                 self.dash_tools_card.grid()
 
-        if not initial and simple and self.current_nav in getattr(self, "_advanced_nav_keys", ()):
+        if not initial and (
+            self.current_nav not in allowed_keys
+            or (simple and self.current_nav in getattr(self, "_advanced_nav_keys", ()))
+        ):
             self.switch_nav("dashboard")
 
     def _on_toggle_dry_run(self) -> None:
@@ -1934,6 +2015,25 @@ class AstraCradleApp(ctk.CTk):
         _, q_count = self.rollback_mgr.quarantine_stats()
 
         def _do_uninstall(del_data: bool, restore_q: bool, uninst_pkg: bool) -> None:
+            try:
+                if getattr(self, "_astrabeam_server", None) is not None:
+                    self._astrabeam_server.stop()
+                    self._astrabeam_server = None
+            except Exception:
+                pass
+            try:
+                if self.adblock_shield.dns_running:
+                    self.adblock_shield.stop_dns_sinkhole()
+            except Exception:
+                pass
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
+            try:
+                self._global_hotkeys.stop()
+            except Exception:
+                pass
             summary = self.lifecycle.uninstall_astracradle(
                 self._active_adapter(),
                 self.config_obj,
@@ -1979,6 +2079,194 @@ class AstraCradleApp(ctk.CTk):
         )
         self._refresh_install_memory_label()
         self.show_toast(f"Created {len(created)} Application Menu / Launcher shortcut(s)!")
+
+    def open_setup_wizard(self, first_run: bool = False) -> None:
+        def on_finish(payload: dict) -> None:
+            skipped = bool(payload.get("skipped", False))
+            old_theme = str(self.config_obj.theme)
+            old_lang = str(self.config_obj.language)
+            setup_actions: list[str] = []
+
+            if not skipped:
+                self.config_obj.apply_wizard_choices(payload)
+                setup_actions.append(f"{len(self.config_obj.enabled_modules)} modules")
+                setup_actions.append(f"profile: {self.config_obj.active_profile}")
+                try:
+                    self.lifecycle.set_launch_at_login(bool(self.config_obj.launch_at_login))
+                    if self.config_obj.launch_at_login:
+                        setup_actions.append("launch at login")
+                except Exception:
+                    pass
+
+                if payload.get("install_shortcuts"):
+                    try:
+                        repo_root = Path(__file__).resolve().parents[2]
+                        want_desk = bool(payload.get("desktop_icon", False))
+                        self.lifecycle.install_shortcuts(repo_root, include_desktop_icon=want_desk)
+                        self.updater.record_install_memory(
+                            install_dir=repo_root,
+                            install_method="setup_wizard",
+                            desktop_icon=want_desk,
+                            shortcuts_installed=True,
+                            step_note=f"Setup Wizard configured {len(self.config_obj.enabled_modules)} modules ({self.config_obj.install_bundle_preset})",
+                            config=self.config_obj,
+                        )
+                        setup_actions.append("shortcuts" + (" + desktop icon" if want_desk else ""))
+                    except Exception:
+                        pass
+            else:
+                self.config_obj.consent_prompted = True
+                self.config_obj.setup_wizard_completed = True
+
+            self.cfg_mgr.save(self.config_obj)
+            self.updater.record_install_memory(
+                install_method="setup_wizard",
+                step_note=f"Saved setup: {self.config_obj.install_bundle_preset} ({len(self.config_obj.enabled_modules)} modules)",
+                config=self.config_obj,
+            )
+
+            # Apply live UI changes immediately (theme, language, sidebar modules, tray, desktop widget)
+            if str(self.config_obj.theme) != old_theme or str(self.config_obj.language) != old_lang:
+                try:
+                    self.rebuild_ui_for_theme()
+                except Exception:
+                    self._sync_module_settings_vars()
+                    self._apply_simple_mode(initial=False)
+            else:
+                self._sync_module_settings_vars()
+                self._apply_simple_mode(initial=False)
+
+            if hasattr(self, "profile_menu") and self.profile_menu.winfo_exists():
+                self.profile_menu.set(self.config_obj.active_profile)
+
+            try:
+                if self.config_obj.show_tray_icon:
+                    self.tray.ensure_running()
+                else:
+                    self.tray.stop()
+            except Exception:
+                pass
+
+            try:
+                if self.config_obj.desktop_widget_enabled:
+                    self.show_desktop_widget()
+                else:
+                    self.hide_desktop_widget(persist_disabled=False)
+            except Exception:
+                pass
+
+            # Execute enabled module services as requested by the user
+            if not skipped:
+                if (
+                    self.config_obj.is_module_enabled("privacy_shield")
+                    and self.config_obj.astrashield_auto_start
+                ):
+                    self.after(200, self._auto_start_astrashield_async)
+                    setup_actions.append("AstraShield armed")
+
+                if (
+                    self.config_obj.is_module_enabled("wifi_failover_mesh")
+                    and self.config_obj.consent_wifi_auto_channel
+                ):
+                    self.after(350, lambda: self._auto_wifi_optimize_async(periodic=False))
+                    setup_actions.append("Wi-Fi optimizer")
+
+                if (
+                    self.config_obj.is_module_enabled("remote_beam")
+                    and payload.get("start_beam_now")
+                    and getattr(self, "_astrabeam_server", None) is None
+                ):
+                    self.after(
+                        450,
+                        lambda: self._on_toggle_astrabeam_host(
+                            str(getattr(self.config_obj, "astrabeam_port", 47992) or 47992),
+                            str(getattr(self.config_obj, "astrabeam_fps", 30) or 30),
+                            str(getattr(self.config_obj, "astrabeam_pin", "") or ""),
+                            bool(getattr(self.config_obj, "astrabeam_tailscale_only", True)),
+                            bool(getattr(self.config_obj, "astrabeam_tls_enabled", True)),
+                        ),
+                    )
+                    setup_actions.append("iPhone/Watch host started")
+
+                if payload.get("run_initial_fix"):
+                    self.after(700, self.on_fix_everything_safe)
+                    setup_actions.append("initial safe tune-up")
+
+            self.journal.log_event(
+                "SetupWizard",
+                "complete_setup_wizard",
+                f"Preset={self.config_obj.install_bundle_preset}, Modules={self.config_obj.enabled_modules}, Actions={setup_actions}",
+                "User completed plain-English modular Setup Wizard and executed chosen setup actions",
+                "ok",
+            )
+            detail_msg = ", ".join(setup_actions) if setup_actions else self.config_obj.install_bundle_preset
+            self.show_toast(f"All user choices set up ({detail_msg}).")
+
+            if self.config_obj.consent_telemetry:
+                self.run_full_pc_discovery_async(show_dialog=False)
+                self.refresh_telemetry_async(include_dns=True, also_scan=True)
+                self._schedule_telemetry_poll()
+            else:
+                self.dash_headline.configure(text="Setup Complete (Minimal Scan Mode)")
+                self.dash_summary.configure(
+                    text="Your chosen modules and permissions are active. Open Permissions or Setup Wizard anytime to adjust."
+                )
+
+        SetupWizardDialog(
+            self,
+            self.palette,
+            self.fonts,
+            self.config_obj,
+            on_finish,
+            first_run=first_run or not self.config_obj.setup_wizard_completed,
+        )
+
+    def _sync_module_settings_vars(self) -> None:
+        if hasattr(self, "set_module_vars"):
+            active = set(normalize_enabled_modules(getattr(self.config_obj, "enabled_modules", None)))
+            for mid, var in self.set_module_vars.items():
+                spec = MODULE_BY_ID.get(mid)
+                var.set(True if (spec and spec.locked) else (mid in active))
+        if hasattr(self, "set_bundle_preset_var"):
+            self.set_bundle_preset_var.set(str(getattr(self.config_obj, "install_bundle_preset", "Custom")))
+        if hasattr(self, "set_simple_mode_var"):
+            self.set_simple_mode_var.set(bool(self.config_obj.simple_mode))
+
+    def _on_apply_settings_modules(self) -> None:
+        if not hasattr(self, "set_module_vars"):
+            return
+        picked = [mid for mid, var in self.set_module_vars.items() if bool(var.get())]
+        self.config_obj.apply_module_selection(picked, preset_name="Custom", sync_simple_mode=False)
+        self.config_obj.setup_wizard_completed = True
+        self.cfg_mgr.save(self.config_obj)
+        self.updater.record_install_memory(
+            install_method="settings_modules",
+            step_note=f"Updated enabled modules ({len(self.config_obj.enabled_modules)})",
+            config=self.config_obj,
+        )
+        self._sync_module_settings_vars()
+        self._apply_simple_mode(initial=False)
+        self.journal.log_event(
+            "Modules",
+            "apply_module_selection",
+            f"Active modules: {self.config_obj.enabled_modules}",
+            "User customized active AstraCradle modules in Settings",
+            "ok",
+        )
+        self.show_toast(
+            f"Updated modules ({len(self.config_obj.enabled_modules)}/{len(ASTRA_MODULES)} active) — sidebar & background engines updated."
+        )
+
+    def _on_apply_bundle_preset_from_settings(self, preset_name: str) -> None:
+        spec = INSTALL_BUNDLE_PRESETS.get(preset_name)
+        if not spec:
+            return
+        self.config_obj.apply_module_selection(spec["modules"], preset_name=preset_name, sync_simple_mode=True)
+        self.config_obj.setup_wizard_completed = True
+        self.cfg_mgr.save(self.config_obj)
+        self._sync_module_settings_vars()
+        self._apply_simple_mode(initial=False)
+        self.show_toast(f"Applied bundle preset: {preset_name} ({len(self.config_obj.enabled_modules)} modules).")
 
     def open_consent_wizard(self, first_run: bool = False) -> None:
         def on_save(perms: dict[str, bool], scan_mode: str | None = None) -> None:
@@ -4992,8 +5280,20 @@ class AstraCradleApp(ctk.CTk):
         render_failover_section(self, self.wifi_scroll)
         render_wifi_mesh_section(self, self.wifi_scroll)
 
+    def _is_remote_stream_active(self) -> tuple[bool, str]:
+        srv = getattr(self, "_astrabeam_server", None)
+        if srv is not None and getattr(srv, "running", False):
+            # Active AstraBeam tokens or recent streaming frames/inputs count as live remote stream
+            if getattr(srv, "tokens", None) or getattr(srv, "frames_sent", 0) > 0:
+                return True, "AstraBeam stream active"
+        return self.wifi_optimizer.detect_active_remote_desktop_session()
+
     def _auto_wifi_optimize_async(self, periodic: bool = False) -> None:
         self._last_wifi_check_ts = time.monotonic()
+        stream_active, stream_reason = self._is_remote_stream_active()
+        if periodic and stream_active:
+            # Never perform off-channel Wi-Fi scans or channel switches during active Remote Desktop / Sunshine streaming
+            return
         min_hold_sec = max(600.0, float(getattr(self.config_obj, "wifi_min_channel_hold_min", 10)) * 60.0)
         can_auto_select = bool(
             getattr(self.config_obj, "consent_wifi_auto_channel", False)
@@ -5005,8 +5305,9 @@ class AstraCradleApp(ctk.CTk):
                 rec = self.wifi_optimizer.recommend_channels(
                     prefer_5ghz=bool(getattr(self.config_obj, "wifi_prefer_5ghz", True)),
                     disable_powersave=bool(getattr(self.config_obj, "wifi_disable_powersave", True)),
-                    rescan=(not periodic),
+                    rescan=(not periodic) and (not stream_active),
                     min_hold_sec=min_hold_sec,
+                    remote_stream_active=stream_active,
                 )
                 self._ui_queue.put(("wifi_recommended", rec, periodic))
             else:
@@ -5014,8 +5315,9 @@ class AstraCradleApp(ctk.CTk):
                     dry_run=bool(self.dry_run_var.get()),
                     prefer_5ghz=bool(getattr(self.config_obj, "wifi_prefer_5ghz", True)),
                     disable_powersave=bool(getattr(self.config_obj, "wifi_disable_powersave", True)),
-                    rescan=(not periodic),
+                    rescan=(not periodic) and (not stream_active),
                     min_hold_sec=min_hold_sec,
+                    remote_stream_active=stream_active,
                 )
                 self._ui_queue.put(("wifi_scanned", res, periodic))
 
@@ -5024,13 +5326,15 @@ class AstraCradleApp(ctk.CTk):
     def _on_scan_wifi_channels(self) -> None:
         self.begin_task_progress("wifi", "Scanning 2.4 / 5 / 6 GHz Wi-Fi channels for congestion...")
         min_hold_sec = max(600.0, float(getattr(self.config_obj, "wifi_min_channel_hold_min", 10)) * 60.0)
+        stream_active, _ = self._is_remote_stream_active()
 
         def _worker() -> None:
             rec = self.wifi_optimizer.recommend_channels(
                 prefer_5ghz=bool(getattr(self.config_obj, "wifi_prefer_5ghz", True)),
                 disable_powersave=bool(getattr(self.config_obj, "wifi_disable_powersave", True)),
-                rescan=True,
+                rescan=(not stream_active),
                 min_hold_sec=min_hold_sec,
+                remote_stream_active=stream_active,
             )
             self._ui_queue.put(("wifi_recommended", rec, False))
 
@@ -5699,12 +6003,23 @@ class AstraCradleApp(ctk.CTk):
     def _watch_summary_payload(self) -> dict[str, object]:
         snap = self.latest_snapshot
         rep = self.latest_report
+        sensors = self._latest_sensors or {}
+        ts = getattr(self, "_latest_tailscale", None)
+        wres = getattr(self, "_latest_wifi_res", None)
+        sm = SunshineMoonlightBridge.inspect(ts)
         return {
             "hostname": snap.hostname if snap else platform.node(),
             "health_score": rep.health_score if rep else 94,
             "cpu_percent": round(snap.cpu_percent, 1) if snap else 0.0,
             "mem_percent": round(snap.mem_percent, 1) if snap else 0.0,
+            "cpu_temp_c": self._num_or_none(sensors.get("cpu_temp_c")) or self._num_or_none(snap.temperature_c if snap else None),
+            "gpu_temp_c": self._num_or_none(sensors.get("gpu_temp_c")),
             "active_profile": self.config_obj.active_profile,
+            "astrashield_running": bool(self.adblock_shield.dns_running),
+            "sunshine_running": bool(sm.sunshine_running),
+            "tailscale_ip": ts.self_ip if ts else "",
+            "wifi_ssid": wres.connected_ssid if wres else "",
+            "wifi_channel": wres.connected_channel if wres else 0,
         }
 
     def _watch_action_dispatch(self, action: str, value: str) -> tuple[bool, str]:
@@ -5713,6 +6028,15 @@ class AstraCradleApp(ctk.CTk):
         if action == "fix_safe":
             self._ui_queue.put(("fix_safe", None, None))
             return True, "Queued 1-Click Fix Everything Safe on PC."
+        if action == "deep_scan":
+            self._ui_queue.put(("trigger_scan", None, None))
+            return True, "Queued Deep Scan on PC."
+        if action == "optimize_wifi":
+            self._auto_wifi_optimize_async(periodic=False)
+            return True, "Triggered Wi-Fi Channel Optimizer."
+        if action == "restart_sunshine":
+            _, msg_s = SunshineMoonlightBridge.start_or_restart_sunshine()
+            return True, msg_s
         if action == "switch_profile" and value in SITUATION_PROFILES:
             self._ui_queue.put(("switch_profile", value, None))
             return True, f"Switched PC profile -> {value}."
@@ -5737,7 +6061,11 @@ class AstraCradleApp(ctk.CTk):
         try:
             port = max(1024, min(65535, int(port_str.strip())))
         except Exception:
-            port = 47990
+            port = 47992
+        shifted_for_sunshine = False
+        if port == 47990 and SunshineMoonlightBridge.inspect().sunshine_installed:
+            port = 47992
+            shifted_for_sunshine = True
         try:
             fps = max(5, min(120, int(fps_str.strip())))
         except Exception:
@@ -5768,6 +6096,8 @@ class AstraCradleApp(ctk.CTk):
         ok, msg = srv.start()
         if ok:
             self._astrabeam_server = srv
+            if shifted_for_sunshine:
+                msg = f"{msg} (Auto-shifted to port 47992 so native Sunshine keeps :47990)"
         self.show_toast(msg, color=self.palette.accent_jade if ok else self.palette.accent_coral)
         self._render_remote_beam_page()
 
@@ -5781,6 +6111,23 @@ class AstraCradleApp(ctk.CTk):
         ts = getattr(self, "_latest_tailscale", None) or TailscaleDiscovery.get_status()
         ok, msg = SunshineMoonlightBridge.apply_hardened_tailscale_config(ts.self_ip)
         self.show_toast(msg, color=self.palette.accent_jade if ok else self.palette.accent_coral)
+
+    def _on_optimize_sunshine_ipad(self) -> None:
+        ts = getattr(self, "_latest_tailscale", None) or TailscaleDiscovery.get_status()
+        ok, msg = SunshineMoonlightBridge.optimize_sunshine_for_tablet(ts.self_ip)
+        if ok:
+            ok_r, msg_r = SunshineMoonlightBridge.start_or_restart_sunshine()
+            if ok_r:
+                msg = f"{msg} — Sunshine restarted."
+            else:
+                msg = f"{msg} ({msg_r})"
+        self.show_toast(msg, color=self.palette.accent_jade if ok else self.palette.accent_coral)
+        self._render_remote_beam_page()
+
+    def _on_restart_sunshine_service(self) -> None:
+        ok, msg = SunshineMoonlightBridge.start_or_restart_sunshine()
+        self.show_toast(msg, color=self.palette.accent_jade if ok else self.palette.accent_coral)
+        self._render_remote_beam_page()
 
     def _on_connect_astrabeam(self, host: str, port_str: str, pin: str) -> None:
         try:
@@ -7143,7 +7490,18 @@ class AstraCradleApp(ctk.CTk):
         ).pack(side="right", padx=(4, 14), pady=10)
         ctk.CTkButton(
             setup_bar,
-            text="Run Comprehensive Setup Wizard",
+            text="Run Modular Setup Wizard",
+            height=30,
+            corner_radius=7,
+            fg_color=p.accent_cyan,
+            hover_color=p.accent_cyan_hover,
+            text_color="#071217",
+            font=self.fonts["body_bold"],
+            command=lambda: self.open_setup_wizard(first_run=False),
+        ).pack(side="right", padx=4, pady=10)
+        ctk.CTkButton(
+            setup_bar,
+            text="Comprehensive Presets",
             height=30,
             corner_radius=7,
             fg_color=p.accent_jade,
@@ -7246,6 +7604,83 @@ class AstraCradleApp(ctk.CTk):
                 attach_tooltip(widget, tip_text, p)
                 attach_tooltip(lbl_w, tip_text, p)
 
+        # Card 0: Modular Features & Setup Wizard
+        mod_card = ctk.CTkFrame(
+            scroll, fg_color=p.bg_card, border_width=1, border_color=p.accent_cyan, corner_radius=12
+        )
+        mod_card.pack(fill="x", pady=(0, 10))
+        mod_hdr = ctk.CTkFrame(mod_card, fg_color="transparent")
+        mod_hdr.pack(fill="x", padx=16, pady=(12, 4))
+        ctk.CTkLabel(
+            mod_hdr,
+            text="0. Modular Features & Install Bundle",
+            font=self.fonts["section"],
+            text_color=p.accent_cyan,
+        ).pack(side="left")
+        self.set_bundle_preset_var = tk.StringVar(
+            value=str(getattr(self.config_obj, "install_bundle_preset", "Full Suite (Everything)"))
+        )
+        ctk.CTkOptionMenu(
+            mod_hdr,
+            values=list(INSTALL_BUNDLE_PRESETS.keys()),
+            variable=self.set_bundle_preset_var,
+            command=self._on_apply_bundle_preset_from_settings,
+            width=230,
+        ).pack(side="right")
+        ctk.CTkLabel(
+            mod_card,
+            text=(
+                "Enable or disable individual AstraCradle modules. Disabled modules are hidden from the sidebar "
+                "and their background watchers stay completely off."
+            ),
+            font=self.fonts["small"],
+            text_color=p.text_muted,
+            wraplength=760,
+            justify="left",
+        ).pack(anchor="w", padx=16, pady=(0, 8))
+
+        active_mod_set = set(normalize_enabled_modules(getattr(self.config_obj, "enabled_modules", None)))
+        self.set_module_vars: dict[str, tk.BooleanVar] = {}
+        mod_grid = ctk.CTkFrame(mod_card, fg_color="transparent")
+        mod_grid.pack(fill="x", padx=12, pady=(0, 8))
+        mod_grid.grid_columnconfigure((0, 1), weight=1)
+        for idx, spec in enumerate(ASTRA_MODULES):
+            var = tk.BooleanVar(value=(True if spec.locked else (spec.module_id in active_mod_set)))
+            self.set_module_vars[spec.module_id] = var
+            cb = ctk.CTkCheckBox(
+                mod_grid,
+                text=f"{spec.name} ({spec.footprint_label})",
+                variable=var,
+                font=self.fonts["small"],
+                text_color=p.text_primary,
+            )
+            if spec.locked:
+                cb.configure(state="disabled")
+            cb.grid(row=idx // 2, column=idx % 2, sticky="w", padx=8, pady=4)
+            attach_tooltip(cb, spec.summary, p)
+
+        mod_btns = ctk.CTkFrame(mod_card, fg_color="transparent")
+        mod_btns.pack(fill="x", padx=16, pady=(2, 12))
+        ctk.CTkButton(
+            mod_btns,
+            text="Apply Module Selection",
+            height=30,
+            fg_color=p.accent_jade,
+            hover_color=p.accent_jade_hover,
+            text_color="#071510",
+            font=self.fonts["body_bold"],
+            command=self._on_apply_settings_modules,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            mod_btns,
+            text="Launch Step-by-Step Setup Wizard...",
+            height=30,
+            fg_color=p.bg_elevated,
+            hover_color=p.border_strong,
+            font=self.fonts["small"],
+            command=lambda: self.open_setup_wizard(first_run=False),
+        ).pack(side="left")
+
         # Card 1: Interface & Accessibility
         sec_ui = _make_section_card(
             "1. Interface, Theme & Accessibility",
@@ -7311,8 +7746,13 @@ class AstraCradleApp(ctk.CTk):
                 ),
                 (
                     "Cross-OS Desktop Telemetry Widget",
-                    ctk.CTkSwitch(sec_ui, text="Show floating desktop widget (Linux, Windows & macOS)", variable=self.set_desktop_widget_var),
-                    "Displays live CPU/RAM/Disk/Net & quick Shield/Wi-Fi/Fix controls on your desktop and remembers position across reboots.",
+                    ctk.CTkSwitch(
+                        sec_ui,
+                        text="Show floating desktop widget (Linux, Windows & macOS)",
+                        variable=self.set_desktop_widget_var,
+                        command=self._on_toggle_desktop_widget_setting,
+                    ),
+                    "Toggle the floating desktop telemetry widget on or off (off by default). Remembers position across reboots.",
                 ),
                 (
                     "Desktop Widget Always on Top",
@@ -7632,8 +8072,11 @@ class AstraCradleApp(ctk.CTk):
         if self._show_startup_popups and self.config_obj.show_tray_icon:
             self.tray.ensure_running()
         # Watchdog: keep sinkhole alive if enabled, or trigger TV failsafe restore if it fails
-        if self._show_startup_popups and self.config_obj.astrashield_auto_start and (
-            self.config_obj.astrashield_lan_tv_mode or self.config_obj.astrashield_dns_enabled
+        if (
+            self._show_startup_popups
+            and self.config_obj.is_module_enabled("privacy_shield")
+            and self.config_obj.astrashield_auto_start
+            and (self.config_obj.astrashield_lan_tv_mode or self.config_obj.astrashield_dns_enabled)
         ):
             if not self.adblock_shield.dns_running:
                 if self.config_obj.astrashield_lan_tv_mode:
@@ -7655,11 +8098,19 @@ class AstraCradleApp(ctk.CTk):
                             reason="sinkhole_watchdog_failed", shield=self.adblock_shield
                         )
                         self.show_toast(rmsg, color=self.palette.accent_coral)
-        if self._show_startup_popups and getattr(self.config_obj, "wifi_auto_optimize", True):
+        if (
+            self._show_startup_popups
+            and self.config_obj.is_module_enabled("wifi_failover_mesh")
+            and getattr(self.config_obj, "wifi_auto_optimize", True)
+        ):
             interval_s = max(60, int(getattr(self.config_obj, "wifi_check_interval_min", 10)) * 60)
             if (time.monotonic() - getattr(self, "_last_wifi_check_ts", 0.0)) >= interval_s:
                 self._auto_wifi_optimize_async(periodic=True)
-        if self._show_startup_popups and getattr(self.config_obj, "catalog_passive_scan", True):
+        if (
+            self._show_startup_popups
+            and self.config_obj.is_module_enabled("system_scanner")
+            and getattr(self.config_obj, "catalog_passive_scan", True)
+        ):
             pace = str(getattr(self.config_obj, "catalog_throttle_mode", "Balanced")).lower()
             pace_s = 30.0 if pace == "fast" else (120.0 if pace == "low" else 60.0)
             if (time.monotonic() - getattr(self, "_last_passive_scan_ts", 0.0)) >= pace_s:
@@ -7673,21 +8124,22 @@ class AstraCradleApp(ctk.CTk):
             self.refresh_telemetry_async(include_dns=False, also_scan=False)
         self._schedule_telemetry_poll()
 
+    def _on_toggle_desktop_widget_setting(self) -> None:
+        want = bool(self.set_desktop_widget_var.get()) if hasattr(self, "set_desktop_widget_var") else False
+        if want:
+            self.show_desktop_widget()
+            self.show_toast("Desktop Widget enabled.")
+        else:
+            self.hide_desktop_widget(persist_disabled=True)
+            self.show_toast("Desktop Widget disabled.")
+
     def _drain_ui_queue(self) -> None:
         try:
             while True:
                 item = self._ui_queue.get_nowait()
                 first = item[0]
                 if first == "show_window":
-                    self._hide_mini_orb()
-                    self.deiconify()
-                    try:
-                        self.state("normal")
-                    except Exception:
-                        pass
-                    self._set_animations_paused(False)
-                    self.lift()
-                    self.focus_force()
+                    self._restore_main_window()
                     continue
                 if first == "trigger_scan":
                     self.on_deep_scan()
@@ -7977,7 +8429,9 @@ class AstraCradleApp(ctk.CTk):
                 if hook_msg:
                     self.show_toast(hook_msg)
                 self._update_telemetry_cards(snap, self._latest_gpu)
-                focus = FullscreenFocusDetector.detect()
+                focus = getattr(self, "_bg_focus_state", None) or ActiveWindowState(
+                    "Desktop / Headless Session", "desktop", False, "cached fallback"
+                )
                 self._last_focus_state = focus
                 if self.config_obj.thermal_spc_enabled:
                     tier = self.thermal_spc.classify_workload(snap.cpu_percent, is_fullscreen=focus.is_fullscreen)
@@ -8058,8 +8512,14 @@ class AstraCradleApp(ctk.CTk):
                     )
         except queue.Empty:
             pass
-        if self.winfo_exists():
-            self._drain_job = self.after(120, self._drain_ui_queue)
+        except Exception:
+            pass
+        finally:
+            try:
+                if self.winfo_exists():
+                    self._drain_job = self.after(100, self._drain_ui_queue)
+            except Exception:
+                pass
 
     def refresh_telemetry_async(self, include_dns: bool = False, also_scan: bool = False) -> None:
         dry_now = bool(self.dry_run_var.get()) if hasattr(self, "dry_run_var") else bool(self.config_obj.dry_run_default)
@@ -8074,6 +8534,10 @@ class AstraCradleApp(ctk.CTk):
                 consent_telemetry=self.config_obj.consent_telemetry,
                 consent_processes=self.config_obj.consent_process_scan,
             )
+            try:
+                self._bg_focus_state = FullscreenFocusDetector.detect()
+            except Exception:
+                pass
             gpu = GpuTelemetryCollector.collect()
             sensors = TelemetryCollector.collect_detailed_sensors() if self.config_obj.consent_telemetry else {}
             conflicts = self.conflict_detector.scan_conflicts() if self.config_obj.consent_process_scan else []
@@ -9630,10 +10094,31 @@ def launch_gui(
     base_dir: Path | str | None = None,
     start_minimized: bool = False,
     start_widget: bool = False,
+    open_setup_wizard: bool = False,
 ) -> None:
+    import signal as _signal
     from ..core.single_instance import SingleInstanceManager
 
     si = SingleInstanceManager(ConfigManager(base_dir=base_dir))
     si.terminate_existing_instances(timeout_sec=3.0)
-    app = AstraCradleApp(base_dir=base_dir, start_minimized=start_minimized, start_widget=start_widget)
+    app = AstraCradleApp(
+        base_dir=base_dir,
+        start_minimized=start_minimized,
+        start_widget=start_widget,
+        open_setup_wizard=open_setup_wizard,
+    )
+
+    def _on_sigterm(_signum, _frame) -> None:
+        try:
+            app.after(0, lambda: app.on_close(force_quit=True))
+        except Exception:
+            pass
+
+    for sig_name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(_signal, sig_name, None)
+        if sig is not None:
+            try:
+                _signal.signal(sig, _on_sigterm)
+            except Exception:
+                pass
     app.mainloop()

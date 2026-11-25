@@ -260,7 +260,7 @@ class SelfHealEngine:
             action="run_self_check",
             how=f"Verified 7 internal invariants ({repaired_cnt} auto-repaired)",
             why="Continuous silent self-protection and corruption prevention",
-            outcome="ok" if repaired_cnt == 0 else "warning",
+            outcome="ok" if repaired_cnt == 0 else "repaired",
         )
         return results, audit_findings
 

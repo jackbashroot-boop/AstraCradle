@@ -18,6 +18,7 @@ try {
     $ZipPath = Join-Path $TmpDir "astracradle.zip"
     Write-Host "[1/3] Downloading latest AstraCradle from GitHub..."
     Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath -UseBasicParsing
+    Unblock-File -Path $ZipPath -ErrorAction SilentlyContinue
 
     Write-Host "[2/3] Extracting into $InstallRoot..."
     Expand-Archive -Path $ZipPath -DestinationPath $TmpDir -Force
@@ -38,6 +39,9 @@ try {
     Write-Host "[3/3] Running Install_AstraCradle.bat..."
     Set-Location $InstallRoot
     & cmd.exe /c "Install_AstraCradle.bat"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Install_AstraCradle.bat exited with code $LASTEXITCODE."
+    }
 }
 finally {
     if (Test-Path $TmpDir) {

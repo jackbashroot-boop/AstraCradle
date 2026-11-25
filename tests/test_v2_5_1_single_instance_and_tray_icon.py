@@ -605,3 +605,555 @@ def test_persistent_machine_install_memory_and_wifi_mesh_password_toggle() -> No
         finally:
             app.destroy()
 
+
+def test_self_heal_auto_prune_not_warning_and_autostart_refresh(monkeypatch) -> None:
+    import os
+    from astracradle.core.executor import GuardedExecutor
+    from astracradle.core.lifecycle import LifecycleManager
+    from astracradle.core.os_adapters import get_os_adapter
+    from astracradle.core.rollback import RollbackManager
+    from astracradle.core.scripts_engine import ScriptsEngine
+    from astracradle.core.self_heal import SelfHealEngine
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg_mgr = ConfigManager(base_dir=td)
+        cfg = cfg_mgr.load()
+        cfg.quarantine_max_mb = 1
+        cfg_mgr.save(cfg)
+        journal = ForensicJournal(cfg_mgr)
+
+        # Put a >1 MB dummy item in quarantine so Quarantine & Log Cap Guard auto-prunes it
+        q_item = cfg_mgr.quarantine_dir / "old_test_blob.bin"
+        q_item.parent.mkdir(parents=True, exist_ok=True)
+        q_item.write_bytes(b"X" * (1_200_000))
+        os.utime(q_item, (1_000_000, 1_000_000))
+
+        rb = RollbackManager(cfg_mgr)
+        ex = GuardedExecutor(cfg_mgr, rb, journal)
+        sc = ScriptsEngine(cfg_mgr, ex, journal)
+        sh = SelfHealEngine(cfg_mgr, rb, journal)
+        results, _audit = sh.run_self_check(get_os_adapter(), cfg)
+        q_check = [r for r in results if r.check_name == "Quarantine & Log Cap Guard"][0]
+        assert q_check.repaired_automatically is True
+        entries = journal.read_entries(limit=25, newest_first=True)
+        self_check_entries = [e for e in entries if e.action == "run_self_check"]
+        assert self_check_entries and self_check_entries[0].outcome == "repaired"
+
+        # Existing ~/.config/autostart/astracradle.desktop from v1.2.0 must be refreshed to current python path
+        fake_home = Path(td) / "home"
+        autostart_file = fake_home / ".config" / "autostart" / "astracradle.desktop"
+        autostart_file.parent.mkdir(parents=True, exist_ok=True)
+        autostart_file.write_text(
+            "[Desktop Entry]\nName=AstraCradle\nExec=/old/v1.2.0/.venv/bin/python -m astracradle --minimized\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        lc = LifecycleManager(cfg_mgr, rb, journal, sc)
+        lc.install_shortcuts(Path(__file__).resolve().parents[1], include_desktop_icon=False)
+        updated = autostart_file.read_text(encoding="utf-8")
+        assert "/old/v1.2.0/" not in updated
+        assert "--minimized" in updated
+
+
+def test_sunshine_inspect_ignores_47990_astrabeam_collision_and_restart_resets_failed(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from astracradle.core.astrabeam import SunshineMoonlightBridge
+
+    # Even if AstraBeam is bound on 47990, inspect() checks Sunshine ports 47989/47984 & systemd unit
+    monkeypatch.setattr(SunshineMoonlightBridge, "_is_port_open", staticmethod(lambda _h, p, timeout=0.25: p == 47990))
+    monkeypatch.setattr("astracradle.core.astrabeam.shutil.which", lambda name: "/usr/bin/sunshine" if name in ("sunshine", "systemctl") else None)
+    monkeypatch.setattr(
+        "astracradle.core.astrabeam.subprocess.run",
+        lambda *a, **kw: SimpleNamespace(returncode=3, stdout="", stderr=""),
+    )
+    st = SunshineMoonlightBridge.inspect()
+    assert st.sunshine_installed is True
+    assert st.sunshine_running is False
+
+    calls = []
+
+    def _fake_run(cmd, **_kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("astracradle.core.astrabeam.subprocess.run", _fake_run)
+    ok, msg = SunshineMoonlightBridge.start_or_restart_sunshine()
+    assert ok is True
+    assert any("reset-failed" in c for c in calls)
+    assert any("restart" in c for c in calls)
+    assert "47984/47989" in msg
+
+
+def test_channel_hold_active_suppresses_recommendation_popup(monkeypatch) -> None:
+    from astracradle.core.config import ConfigManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.wifi_channel_optimizer import WifiApObservation, WifiChannelOptimizer
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg_mgr = ConfigManager(base_dir=td)
+        journal = ForensicJournal(cfg_mgr)
+        opt = WifiChannelOptimizer(journal)
+        opt.record_channel_hold("Duffwifi", "F6:C1:14:FF:66:7D", 157, "5GHz", now_epoch=1000.0)
+
+        monkeypatch.setattr(opt, "detect_wifi_interface", lambda: "wlan0")
+        monkeypatch.setattr(opt, "_get_active_wifi_connection", lambda _i=None: ("Duffwifi", "F6:C1:14:FF:66:7D"))
+        monkeypatch.setattr(opt, "_is_powersave_enabled", lambda _i: True)
+        rec = opt.recommend_channels(
+            aps_override=[
+                WifiApObservation("Duffwifi", "F6:C1:14:FF:66:7D", 157, 5785, "5GHz", 52, 866, True),
+                WifiApObservation("Duffwifi", "F6:C1:14:F8:66:7C", 44, 5220, "5GHz", 88, 1200, False),
+            ],
+            min_hold_sec=600.0,
+            now_epoch=1200.0,
+        )
+        assert rec["hold_active"] is True
+        assert rec["has_recommendation"] is False
+
+
+def test_remote_desktop_stream_guard_suppresses_wifi_changes_and_protects_sunshine(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from astracradle.core.astrabeam import SunshineMoonlightBridge
+    from astracradle.core.config import ConfigManager, DEFAULT_PROTECTED_PROCESSES
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.wifi_channel_optimizer import WifiApObservation, WifiChannelOptimizer
+
+    # Streaming / compositor processes must never be throttled by ProBalance
+    low_prot = {p.lower() for p in DEFAULT_PROTECTED_PROCESSES}
+    for proc_name in ("sunshine", "moonlight", "tailscaled", "pipewire", "kwin_wayland"):
+        assert proc_name in low_prot
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg_mgr = ConfigManager(base_dir=td)
+        journal = ForensicJournal(cfg_mgr)
+        opt = WifiChannelOptimizer(journal)
+
+        # Simulate active Sunshine/Moonlight connection on UDP 47998
+        fake_conn = SimpleNamespace(
+            laddr=SimpleNamespace(ip="100.77.94.72", port=47998),
+            raddr=SimpleNamespace(ip="100.77.94.88", port=51234),
+            status="NONE",
+        )
+        monkeypatch.setattr("psutil.net_connections", lambda kind="inet": [fake_conn])
+        active, reason = opt.detect_active_remote_desktop_session()
+        assert active is True and "Sunshine/Moonlight" in reason
+
+        # Even with NO active 10m hold, a live remote desktop stream suppresses channel switching & recommendations
+        monkeypatch.setattr(opt, "detect_wifi_interface", lambda: "wlan0")
+        monkeypatch.setattr(opt, "_get_active_wifi_connection", lambda _i=None: ("Duffwifi", "F6:C1:14:FF:66:7D"))
+        monkeypatch.setattr(opt, "_is_powersave_enabled", lambda _i: True)
+        aps = [
+            WifiApObservation("Duffwifi", "F6:C1:14:FF:66:7D", 157, 5785, "5GHz", 52, 866, True),
+            WifiApObservation("Duffwifi", "F6:C1:14:F8:66:7C", 44, 5220, "5GHz", 95, 1200, False),
+        ]
+        res = opt.optimize_connection(dry_run=False, aps_override=aps)
+        assert res.switched is False
+        assert "Stream Guard active" in res.action_taken
+        rec = opt.recommend_channels(aps_override=aps)
+        assert rec["has_recommendation"] is False
+
+        # Verify Sunshine iPad/tablet optimizer picks primary kscreen-doctor output + VA-API
+        kscreen_out = (
+            "Output: 1 DP-5 uuid\n\tpriority 1\nOutput: 2 DP-4 uuid\n\tpriority 3\nOutput: 3 DP-3 uuid\n\tpriority 2\n"
+        )
+        monkeypatch.setattr(
+            "astracradle.core.astrabeam.shutil.which",
+            lambda n: "/usr/bin/" + n if n in ("kscreen-doctor", "sunshine") else None,
+        )
+        monkeypatch.setattr(
+            "astracradle.core.astrabeam.subprocess.run",
+            lambda *a, **kw: SimpleNamespace(returncode=0, stdout=kscreen_out, stderr=""),
+        )
+        assert SunshineMoonlightBridge.detect_primary_display_output() == "DP-5"
+        sun_conf = Path(td) / "sunshine.conf"
+        ok_opt, msg_opt = SunshineMoonlightBridge.optimize_sunshine_for_tablet("100.77.94.72", conf_path=sun_conf)
+        assert ok_opt is True
+        txt = sun_conf.read_text(encoding="utf-8")
+        assert "output_name = DP-5" in txt
+        assert "upnp = disabled" in txt
+
+
+def test_desktop_widget_default_off_and_nonblocking_tray_notify() -> None:
+    import time as _t
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.ui.tray import TrayController
+
+    cfg = AppConfig()
+    assert cfg.desktop_widget_enabled is False
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg_mgr = ConfigManager(base_dir=td)
+        loaded = cfg_mgr.load()
+        assert loaded.desktop_widget_enabled is False
+
+    # TrayController.notify must be non-blocking even if backend notify sleeps
+    class _SlowIcon:
+        def notify(self, _m, _t_str) -> None:
+            _t.sleep(0.5)
+
+    tc = TrayController(
+        icon_path=Path(__file__).resolve().parents[1] / "astracradle" / "assets" / "astracradle_emblem.png",
+        on_show=lambda: None,
+        on_scan=lambda: None,
+        on_quit=lambda: None,
+    )
+    tc._icon = _SlowIcon()
+    t0 = _t.monotonic()
+    assert tc.notify("Title", "Hello") is True
+    assert (_t.monotonic() - t0) < 0.1
+
+
+def test_iphone_16_pro_max_pwa_endpoints_and_swiftui_companion() -> None:
+    import ssl
+    import urllib.request
+    from astracradle.core.astrabeam import AstraBeamServer
+    from astracradle.core.config import ConfigManager
+    from astracradle.core.journal import ForensicJournal
+
+    repo_root = Path(__file__).resolve().parents[1]
+    ios_dir = repo_root / "mobile" / "ios" / "AstraCradleCompanion"
+    for fname in ("AstraCradleCompanionApp.swift", "AstraBeamClient.swift", "ContentView.swift", "Info.plist"):
+        assert (ios_dir / fname).exists(), f"Missing native iOS file {fname}"
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg_mgr = ConfigManager(base_dir=td)
+        journal = ForensicJournal(cfg_mgr)
+        srv = AstraBeamServer(journal, host="127.0.0.1", port=0, pin="654321", tls_enabled=False)
+        ok, _ = srv.start()
+        assert ok is True
+        try:
+            base = f"http://127.0.0.1:{srv.port}"
+            html = urllib.request.urlopen(f"{base}/iphone", timeout=3).read().decode("utf-8")
+            assert "iPhone 16 Pro Max" in html
+            assert "viewport-fit=cover" in html
+            assert "moonlight://" in html
+
+            icon_bytes = urllib.request.urlopen(f"{base}/apple-touch-icon.png", timeout=3).read()
+            assert icon_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+
+            man = urllib.request.urlopen(f"{base}/manifest.webmanifest", timeout=3).read().decode("utf-8")
+            assert '"start_url": "/iphone"' in man
+        finally:
+            srv.stop()
+
+
+def test_modular_system_presets_background_gating_and_cli() -> None:
+    from astracradle.__main__ import main as cli_main
+    from astracradle.core.config import ConfigManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.lifecycle import LifecycleManager
+    from astracradle.core.modules import (
+        ALL_MODULE_IDS,
+        allowed_nav_keys,
+        normalize_enabled_modules,
+        resolve_preset_or_modules,
+    )
+    from astracradle.core.updater import ModuleAndUpdateManager
+
+    # core_diagnostics is always retained even if omitted
+    mods = normalize_enabled_modules(["remote_beam", "nonexistent_mod"])
+    assert mods == ["core_diagnostics", "remote_beam"]
+    navs = allowed_nav_keys(mods)
+    assert "dashboard" in navs and "remote_beam" in navs and "wifi" not in navs
+
+    # Streamer preset resolves cleanly
+    s_mods, s_name = resolve_preset_or_modules("streamer")
+    assert s_name == "Streamer & iPhone Remote"
+    assert "remote_beam" in s_mods and "wifi_failover_mesh" in s_mods and "system_scanner" not in s_mods
+
+    with tempfile.TemporaryDirectory() as td:
+        rc = cli_main(["--config-dir", td, "--modules", "minimal"])
+        assert rc == 0
+        rc2 = cli_main(["--config-dir", td, "--list-modules"])
+        assert rc2 == 0
+
+        cm = ConfigManager(base_dir=td)
+        cfg = cm.load()
+        assert cfg.enabled_modules == ["core_diagnostics"]
+        assert cfg.setup_wizard_completed is True
+        # Disabled modules also shut off their background watchers
+        assert cfg.astrashield_auto_start is False
+        assert cfg.wifi_auto_optimize is False
+        assert cfg.failover_enabled is False
+        assert cfg.catalog_passive_scan is False
+        assert cfg.probalance_enabled is False
+
+        # Install memory preserves module choice across reinstall/reapply
+        from astracradle.core.rollback import RollbackManager
+
+        journal = ForensicJournal(cm)
+        rb = RollbackManager(cm)
+        upd = ModuleAndUpdateManager(cm, journal)
+        fresh_cfg = cm.load()
+        fresh_cfg.apply_module_selection(list(ALL_MODULE_IDS), preset_name="Full Suite (Everything)")
+        reapplied, mem = upd.reapply_remembered_setup(fresh_cfg, LifecycleManager(cm, rb, journal))
+        assert mem["enabled_modules"] == ["core_diagnostics"]
+        assert cm.load().enabled_modules == ["core_diagnostics"]
+        assert any("selected module" in r.lower() for r in reapplied)
+
+        # Plain-English Setup Wizard apply_wizard_choices applies all 9 permissions & preferences cleanly
+        wiz_cfg = cm.load()
+        wiz_cfg.apply_wizard_choices(
+            {
+                "enabled_modules": ["core_diagnostics", "remote_beam", "wifi_failover_mesh"],
+                "preset_name": "Streamer & iPhone Remote",
+                "active_profile": "Gaming / Low-Latency",
+                "theme": "High Contrast",
+                "language": "es",
+                "auto_update_mode": "notify",
+                "simple_mode": True,
+                "consent_telemetry": True,
+                "consent_process_scan": True,
+                "consent_installed_apps": False,
+                "consent_bloat_scan": True,
+                "consent_privacy_scan": True,
+                "consent_crash_diagnostics": True,
+                "consent_auto_remediate": True,
+                "consent_wifi_auto_channel": True,
+                "consent_auto_install_deps": True,
+                "confirm_important_prompts": False,
+                "quarantine_enabled": True,
+                "auto_self_heal": True,
+                "show_tray_icon": True,
+                "minimize_to_tray": True,
+                "desktop_widget_enabled": False,
+                "launch_at_login": True,
+                "astrashield_auto_start": True,  # gated OFF because privacy_shield isn't enabled
+                "wifi_prefer_5ghz": True,
+                "failover_enabled": True,
+                "astrabeam_tailscale_only": True,
+            }
+        )
+        cm.save(wiz_cfg)
+        reloaded = cm.load()
+        assert reloaded.setup_wizard_completed is True
+        assert reloaded.consent_prompted is True
+        assert reloaded.active_profile == "Gaming / Low-Latency"
+        assert reloaded.theme == "High Contrast"
+        assert reloaded.language == "es"
+        assert reloaded.consent_privacy_scan is True
+        assert reloaded.consent_installed_apps is False
+        assert reloaded.consent_auto_install_deps is True
+        assert reloaded.consent_wifi_auto_channel is True
+        assert reloaded.wifi_auto_optimize is True
+        assert reloaded.wifi_prompt_before_apply is False
+        assert reloaded.astrashield_auto_start is False  # disabled module stays gated off
+        assert reloaded.minimize_to_tray is True
+        assert reloaded.launch_at_login is True
+
+
+def test_catastrophic_mid_install_and_crash_recovery(monkeypatch) -> None:
+    import subprocess
+    from astracradle.core.config import ConfigManager
+    from astracradle.core.crash_analyzer import CrashAnalyzer
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.os_adapters import get_os_adapter
+    from astracradle.core.rollback import RollbackManager
+    from astracradle.core.self_heal import SelfHealEngine
+    from astracradle.core.updater import ModuleAndUpdateManager
+
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        cm = ConfigManager(base_dir=base)
+        cfg = cm.load()
+        cfg.apply_wizard_choices(
+            {
+                "enabled_modules": ["core_diagnostics", "remote_beam"],
+                "preset_name": "Custom",
+                "consent_telemetry": True,
+            }
+        )
+        cm.save(cfg)
+
+        j = ForensicJournal(cm)
+        rb = RollbackManager(cm)
+        upd = ModuleAndUpdateManager(cm, j)
+        upd.record_install_memory(install_method="fish", desktop_icon=False, shortcuts_installed=True, config=cfg)
+
+        # 1. Simulate catastrophic power loss / SIGKILL leaving truncated config.json,
+        #    corrupt machine_install_memory.json, orphaned .tmp files, and unclean heartbeat
+        cm.config_path.write_text('{"theme": "Obsidian', encoding="utf-8")
+        (cm.state_dir / "config.tmp").write_text("partial", encoding="utf-8")
+        (cm.base_dir / "machine_install_memory.json").write_text("{corrupt_half_written", encoding="utf-8")
+        (cm.base_dir / "machine_install_memory.json.tmp").write_text("half", encoding="utf-8")
+
+        ca = CrashAnalyzer(cm, j)
+        ca.mark_running("Balanced Daily")  # never called mark_clean_shutdown()
+
+        # Verify SelfHealEngine + ConfigManager + Updater recover seamlessly from shadow backups
+        events, audits = SelfHealEngine(cm, rb, j).run_self_check(get_os_adapter(), cm.load())
+        assert all(ev.status in ("ok", "repaired") for ev in events if ev.check_name != "Companion Dependency Library Guard")
+        recovered_cfg = cm.load()
+        assert recovered_cfg.enabled_modules == ["core_diagnostics", "remote_beam"]
+        assert recovered_cfg.setup_wizard_completed is True
+
+        recovered_mem = upd.load_install_memory()
+        assert recovered_mem["install_method"] == "fish"
+        assert recovered_mem["enabled_modules"] == ["core_diagnostics", "remote_beam"]
+
+        # CrashAnalyzer detects the unclean shutdown from mid-install/run
+        report = ca.inspect_on_startup()
+        assert report is not None
+
+        # 2. Simulate subprocess killed mid-wizard (`SIGKILL` before finishing setup_wizard)
+        repo_root = Path(__file__).resolve().parents[1]
+        half_dir = Path(td) / "half_wizard"
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import time; from astracradle.core.config import ConfigManager; "
+                "from astracradle.core.journal import ForensicJournal; "
+                "from astracradle.core.crash_analyzer import CrashAnalyzer; "
+                f"cm=ConfigManager({str(half_dir)!r}); cfg=cm.load(); "
+                "ca=CrashAnalyzer(cm, ForensicJournal(cm)); ca.mark_running('Balanced Daily'); "
+                "time.sleep(10)",
+            ],
+            cwd=str(repo_root),
+        )
+        time.sleep(0.35)
+        proc.kill()
+        proc.wait(timeout=5)
+
+        cm2 = ConfigManager(base_dir=half_dir)
+        cfg2 = cm2.load()
+        # setup_wizard_completed MUST still be False so next launch cleanly re-offers Setup Wizard
+        assert cfg2.setup_wizard_completed is False
+        assert CrashAnalyzer(cm2, ForensicJournal(cm2)).inspect_on_startup() is not None
+        # Check fish/bash installers guard broken partial .venv recovery
+        fish_txt = (repo_root / "install_astracradle.fish").read_text(encoding="utf-8")
+        sh_txt = (repo_root / "install_astracradle.sh").read_text(encoding="utf-8")
+        assert "m pip --version" in fish_txt and "rm -rf .venv" in fish_txt
+        assert "m pip --version" in sh_txt and "rm -rf .venv" in sh_txt
+
+
+def test_clean_uninstall_removes_all_new_artifacts_and_cli_uninstall(monkeypatch) -> None:
+    from astracradle.__main__ import main as cli_main
+    from astracradle.core.config import ConfigManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.lifecycle import LifecycleManager
+    from astracradle.core.os_adapters import get_os_adapter
+    from astracradle.core.rollback import RollbackManager
+    from astracradle.core.updater import ModuleAndUpdateManager
+
+    repo_root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory() as td:
+        fake_home = Path(td) / "home"
+        fake_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+        ac_dir = fake_home / ".astracradle"
+        cm = ConfigManager(base_dir=ac_dir)
+        cfg = cm.load()
+        cfg.apply_wizard_choices(
+            {
+                "enabled_modules": ["core_diagnostics", "remote_beam", "wifi_failover_mesh"],
+                "preset_name": "Streamer & iPhone Remote",
+                "launch_at_login": True,
+                "consent_telemetry": True,
+            }
+        )
+        cm.save(cfg)
+
+        j = ForensicJournal(cm)
+        rb = RollbackManager(cm)
+        lm = LifecycleManager(cm, rb, j)
+        upd = ModuleAndUpdateManager(cm, j)
+        upd.record_install_memory(install_method="fish", desktop_icon=True, shortcuts_installed=True, config=cfg)
+
+        # Simulate all installed artifacts from recent updates
+        lm.install_shortcuts(repo_root, include_desktop_icon=True, os_override="Linux")
+        ok_login, _ = lm.set_launch_at_login(True, repo_root=repo_root, os_override="Linux")
+        assert ok_login is True
+
+        local_bin = fake_home / ".local" / "bin"
+        local_bin.mkdir(parents=True, exist_ok=True)
+        for bn in ("astracradle", "astracradle-gui", "astracradle-wifi"):
+            (local_bin / bn).symlink_to(repo_root / "install_astracradle.fish")
+
+        fish_hook = fake_home / ".config" / "fish" / "conf.d" / "astracradle_wifi.fish"
+        fish_hook.parent.mkdir(parents=True, exist_ok=True)
+        fish_hook.write_text("# wifi hook", encoding="utf-8")
+
+        sd_user = fake_home / ".config" / "systemd" / "user"
+        sd_user.mkdir(parents=True, exist_ok=True)
+        wifi_svc = sd_user / "astracradle-wifi-opt.service"
+        wifi_tmr = sd_user / "astracradle-wifi-opt.timer"
+        wifi_svc.write_text("[Unit]", encoding="utf-8")
+        wifi_tmr.write_text("[Timer]", encoding="utf-8")
+
+        (cm.state_dir / "setup_wizard_draft.json").write_text('{"step": 2}', encoding="utf-8")
+        (ac_dir / "certs").mkdir(parents=True, exist_ok=True)
+        (ac_dir / "certs" / "astrabeam.crt").write_text("CERT", encoding="utf-8")
+
+        # 1. Keep-data uninstall cleans shortcuts, autostart, CLI symlinks, Fish/systemd hooks & transient draft
+        summary_keep = lm.uninstall_astracradle(
+            get_os_adapter(),
+            cfg,
+            delete_user_data=False,
+            restore_quarantine_first=True,
+            uninstall_pip_package=False,
+        )
+        assert summary_keep.ok is True
+        assert summary_keep.deleted_data_dir is False
+        assert not (fake_home / ".config" / "autostart" / "astracradle.desktop").exists()
+        assert not (fake_home / ".local" / "bin" / "astracradle").exists()
+        assert not (fake_home / ".local" / "bin" / "astracradle-gui").exists()
+        assert not (fake_home / ".local" / "bin" / "astracradle-wifi").exists()
+        assert not fish_hook.exists()
+        assert not wifi_svc.exists()
+        assert not wifi_tmr.exists()
+        assert not (cm.state_dir / "setup_wizard_draft.json").exists()
+        assert ac_dir.exists() and (ac_dir / "machine_install_memory.json").exists()
+
+        # 2. Full CLI uninstall (--uninstall --yes --delete-data) deletes ~/.astracradle completely
+        rc = cli_main(["--config-dir", str(ac_dir), "--uninstall", "--yes", "--delete-data"])
+        assert rc == 0
+        assert not ac_dir.exists()
+
+
+def test_windows_11_pythonw_null_stdio_and_installer_resilience(monkeypatch) -> None:
+    import sys as _sys
+    from astracradle.__main__ import _ensure_valid_stdio
+
+    repo_root = Path(__file__).resolve().parents[1]
+    bat_txt = (repo_root / "Install_AstraCradle.bat").read_text(encoding="utf-8")
+    run_bat = (repo_root / "run_astracradle.bat").read_text(encoding="utf-8")
+    ps1_txt = (repo_root / "scripts" / "quick_install.ps1").read_text(encoding="utf-8")
+
+    # Verify Windows 11 Store alias bypass, Python 3.10-3.14 search, quoted paths, Tkinter check & auto-repair
+    assert "Python314" in bat_txt and '"%%~P" -c "import sys, tkinter' in bat_txt
+    assert '".venv\\Scripts\\python.exe" -m pip --version' in bat_txt
+    assert 'call "%~dp0Install_AstraCradle.bat"' in run_bat
+    assert "LASTEXITCODE" in ps1_txt and "Unblock-File" in ps1_txt
+
+    # Verify pythonw.exe / astracradle-gui.exe (sys.stdout=None, sys.stderr=None) gets safe streams
+    with tempfile.TemporaryDirectory() as td:
+        orig_out, orig_err = _sys.stdout, _sys.stderr
+        try:
+            monkeypatch.setattr(_sys, "stdout", None)
+            monkeypatch.setattr(_sys, "stderr", None)
+            _ensure_valid_stdio(td)
+            assert _sys.stdout is not None and _sys.stderr is not None
+            _sys.stderr.write("win11-stdio-ok\n")
+            _sys.stderr.flush()
+        finally:
+            try:
+                if _sys.stderr not in (None, orig_err):
+                    _sys.stderr.close()
+            except Exception:
+                pass
+            _sys.stdout = orig_out
+            _sys.stderr = orig_err
+        assert (Path(td) / "logs" / "gui_stdio.log").exists()
+
+
+
+
+
+
+
+
+
+
+
+
