@@ -1123,7 +1123,9 @@ def test_windows_11_pythonw_null_stdio_and_installer_resilience(monkeypatch) -> 
     # Verify Windows 11 Store alias bypass, Python 3.10-3.14 search, quoted paths, Tkinter check & auto-repair
     assert "Python314" in bat_txt and '"%%~P" -c "import sys, tkinter' in bat_txt
     assert '".venv\\Scripts\\python.exe" -m pip --version' in bat_txt
+    assert 'start "AstraCradle" ".venv\\Scripts\\python.exe" -m astracradle' in bat_txt
     assert 'call "%~dp0Install_AstraCradle.bat"' in run_bat
+    assert 'start "AstraCradle" ".venv\\Scripts\\python.exe" -m astracradle %*' in run_bat
     assert "LASTEXITCODE" in ps1_txt and "Unblock-File" in ps1_txt
 
     # Verify pythonw.exe / astracradle-gui.exe (sys.stdout=None, sys.stderr=None) gets safe streams

@@ -92,13 +92,7 @@ if /i "%MEM_DESK%"=="yes" (
 )
 
 echo [4/4] Setup complete! Launching AstraCradle v2.5.1...
-if exist ".venv\Scripts\astracradle-gui.exe" (
-    start "" ".venv\Scripts\astracradle-gui.exe"
-) else if exist ".venv\Scripts\pythonw.exe" (
-    start "" ".venv\Scripts\pythonw.exe" -m astracradle
-) else (
-    start "" ".venv\Scripts\python.exe" -m astracradle
-)
+start "AstraCradle" ".venv\Scripts\python.exe" -m astracradle
 exit /b 0
 
 :FIND_PYTHON

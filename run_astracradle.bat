@@ -15,12 +15,4 @@ if errorlevel 1 (
     call "%~dp0Install_AstraCradle.bat"
     exit /b %errorlevel%
 )
-if exist ".venv\Scripts\astracradle-gui.exe" (
-    start "" ".venv\Scripts\astracradle-gui.exe" %*
-    exit /b 0
-)
-if exist ".venv\Scripts\pythonw.exe" (
-    start "" ".venv\Scripts\pythonw.exe" -m astracradle %*
-    exit /b 0
-)
-start "" ".venv\Scripts\python.exe" -m astracradle %*
+start "AstraCradle" ".venv\Scripts\python.exe" -m astracradle %*

@@ -2679,7 +2679,7 @@ class SetupWizardDialog(ctk.CTkToplevel):
                 ),
                 font=f["small"],
                 text_color=p.text_secondary,
-                wraplength=670,
+                wraplength=560,
                 justify="left",
             ).pack(anchor="w", padx=12, pady=(10, 12))
 

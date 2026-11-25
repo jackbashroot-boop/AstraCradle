@@ -79,6 +79,7 @@ class LifecycleManager:
             )
         elif sys_name == "Windows":
             desktop = home / "Desktop"
+            resolved_desk = self._resolve_windows_desktop(home)
             appdata = Path(os.environ.get("APPDATA", str(home / "AppData" / "Roaming")))
             start_menu = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs"
             startup_dir = start_menu / "Startup"
@@ -92,7 +93,33 @@ class LifecycleManager:
                     startup_dir / "AstraCradle.bat",
                 ]
             )
+            if resolved_desk is not None and resolved_desk != desktop:
+                paths.extend(
+                    [
+                        resolved_desk / "AstraCradle.lnk",
+                        resolved_desk / "AstraCradle.bat",
+                    ]
+                )
         return paths
+
+    @staticmethod
+    def _resolve_windows_desktop(home: Path) -> Path | None:
+        """Resolves the active Windows Desktop folder (supports Windows 11 OneDrive Desktop redirection)."""
+        if platform.system() == "Windows":
+            try:
+                import ctypes
+
+                buf = ctypes.create_unicode_buffer(260)
+                if ctypes.windll.shell32.SHGetFolderPathW(0, 0x0010, 0, 0, buf) == 0 and buf.value:  # type: ignore[attr-defined]
+                    p = Path(buf.value)
+                    if p.exists():
+                        return p
+            except Exception:
+                pass
+        for cand in (home / "OneDrive" / "Desktop", home / "Desktop"):
+            if cand.exists():
+                return cand
+        return home / "Desktop"
 
     def install_shortcuts(
         self,
@@ -304,23 +331,22 @@ class LifecycleManager:
         elif sys_name == "Windows":
             standalone_exe = repo_root / "dist" / "AstraCradle" / "AstraCradle.exe"
             py_exe = Path(sys.executable)
-            gui_exe_script = py_exe.parent / "astracradle-gui.exe"
-            pyw_exe = py_exe.parent / "pythonw.exe"
+            venv_py = repo_root / ".venv" / "Scripts" / "python.exe"
             if standalone_exe.exists():
                 target_exe = str(standalone_exe)
                 target_args = ""
-            elif gui_exe_script.exists():
-                target_exe = str(gui_exe_script)
-                target_args = ""
+            elif venv_py.exists():
+                target_exe = str(venv_py)
+                target_args = "-m astracradle"
             else:
-                target_exe = str(pyw_exe if pyw_exe.exists() else py_exe)
+                target_exe = str(py_exe)
                 target_args = "-m astracradle"
 
             bat_content = (
                 "@echo off\r\n"
                 f'cd /d "{repo_root}"\r\n'
                 f'if exist "{target_exe}" (\r\n'
-                f'    start "" "{target_exe}" {target_args}\r\n'
+                f'    start "AstraCradle" "{target_exe}" {target_args}\r\n'
                 f') else if exist "{repo_root}\\run_astracradle.bat" (\r\n'
                 f'    call "{repo_root}\\run_astracradle.bat"\r\n'
                 ") else (\r\n"
@@ -330,18 +356,19 @@ class LifecycleManager:
             )
             appdata = Path(os.environ.get("APPDATA", str(home / "AppData" / "Roaming")))
             start_menu = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+            win_desktop = self._resolve_windows_desktop(home)
             win_bat_targets = [start_menu / "AstraCradle.bat"]
-            if include_desktop_icon:
-                win_bat_targets.append(home / "Desktop" / "AstraCradle.bat")
+            if include_desktop_icon and win_desktop is not None:
+                win_bat_targets.append(win_desktop / "AstraCradle.bat")
             for target in win_bat_targets:
                 if target.parent.exists():
                     target.write_text(bat_content, encoding="utf-8")
                     created.append(target)
-            # Create native Start Menu (and optional Desktop) .lnk shortcuts launching zero-console GUI executable with AstraCradle.ico
+            # Create native Start Menu (and optional Desktop) .lnk shortcuts using verified python.exe runtime
             if platform.system() == "Windows":
                 win_lnk_targets = [start_menu / "AstraCradle.lnk"]
-                if include_desktop_icon:
-                    win_lnk_targets.append(home / "Desktop" / "AstraCradle.lnk")
+                if include_desktop_icon and win_desktop is not None:
+                    win_lnk_targets.append(win_desktop / "AstraCradle.lnk")
                 for lnk in win_lnk_targets:
                     if lnk.parent.exists():
                         ps = (
@@ -350,6 +377,7 @@ class LifecycleManager:
                             f'$s.TargetPath = "{target_exe}"; '
                             f'$s.Arguments = "{target_args}"; '
                             f'$s.WorkingDirectory = "{repo_root}"; '
+                            f'$s.WindowStyle = 7; '
                             f'$s.IconLocation = "{icon_ico},0"; '
                             f'$s.Description = "AstraCradle — Dyson-Core OS Optimizer & Self-Healing Studio"; '
                             f'$s.Save()'
@@ -448,15 +476,14 @@ class LifecycleManager:
                 return True, "Removed Windows Startup folder entry."
             startup_dir.mkdir(parents=True, exist_ok=True)
             py_exe = Path(sys.executable)
-            gui_exe = py_exe.parent / "astracradle-gui.exe"
-            pyw_exe = py_exe.parent / "pythonw.exe"
-            target_exe = str(gui_exe if gui_exe.exists() else (pyw_exe if pyw_exe.exists() else py_exe))
-            args = "" if gui_exe.exists() else "-m astracradle"
+            venv_py = repo_root / ".venv" / "Scripts" / "python.exe"
+            target_exe = str(venv_py if venv_py.exists() else py_exe)
+            args = "-m astracradle"
             if start_minimized:
                 args = (args + " --minimized").strip()
             if start_widget:
                 args = (args + " --widget").strip()
-            bat_file.write_text(f'@echo off\r\ncd /d "{repo_root}"\r\nstart "" "{target_exe}" {args}\r\n', encoding="utf-8")
+            bat_file.write_text(f'@echo off\r\ncd /d "{repo_root}"\r\nstart "AstraCradle" "{target_exe}" {args}\r\n', encoding="utf-8")
             return True, f"Enabled Windows login autostart ({'minimized to tray' if start_minimized else 'normal'})."
 
         return False, f"Unsupported OS for login autostart: {sys_name}"
