@@ -5677,23 +5677,31 @@ class HermesAgentManager:
                 dry = bool(args.get("dry_run", True))
                 if perm == "read_only" and not dry:
                     return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1). Preview with dry_run=true instead."}
-                if self.safe_fixer is not None:
-                    ok_f, summary, notes = self.safe_fixer.run_fix_everything_safe(adapter, config, dry_run=dry)
-                    extra: list[str] = []
-                    if not dry and self.executor is not None:
+                fixer = self.safe_fixer
+                ex = self.executor
+                if fixer is None:
+                    from .executor import GuardedExecutor
+                    from .pc_extras import SafeBeginnerFixer
+                    from .rollback import RollbackManager
+
+                    rb = self.rollback_mgr or RollbackManager(self.cfg_mgr)
+                    ex = ex or GuardedExecutor(self.cfg_mgr, rb, self.journal)
+                    fixer = SafeBeginnerFixer(self.cfg_mgr, ex, rb, self.journal)
+                ok_f, summary, notes = fixer.run_fix_everything_safe(adapter, config, dry_run=dry)
+                extra: list[str] = []
+                if not dry and ex is not None:
+                    try:
+                        dns_res = ex.execute_action("flush_dns", adapter, config, dry_run=False)
+                        extra.append(dns_res.summary)
+                    except Exception:
+                        pass
+                    if self.ram_standby_mgr is not None:
                         try:
-                            dns_res = self.executor.execute_action("flush_dns", adapter, config, dry_run=False)
-                            extra.append(dns_res.summary)
+                            _, ram_msg = self.ram_standby_mgr.trim_standby(dry_run=False)
+                            extra.append(ram_msg)
                         except Exception:
                             pass
-                        if self.ram_standby_mgr is not None:
-                            try:
-                                _, ram_msg = self.ram_standby_mgr.trim_standby(dry_run=False)
-                                extra.append(ram_msg)
-                            except Exception:
-                                pass
-                    return {"ok": ok_f, "dry_run": dry, "summary": summary, "notes": (notes + extra)[:10]}
-                return {"ok": False, "error": "SafeBeginnerFixer not attached in headless CLI."}
+                return {"ok": ok_f, "dry_run": dry, "summary": summary, "notes": (notes + extra)[:10]}
 
             if name == "astra_wifi_check":
                 if self.wifi_optimizer is not None:
@@ -5707,7 +5715,23 @@ class HermesAgentManager:
             if name == "astra_process_lookup":
                 q = str(args.get("query", "")).strip()
                 if not q:
-                    return {"ok": False, "error": "Missing query"}
+                    procs_list: list[dict[str, Any]] = []
+                    for pr in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]):
+                        try:
+                            mi = pr.info.get("memory_info")
+                            rss_mb = round((mi.rss / (1024 * 1024)) if mi else 0.0, 1)
+                            procs_list.append(
+                                {
+                                    "pid": pr.info.get("pid"),
+                                    "name": pr.info.get("name") or "",
+                                    "cpu_percent": round(float(pr.info.get("cpu_percent") or 0.0), 1),
+                                    "ram_mb": rss_mb,
+                                }
+                            )
+                        except Exception:
+                            continue
+                    procs_list.sort(key=lambda x: (x["cpu_percent"], x["ram_mb"]), reverse=True)
+                    return {"ok": True, "top_processes": procs_list[:12], "total_sampled": len(procs_list)}
                 if self.proc_lookup is not None:
                     res = self.proc_lookup.lookup(q, allow_web=False)
                     return {"ok": True, "name": res.name, "status": res.status, "description": res.brief_description}
@@ -6103,7 +6127,7 @@ class HermesAgentManager:
                         "ok": True,
                         "count": len(entries),
                         "entries": [
-                            {"id": e.entry_id, "action": e.action_type, "summary": e.summary, "status": e.status}
+                            {"id": e.entry_id, "action": getattr(e, "action_id", ""), "title": getattr(e, "title", ""), "summary": e.summary, "status": e.status}
                             for e in entries[-12:]
                         ],
                     }
@@ -6730,7 +6754,24 @@ class HermesAgentManager:
                             usb_auto.append(ctl.parent.parent.name)
                 except Exception:
                     pass
-                return {"ok": True, "audio": audio_txt, "display": disp_txt, "usb_autosuspend_devices": usb_auto}
+                bt_list: list[dict[str, Any]] = []
+                try:
+                    from .lan_tv_shield import LanTvAdShield
+
+                    bt_devs = LanTvAdShield.scan_bluetooth_devices_and_batteries()
+                    bt_list = [
+                        {
+                            "name": d.name,
+                            "mac": d.mac,
+                            "connected": d.connected,
+                            "battery_percent": d.battery_percent,
+                            "low_battery": bool(d.battery_percent is not None and d.battery_percent < int(getattr(config, "bluetooth_low_battery_threshold", 20) or 20)),
+                        }
+                        for d in bt_devs
+                    ]
+                except Exception:
+                    pass
+                return {"ok": True, "audio": audio_txt, "display": disp_txt, "usb_autosuspend_devices": usb_auto, "bluetooth_devices": bt_list}
 
             if name == "astra_thermals_and_fans":
                 act = str(args.get("action") or "inspect").strip().lower()
@@ -9240,35 +9281,48 @@ class HermesAgentManager:
                             seen_auto.add(fn_name)
                             auto_calls.append({"id": tid, "function": {"name": fn_name, "arguments": fn_args}})
 
-                    if "astra_dev_self_build" in low_p or re.search(r"\b(?:astra|astracradle)\b", low_p) or any(k in low_p for k in ("codebase", "architecture")):
+                    if "astra_dev_self_build" in low_p or re.search(r"\b(?:astra|astracradle)\b", low_p) or any(k in low_p for k in ("codebase", "architecture", "improve astra")):
                         _add_auto("auto_inspect", "astra_dev_self_build", {"action": "inspect"})
                         _add_auto("auto_git", "astra_git_sync", {"action": "status"})
                     if "astra_process_lookup" in low_p or ("ollama" in low_p and "process" in low_p):
                         _add_auto("auto_proc", "astra_process_lookup", {"query": "ollama"})
-                    if "astra_startup_audit" in low_p or any(k in low_p for k in ("startup", "autorun", "hogs", "bloat")):
+                    if "astra_startup_audit" in low_p or any(k in low_p for k in ("startup", "autorun", "hogs", "bloat", "bottleneck")):
                         _add_auto("auto_startup", "astra_startup_audit", {})
                         _add_auto("auto_procs", "astra_process_lookup", {"query": ""})
-                    if "astra_journal_and_crashes" in low_p or "diagnostics" in low_p or "ui log" in low_p:
-                        _add_auto("auto_diag", "astra_journal_and_crashes", {"limit": 10})
+                    if "astra_journal_and_crashes" in low_p or any(k in low_p for k in ("diagnostics", "ui log", "crash log", "error audit")):
+                        _add_auto("auto_diag", "astra_journal_and_crashes", {"limit": 20})
                     if "astra_system_status" in low_p or "astra_deep_scan" in low_p or any(k in low_p for k in ("diagnose", "bottleneck", "slow pc", "cpu/gpu/ram", "deep system scan")):
                         _add_auto("auto_scan", "astra_deep_scan", {})
                         _add_auto("auto_stat", "astra_system_status", {})
-                    if any(k in low_p for k in ("clean cache", "fix_safe", "fix slow", "dry_run=false")):
-                        _add_auto("auto_fix", "astra_fix_safe", {"dry_run": ("dry_run=false" not in low_p)})
+                        _add_auto("auto_therm", "astra_thermals_and_fans", {"action": "inspect"})
+                    if any(k in low_p for k in ("clean cache", "safely clean", "fix_safe", "fix slow", "dry_run=false", "safe cleanup")):
+                        _add_auto("auto_fix", "astra_fix_safe", {"dry_run": ("apply" not in low_p and "safely clean" not in low_p and "dry_run=false" not in low_p)})
+                        _add_auto("auto_pb", "astra_probalance_and_profile", {"action": "status"})
                     if any(k in low_p for k in ("wi-fi", "wifi", "channel", "wireless", "dns speed")):
                         _add_auto("auto_wifi", "astra_wifi_check", {})
                         if "optimize" in low_p:
                             _add_auto("auto_wifi_opt", "astra_wifi_optimize", {})
                     if any(k in low_p for k in ("remote task", "paired mobile", "tailscale", "astrabeam", "adb")):
                         _add_auto("auto_rem", "astra_remote_tasks", {})
+                        _add_auto("auto_svc", "astra_services_and_storage", {})
                     if any(k in low_p for k in ("self-heal", "self heal", "rollback", "undo")):
                         _add_auto("auto_heal", "astra_self_heal_repair", {})
                         _add_auto("auto_rb", "astra_rollback_undo", {"action": "list"})
-                    if any(k in low_p for k in ("smart tv", "samsung", "sinkhole", "astrashield", "scan lan", "adblock")):
+                    if any(k in low_p for k in ("smart tv", "samsung", "sinkhole", "astrashield", "scan lan", "local network", "adblock")):
                         _add_auto("auto_lan", "astra_lan_and_sinkhole", {"action": "scan_lan"})
+                    if any(k in low_p for k in ("pending os", "system updates", "firmware update", "flatpak")):
+                        _add_auto("auto_upd", "astra_system_updates", {"action": "check"})
+                    if any(k in low_p for k in ("smart health", "failed systemd", "listening ports", "disk usage")):
+                        _add_auto("auto_svc", "astra_services_and_storage", {})
+                    if any(k in low_p for k in ("bluetooth", "battery percentage", "below 20%")):
+                        _add_auto("auto_bt", "astra_av_and_peripherals", {"action": "inspect"})
+                    if any(k in low_p for k in ("self-audit", "second opinion")):
+                        _add_auto("auto_ver", "astra_verify_work", {"action": "audit_draft", "session_id": session_id})
                     if any(k in low_p for k in ("learned", "pc usage", "top apps")):
                         _add_auto("auto_usage", "astra_pc_usage_summary", {})
-                    if any(k in low_p for k in ("catalog", "all files", "all drives", "full scan", "incoming files", "passively scan", "before they are turned on")):
+                        _add_auto("auto_mem", "memory_read", {"target": "MEMORY.md"})
+                        _add_auto("auto_fg_st", "astra_file_guardian", {"action": "status"})
+                    if any(k in low_p for k in ("catalog", "all files", "all drives", "full scan", "incoming files", "passively scan", "before they are turned on", "before risky items")):
                         _add_auto("auto_fg", "astra_file_guardian", {"action": "start_full_catalog_and_guard"})
                         _add_auto("auto_svc", "astra_services_and_storage", {})
                     for sh_cand in ("fish", "zsh", "bash", "pwsh"):

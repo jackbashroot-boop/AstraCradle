@@ -26,14 +26,21 @@ if TYPE_CHECKING:
 
 
 _QUICK_ACTION_CHIPS: tuple[tuple[str, str], ...] = (
-    ("Diagnose PC", "Run a deep system scan and check live CPU/GPU/RAM status, then summarize clearly."),
-    ("Fix Slow PC (Safe)", "Diagnose bottlenecks, safely clean caches with astra_fix_safe(dry_run=false), and restrain background CPU hogs if needed."),
-    ("Optimize Wi-Fi", "Check my Wi-Fi channels and optimize if a cleaner channel is available."),
-    ("Startup & Hogs", "Audit my startup entries and high-CPU processes, and explain or trim safe bloat."),
-    ("Remote Tasks", "Check paired mobile/remote devices, Tailscale/ADB/AstraBeam status, and recent remote tasks."),
-    ("Self-Heal & Undo", "Run AstraCradle 14-invariant self-heal repair and list any recent rollback/undo items."),
-    ("What AI Learned", "Summarize what you have learned about my whole-PC usage, top apps, games, and remote tasks."),
-    ("Research & Improve Astra", "Run astra_dev_self_build(action='inspect') and check recent diagnostics, plus search the web if useful, then propose 3-5 concrete, file-specific code improvements, regression tests, or reusable skills for AstraCradle."),
+    ("Diagnose PC (CPU/GPU/RAM/Thermals)", "Run a deep system scan, check live CPU/GPU/RAM/thermal status, and summarize any bottlenecks clearly."),
+    ("Fix Slow PC (Safe Cache Cleanup & CPU Check)", "Diagnose bottlenecks, apply safe cleanup of stale caches and DNS, and check ProBalance/high-CPU background hogs."),
+    ("Optimize Wi-Fi & DNS Channels", "Check my Wi-Fi channels and optimize if a cleaner channel is available."),
+    ("Startup & High-CPU Hogs Audit", "Audit my startup entries and high-CPU processes, and explain or trim safe bloat."),
+    ("Full PC File Catalog & Pre-Launch Guard", "Start a full PC file & drive catalog, passively scan while idle, verify incoming files, and notify me before risky items are turned on."),
+    ("Scan Smart TVs & LAN Sinkhole", "Scan my local network for Smart TVs and devices, check AstraShield sinkhole status, and summarize what is connected."),
+    ("Bluetooth Devices & Battery Check (<20%)", "Check connected Bluetooth devices, battery percentages, and flag any devices below 20%."),
+    ("Storage, SMART Health & Services", "Inspect disk usage, SMART health, failed systemd services, and open listening ports."),
+    ("Check System & Firmware Updates", "Check for pending OS package, Flatpak, and firmware updates without modifying anything yet."),
+    ("Crash Logs & Error Audit", "Inspect recent AstraCradle crash logs, forensic audit warnings, and UI errors, and explain root causes."),
+    ("Remote Tasks & Paired Devices", "Check paired mobile/remote devices, Tailscale/ADB/AstraBeam status, and recent remote tasks."),
+    ("Self-Heal (14 Invariants) & Undo List", "Run AstraCradle 14-invariant self-heal repair and list any recent rollback/undo items."),
+    ("What AI Learned (Apps, Games & Rules)", "Summarize what you have learned about my whole-PC usage, top apps, games, standing rules, and file catalog."),
+    ("Research & Improve AstraCradle", "Inspect the AstraCradle codebase and recent diagnostics, plus search the web if useful, then propose 3-5 concrete, file-specific code improvements, tests, or skills."),
+    ("Verify Work / Second Opinion Audit", "Self-audit our recent recommendations and check if any commands or claims need correction."),
 )
 
 
@@ -512,21 +519,60 @@ def _build_quick_chips(
     *,
     cols: int = 4,
 ) -> None:
-    for c in range(cols):
-        parent.grid_columnconfigure(c, weight=1, uniform="qchips")
-    for idx, (lbl_txt, q_txt) in enumerate(_QUICK_ACTION_CHIPS):
-        r, c = divmod(idx, cols)
-        ctk.CTkButton(
-            parent,
-            text=lbl_txt,
-            height=28,
-            corner_radius=7,
-            fg_color=p.bg_elevated,
-            hover_color=p.accent_cyan,
-            text_color=p.text_primary,
-            font=f["caption"],
-            command=lambda qt=q_txt: send_cb(qt),
-        ).grid(row=r, column=c, sticky="ew", padx=3, pady=3)
+    """Renders all quick fixes & AI actions inside a compact single-row dropdown menu + Run button."""
+    _ = cols
+    placeholder = f"⚡ Quick Fixes & AI Actions ({len(_QUICK_ACTION_CHIPS)}) — pick one to run..."
+    by_label = {lbl: q for lbl, q in _QUICK_ACTION_CHIPS}
+    options = [placeholder, *[lbl for lbl, _ in _QUICK_ACTION_CHIPS]]
+    quick_var = tk.StringVar(value=placeholder)
+
+    ctk.CTkLabel(
+        parent,
+        text="⚡ Quick Actions:",
+        font=f["small_bold"],
+        text_color=p.text_secondary,
+    ).pack(side="left", padx=(2, 6), pady=2)
+
+    def _on_pick(choice: str) -> None:
+        q_txt = by_label.get(choice)
+        if q_txt:
+            send_cb(q_txt)
+
+    menu = ctk.CTkOptionMenu(
+        parent,
+        values=options,
+        variable=quick_var,
+        width=360,
+        height=30,
+        fg_color=p.bg_elevated,
+        button_color=p.bg_card,
+        button_hover_color=p.accent_cyan,
+        text_color=p.text_primary,
+        font=f["small"],
+        command=_on_pick,
+    )
+    menu.pack(side="left", fill="x", expand=True, padx=(0, 6), pady=2)
+
+    def _run_selected() -> None:
+        sel = quick_var.get()
+        q_txt = by_label.get(sel)
+        if q_txt:
+            send_cb(q_txt)
+        else:
+            # If still on placeholder, run Diagnose PC as sensible 1-click default
+            send_cb(_QUICK_ACTION_CHIPS[0][1])
+
+    ctk.CTkButton(
+        parent,
+        text="▶ Run",
+        width=76,
+        height=30,
+        fg_color=p.bg_card,
+        hover_color=p.accent_cyan,
+        text_color=p.text_primary,
+        font=f["small_bold"],
+        command=_run_selected,
+    ).pack(side="right", pady=2)
 
 
 def _build_provider_options() -> tuple[list[str], dict[str, tuple[str, str]]]:

@@ -1708,8 +1708,8 @@ def test_hermes_personas_standard_plus_ten_and_think_strip(monkeypatch) -> None:
         assert calls == []
         assert captured_timeouts and captured_timeouts[0] >= 240
 
-    # 4. Verify UI page exposes 8 wrapped chips + full-screen chat workspace + persona helpers
-    assert len(hermes_page._QUICK_ACTION_CHIPS) == 8
+    # 4. Verify UI page exposes 15 quick-action dropdown entries + full-screen chat workspace + persona helpers
+    assert len(hermes_page._QUICK_ACTION_CHIPS) >= 15
     assert callable(hermes_page._build_chat_workspace)
     assert callable(hermes_page._render_chat_bubbles)
 
@@ -3737,6 +3737,106 @@ def test_hermes_on_the_fly_shell_and_rule_adaptation(monkeypatch) -> None:
         r_res = hm.execute_tool("astra_adapt_preferences", {"action": "add_standing_rule", "rule": "Always prefer Fish syntax"}, cfg)
         assert r_res["ok"] is True
         assert "Always prefer Fish syntax" in hm.user_md_path.read_text(encoding="utf-8")
+
+
+def test_all_quick_actions_dropdown_and_tool_grounding_no_hallucinations(monkeypatch) -> None:
+    import tempfile
+    import types
+    from pathlib import Path
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.theme import get_palette, get_ui_fonts
+    import astracradle.ui.pages.hermes_page as hp_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "astra")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig(hermes_permission_level="standard_user")
+        hm.ensure_hermes_home(cfg)
+
+        # 1. Verify all 15 dropdown items require tools, have no leaked internal syntax, and pass tool schema selection
+        all_tools = hm._tool_schemas()
+        assert len(hp_mod._QUICK_ACTION_CHIPS) >= 15
+        for lbl, q_txt in hp_mod._QUICK_ACTION_CHIPS:
+            assert "astra_" not in q_txt, f"Internal tool name leaked in '{lbl}': {q_txt}"
+            assert hm._prompt_needs_tools(q_txt) is True, f"_prompt_needs_tools failed for '{lbl}'"
+            selected = hm._select_tool_schemas(q_txt, all_tools)
+            assert len(selected) >= 6, f"Too few tools selected for '{lbl}'"
+
+        # 2. Run EVERY underlying tool used by the 15 quick actions and assert ok=True with zero crashes/fake errors
+        tool_calls_to_verify = [
+            ("astra_deep_scan", {}),
+            ("astra_system_status", {}),
+            ("astra_thermals_and_fans", {"action": "inspect"}),
+            ("astra_fix_safe", {"dry_run": True}),
+            ("astra_probalance_and_profile", {"action": "status"}),
+            ("astra_process_lookup", {"query": ""}),
+            ("astra_wifi_check", {}),
+            ("astra_wifi_optimize", {"apply": False}),
+            ("astra_startup_audit", {}),
+            ("astra_file_guardian", {"action": "start_full_catalog_and_guard", "max_files": 40}),
+            ("astra_lan_and_sinkhole", {"action": "sinkhole_status"}),
+            ("astra_av_and_peripherals", {"action": "inspect"}),
+            ("astra_services_and_storage", {}),
+            ("astra_system_updates", {"action": "check"}),
+            ("astra_journal_and_crashes", {"limit": 10}),
+            ("astra_remote_tasks", {"action": "status"}),
+            ("astra_self_heal_repair", {}),
+            ("astra_rollback_undo", {"action": "list"}),
+            ("astra_pc_usage_summary", {}),
+            ("astra_dev_self_build", {"action": "inspect"}),
+            ("astra_verify_work", {"action": "audit_draft", "draft_text": "All clear."}),
+        ]
+        for tname, targs in tool_calls_to_verify:
+            res = hm.execute_tool(tname, targs, cfg)
+            assert res.get("ok") is True, f"Tool {tname} failed: {res}"
+        # Ensure astra_process_lookup(query="") returned real top_processes and astra_av_and_peripherals has bluetooth_devices
+        procs_res = hm.execute_tool("astra_process_lookup", {"query": ""}, cfg)
+        assert isinstance(procs_res.get("top_processes"), list) and len(procs_res["top_processes"]) >= 1
+        av_res = hm.execute_tool("astra_av_and_peripherals", {"action": "inspect"}, cfg)
+        assert "bluetooth_devices" in av_res
+
+        # 3. Verify _build_quick_chips renders a dropdown menu (CTkOptionMenu) instead of a grid of buttons
+        created_menus: list[object] = []
+        created_btns: list[str] = []
+        sent_prompts: list[str] = []
+
+        class _FakeW:
+            def __init__(self, *a, kind="btn", **kw):
+                self._kw = kw
+                if kind == "menu":
+                    created_menus.append(self)
+                elif kind == "btn" and "text" in kw:
+                    created_btns.append(str(kw["text"]))
+
+            def pack(self, *a, **kw):
+                return self
+
+        monkeypatch.setattr(
+            hp_mod,
+            "ctk",
+            types.SimpleNamespace(
+                CTkLabel=lambda *a, **kw: _FakeW(*a, kind="lbl", **kw),
+                CTkOptionMenu=lambda *a, **kw: _FakeW(*a, kind="menu", **kw),
+                CTkButton=lambda *a, **kw: _FakeW(*a, kind="btn", **kw),
+            ),
+        )
+        monkeypatch.setattr(
+            hp_mod,
+            "tk",
+            types.SimpleNamespace(StringVar=lambda value="": types.SimpleNamespace(get=lambda: value, set=lambda _v: None)),
+        )
+        hp_mod._build_quick_chips(_FakeW(), sent_prompts.append, get_palette("dark"), get_ui_fonts(1.0))
+        assert len(created_menus) == 1
+        assert created_btns == ["▶ Run"]
+        menu_vals = created_menus[0]._kw["values"]
+        for lbl, _ in hp_mod._QUICK_ACTION_CHIPS:
+            assert lbl in menu_vals
+        # Picking an item from dropdown triggers send_cb with its prompt
+        created_menus[0]._kw["command"](hp_mod._QUICK_ACTION_CHIPS[4][0])
+        assert sent_prompts == [hp_mod._QUICK_ACTION_CHIPS[4][1]]
+
 
 
 

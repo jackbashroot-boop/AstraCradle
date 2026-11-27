@@ -15,6 +15,10 @@ All notable updates and fixes to **AstraCradle** (`v2.5.1+`) are documented here
 - Polls automatically every 60s and triggers an **important alert toast + desktop tray notification** whenever any Bluetooth device battery drops below **20%** (with recharge hysteresis at 25%).
 - Displays live and tracked Bluetooth device battery badges in **Clean & Protect → Smart TV, Bluetooth & Network Devices** and `python3 -m astracradle --scan-tv`.
 
+### Hermes AI Quick Actions Dropdown & Tool Grounding Audit
+- Replaced the 2-row quick-fix button grid below the chat box with a single compact **Quick Actions Dropdown** (`CTkOptionMenu` + `▶ Run`) containing 15 verified actions, including Full PC File Catalog & Pre-Launch Guard, Smart TVs & LAN Sinkhole Scan, Bluetooth Battery Check (`<20%`), Storage/SMART/Services, System/Firmware Updates, Crash Logs & Error Audit, and Verify Work / Second Opinion.
+- Fixed real tool flaws discovered during full button audit: `astra_process_lookup(query='')` now returns live top CPU/RAM processes instead of failing, `astra_fix_safe` now works standalone (`GuardedExecutor` + `SafeBeginnerFixer`) without an attached GUI fixer, `astra_rollback_undo` now reads `RollbackEntry.action_id` instead of crashing on missing `action_type`, `astra_av_and_peripherals` now includes live Bluetooth device & battery telemetry, and internal `astra_*` syntax no longer leaks into quick-action chat bubbles.
+
 ### Hermes AI On-The-Fly Shell & Preference Adaptation (Fish / Zsh / Bash / Standing Rules)
 - Added `astra_adapt_preferences` tool and `hermes_preferred_shell` config so Hermes adapts on the fly when told to switch shells (e.g., *"use Fish instead of bash for all commands"*) or given new standing rules, persisting them into `config.json`, `USER.md`, and `MEMORY.md`.
 - Updated `shell_exec` and `_run_sudo_prompted` to execute directly through the active preferred shell (`fish -c`, `zsh -c`, `bash -c`, etc.) instead of hardcoded `/bin/sh`, plus turn-0 auto-grounding so Hermes applies live shell/rule preferences immediately instead of refusing.
