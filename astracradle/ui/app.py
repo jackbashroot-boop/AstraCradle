@@ -327,6 +327,9 @@ class AstraCradleApp(ctk.CTk):
         self._draft_fan_curve: list[list[int]] = self.gpu_pwr.get_applied_curve()[1]
         self._toast_after_id: str | None = None
         self._last_history_write: float = 0.0
+        self._last_github_check_ts: float = time.monotonic()
+        self._github_check_in_flight: bool = False
+        self._prompted_github_version: str = ""
         self._last_focus_state = None
         self._last_layout_w: int = 0
         self._last_win_x: int | None = None
@@ -1744,7 +1747,10 @@ class AstraCradleApp(ctk.CTk):
         )
         self._apply_simple_mode(initial=True)
         self.switch_nav("dashboard")
-        self._refresh_github_version_badge_async()
+        self._refresh_github_version_badge_async(
+            prompt_if_outdated=bool(getattr(self.config_obj, "github_hourly_update_check", True))
+            and str(getattr(self.config_obj, "auto_update_mode", "silent_auto")) != "manual"
+        )
 
     def _ui_events_log_path(self) -> Path:
         try:
@@ -7912,6 +7918,7 @@ class AstraCradleApp(ctk.CTk):
         self.set_simple_mode_var = tk.BooleanVar(value=bool(self.config_obj.simple_mode))
         self.set_os_var = tk.StringVar(value=self.config_obj.os_adapter_override)
         self.set_upd_var = tk.StringVar(value=self.config_obj.auto_update_mode)
+        self.set_gh_hourly_var = tk.BooleanVar(value=bool(getattr(self.config_obj, "github_hourly_update_check", True)))
         self.set_q_enabled = tk.BooleanVar(value=self.config_obj.quarantine_enabled)
         self.set_self_heal = tk.BooleanVar(value=self.config_obj.auto_self_heal)
         self.set_low_power = tk.BooleanVar(value=self.config_obj.low_power_ui_mode)
@@ -8165,6 +8172,11 @@ class AstraCradleApp(ctk.CTk):
                     "Auto-Update Policy",
                     ctk.CTkOptionMenu(sec_shield, values=["silent_auto", "notify", "manual"], variable=self.set_upd_var),
                     "Controls whether SHA-256 + Ed25519 verified updates apply automatically.",
+                ),
+                (
+                    "Hourly GitHub Update Check",
+                    ctk.CTkSwitch(sec_shield, text="Check GitHub every hour & ask to update if out of date", variable=self.set_gh_hourly_var),
+                    "Automatically checks your GitHub repo once per hour in the background and prompts you to update when a newer commit or release is live.",
                 ),
             ],
         )
@@ -8557,6 +8569,8 @@ class AstraCradleApp(ctk.CTk):
             self._latest_rf_snap = snap_rf
             if hasattr(self, "rf_wave_chart") and self.rf_wave_chart.winfo_exists():
                 self.rf_wave_chart.set_snapshot(snap_rf)
+        if self._should_run_hourly_github_check():
+            self._refresh_github_version_badge_async(prompt_if_outdated=True)
         if not self._is_busy:
             self.refresh_telemetry_async(include_dns=False, also_scan=False)
         self._schedule_telemetry_poll()
@@ -9352,16 +9366,100 @@ class AstraCradleApp(ctk.CTk):
             out = self.playbook_builder.export(self.latest_playbook, self.cfg_mgr.playbooks_dir, fmt=fmt)
             self.show_toast(f"Exported Playbook -> {out}")
 
-    def _refresh_github_version_badge_async(self) -> None:
+    def _should_run_hourly_github_check(self, now_mono: float | None = None) -> bool:
+        if not self._show_startup_popups:
+            return False
+        if not bool(getattr(self.config_obj, "github_hourly_update_check", True)):
+            return False
+        if str(getattr(self.config_obj, "auto_update_mode", "silent_auto")) == "manual":
+            return False
+        if getattr(self, "_github_check_in_flight", False):
+            return False
+        now = time.monotonic() if now_mono is None else float(now_mono)
+        interval_s = max(300, int(getattr(self.config_obj, "github_check_interval_min", 60) or 60) * 60)
+        return (now - float(getattr(self, "_last_github_check_ts", 0.0))) >= interval_s
+
+    def _prompt_github_update_available(self, res, build_info: dict[str, str], *, ask_fn=None) -> bool:
+        latest = str(getattr(res, "latest_version", "") or "")
+        if not res.update_available or not latest:
+            return False
+        if latest == getattr(self, "_prompted_github_version", ""):
+            return False
+        self._prompted_github_version = latest
+        self.show_toast(f"GitHub update available ({latest})!", color=self.palette.accent_brass)
+        try:
+            self.tray.notify("AstraCradle Update Ready", f"Newer GitHub build {latest} is available.")
+        except Exception:
+            pass
+        asker = ask_fn or messagebox.askyesno
+        want_upd = bool(
+            asker(
+                f"AstraCradle Update Available ({latest})",
+                f"Your local AstraCradle ({build_info.get('display_version', '')}) is behind GitHub ({latest}).\n\n"
+                f"{res.status_message}\n\n"
+                "Download and install the update from GitHub now?\n"
+                "(Your settings, Hermes memories, and library stay untouched.)",
+            )
+        )
+        if not want_upd:
+            return False
+
+        def _apply_worker() -> None:
+            repo_root = Path(__file__).resolve().parents[2]
+            ok, msg = self.updater.pull_from_github_and_update(self.config_obj, repo_dir=repo_root)
+            if ok:
+                reapplied, _ = self.updater.reapply_remembered_setup(
+                    self.config_obj, self.lifecycle, repo_dir=repo_root, wifi_optimizer=self.wifi_optimizer
+                )
+                if reapplied:
+                    msg = f"{msg} ({'; '.join(reapplied)})"
+
+            def _done() -> None:
+                if not self.winfo_exists():
+                    return
+                self._refresh_install_memory_label()
+                new_info = self.updater.get_local_build_info(repo_dir=repo_root)
+                if hasattr(self, "settings_ver_lbl") and self.settings_ver_lbl.winfo_exists():
+                    self.settings_ver_lbl.configure(text=f"{__app_name__} · {new_info['display_version']}")
+                if hasattr(self, "settings_gh_ver_lbl") and self.settings_gh_ver_lbl.winfo_exists():
+                    self.settings_gh_ver_lbl.configure(
+                        text=f"GitHub Sync: Updated to {latest} — restart to apply",
+                        text_color=self.palette.accent_jade,
+                    )
+                if hasattr(self, "upd_status_lbl") and self.upd_status_lbl.winfo_exists():
+                    self.upd_status_lbl.configure(text=msg)
+                self.show_toast(msg)
+                if ok and self._show_startup_popups:
+                    messagebox.showinfo("AstraCradle Updated!", msg)
+
+            try:
+                self.after(0, _done)
+            except Exception:
+                pass
+
+        threading.Thread(target=_apply_worker, daemon=True).start()
+        return True
+
+    def _refresh_github_version_badge_async(self, *, prompt_if_outdated: bool = False) -> None:
         if not self._show_startup_popups:
             return
+        if getattr(self, "_github_check_in_flight", False):
+            return
+        self._github_check_in_flight = True
+        self._last_github_check_ts = time.monotonic()
 
         def _worker() -> None:
             repo_root = Path(__file__).resolve().parents[2]
-            res = self.updater.check_for_updates(self.config_obj, check_remote=True, repo_dir=repo_root)
-            build_info = self.updater.get_local_build_info(repo_dir=repo_root)
+            try:
+                res = self.updater.check_for_updates(self.config_obj, check_remote=True, repo_dir=repo_root)
+                build_info = self.updater.get_local_build_info(repo_dir=repo_root)
+            except Exception:
+                self._github_check_in_flight = False
+                return
 
             def _apply() -> None:
+                self._github_check_in_flight = False
+                self._last_github_check_ts = time.monotonic()
                 if not self.winfo_exists():
                     return
                 if res.update_available:
@@ -9378,11 +9476,13 @@ class AstraCradleApp(ctk.CTk):
                     self.settings_gh_ver_lbl.configure(text=gh_text, text_color=gh_col)
                 if hasattr(self, "upd_status_lbl") and self.upd_status_lbl.winfo_exists():
                     self.upd_status_lbl.configure(text=res.status_message)
+                if prompt_if_outdated and res.update_available:
+                    self.after(800, lambda r=res, b=build_info: self._prompt_github_update_available(r, b))
 
             try:
                 self.after(0, _apply)
             except Exception:
-                pass
+                self._github_check_in_flight = False
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -9690,6 +9790,8 @@ class AstraCradleApp(ctk.CTk):
             self._apply_simple_mode(initial=False)
         self.config_obj.os_adapter_override = self.set_os_var.get()
         self.config_obj.auto_update_mode = self.set_upd_var.get()
+        if hasattr(self, "set_gh_hourly_var"):
+            self.config_obj.github_hourly_update_check = bool(self.set_gh_hourly_var.get())
         if hasattr(self, "set_update_repo_var"):
             repo_val = self.set_update_repo_var.get().strip()
             if repo_val:

@@ -4791,7 +4791,7 @@ class HermesAgentManager:
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["scan_lan", "sinkhole_status", "start_lan_sinkhole", "aim_tv_at_sinkhole", "restore_tv"],
+                                "enum": ["scan_lan", "sinkhole_status", "start_lan_sinkhole", "aim_tv_at_sinkhole", "passthrough_on", "passthrough_off", "restore_tv"],
                             },
                             "tv_ip": {"type": "string", "description": "Optional specific TV IPv4 address"},
                             "brand_filter": {"type": "string", "description": "Optional brand/keyword filter such as 'samsung' or 'youtube'"},
@@ -5812,6 +5812,12 @@ class HermesAgentManager:
                         "blocked_domain_count": st_after.blocked_domain_count,
                     }
 
+                if act in ("passthrough_on", "passthrough_off"):
+                    if perm == "read_only":
+                        return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1)."}
+                    msg_pt = shield.set_passthrough_mode(act == "passthrough_on")
+                    return {"ok": True, "passthrough_mode": shield.passthrough_mode, "message": msg_pt}
+
                 if act == "restore_tv":
                     if perm == "read_only":
                         return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1)."}
@@ -5910,9 +5916,9 @@ class HermesAgentManager:
                             "listening_port": listen_port,
                             "port_53_forward_needed": (listen_port != 53),
                             "samsung_tv_steps": [
-                                f"On your {target_dev.brand}: Settings -> General -> Network -> Network Status -> IP Settings -> DNS Setting -> Enter Manually",
-                                f"Set Primary DNS to {lan_ip} (your PC running AstraShield)",
-                                f"Set Secondary (Failsafe) DNS to {router_ip} (or keep router DHCP backup if TV only has 1 DNS field)",
+                                f"Samsung TVs only have ONE Manual 'DNS Server' box + 'IPv6 Details' (no Secondary DNS box on the TV itself).",
+                                f"BEST Auto-Revert option (reverts automatically even when your PC is OFF): Keep Samsung TV DNS on 'Get Automatically', turn TV IPv6 OFF (Network -> Expert Settings -> IPv6), and set Router ({router_ip}) LAN DHCP Primary DNS = {lan_ip} & Secondary DNS = 1.1.1.1.",
+                                f"Direct TV Manual option (while PC stays ON): Set TV DNS Server = {lan_ip}, turn TV IPv6 OFF so IPv6 doesn't bypass AstraShield, and use AstraShield Pass-Through mode whenever you want normal unblocked DNS.",
                             ] + ([f"IMPORTANT: AstraShield is currently on UDP port {listen_port}; Samsung TVs query UDP port 53, so click 'Enable LAN TV Mode' / allow elevated UDP 53 -> {listen_port} redirect."] if listen_port != 53 else []),
                             "plan": plan,
                         }

@@ -2912,10 +2912,68 @@ def test_hermes_lan_smart_tv_youtube_detection_and_sinkhole_aim(monkeypatch) -> 
             blk, _ = shield.is_domain_blocked(ad_dom)
             assert blk is True, f"{ad_dom} should be blocked!"
 
-        # 4. Auto-revert / restore_tv marks failsafe inactive cleanly
+        # 4. Pass-Through mode & Auto-revert / restore_tv
+        pt_on = hm.execute_tool("astra_lan_and_sinkhole", {"action": "passthrough_on"}, cfg)
+        assert pt_on["ok"] is True and pt_on["passthrough_mode"] is True and shield.is_paused() is True
+        pt_off = hm.execute_tool("astra_lan_and_sinkhole", {"action": "passthrough_off"}, cfg)
+        assert pt_off["ok"] is True and pt_off["passthrough_mode"] is False and shield.is_paused() is False
+
         rest_res = hm.execute_tool("astra_lan_and_sinkhole", {"action": "restore_tv"}, cfg)
         assert rest_res["ok"] is True
         assert lan_tv.load_failsafe_state()["active"] is False
+
+
+def test_hourly_github_update_check_and_prompt_dedup() -> None:
+    from types import SimpleNamespace
+    from astracradle.core.config import AppConfig
+    from astracradle.theme import get_palette
+    from astracradle.ui.app import AstraCradleApp
+
+    cfg = AppConfig()
+    assert cfg.github_hourly_update_check is True
+    assert cfg.github_check_interval_min == 60
+
+    fake_app = SimpleNamespace(
+        _show_startup_popups=True,
+        config_obj=cfg,
+        _github_check_in_flight=False,
+        _last_github_check_ts=1000.0,
+        _prompted_github_version="",
+        palette=get_palette("dark"),
+        show_toast=lambda *_a, **_kw: None,
+        tray=SimpleNamespace(notify=lambda *_a, **_kw: None),
+    )
+
+    # Before 1 hour -> False; at +3600s -> True
+    assert AstraCradleApp._should_run_hourly_github_check(fake_app, now_mono=4599.0) is False
+    assert AstraCradleApp._should_run_hourly_github_check(fake_app, now_mono=4600.0) is True
+
+    # Disabled or manual mode -> False
+    cfg.github_hourly_update_check = False
+    assert AstraCradleApp._should_run_hourly_github_check(fake_app, now_mono=5000.0) is False
+    cfg.github_hourly_update_check = True
+    cfg.auto_update_mode = "manual"
+    assert AstraCradleApp._should_run_hourly_github_check(fake_app, now_mono=5000.0) is False
+
+    # Prompt once per newly discovered out-of-date GitHub version
+    asked: list[str] = []
+    res1 = SimpleNamespace(update_available=True, latest_version="2.5.1 (abc1234)", status_message="Newer commit ready")
+    binfo = {"display_version": "2.5.1 (old0000)"}
+
+    def _ask_no(title: str, _msg: str) -> bool:
+        asked.append(title)
+        return False
+
+    assert AstraCradleApp._prompt_github_update_available(fake_app, res1, binfo, ask_fn=_ask_no) is False
+    assert len(asked) == 1
+    # Same version does NOT nag again next hour
+    assert AstraCradleApp._prompt_github_update_available(fake_app, res1, binfo, ask_fn=_ask_no) is False
+    assert len(asked) == 1
+    # Newer commit DOES ask again
+    res2 = SimpleNamespace(update_available=True, latest_version="2.5.1 (def5678)", status_message="Even newer commit")
+    assert AstraCradleApp._prompt_github_update_available(fake_app, res2, binfo, ask_fn=_ask_no) is False
+    assert len(asked) == 2
+
 
 
 

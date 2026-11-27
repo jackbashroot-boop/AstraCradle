@@ -389,6 +389,8 @@ class AppConfig:
     )
     # Seamless Auto-Updater (checks GitHub repo first, then falls back to local)
     auto_update_mode: str = "silent_auto"  # silent_auto | notify | manual
+    github_hourly_update_check: bool = True
+    github_check_interval_min: int = 60
     update_channel: str = "stable"  # stable | beta
     update_repo_url: str = "https://github.com/jackbashroot-boop/AstraCradle"
     update_manifest_url: str = "local://updates/manifest.json"
@@ -600,6 +602,7 @@ class AppConfig:
             "theme",
             "language",
             "auto_update_mode",
+            "github_hourly_update_check",
             "simple_mode",
             "confirm_important_prompts",
             "quarantine_enabled",

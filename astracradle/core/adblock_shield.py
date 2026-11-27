@@ -504,6 +504,7 @@ class AstraShieldManager:
         self._nat_backend: str = ""
         self._cached_pihole_domains: set[str] | None = None
         self._paused_until: float = 0.0
+        self.passthrough_mode: bool = False
         self.doh_enabled: bool = False
         self.doh_provider: str = "cloudflare"
 
@@ -1104,10 +1105,27 @@ youtube.com##ytd-ad-slot-renderer, ytd-banner-promo-renderer, ytd-in-feed-ad-lay
     def is_paused(self) -> bool:
         import time as _time
 
-        return _time.time() < getattr(self, "_paused_until", 0.0)
+        return bool(getattr(self, "passthrough_mode", False)) or (_time.time() < getattr(self, "_paused_until", 0.0))
+
+    def set_passthrough_mode(self, enabled: bool) -> str:
+        """Forwards all DNS queries transparently without blocking so single-DNS TVs keep working normally."""
+        self.passthrough_mode = bool(enabled)
+        self.journal.log_event(
+            "AstraShield",
+            "passthrough_mode",
+            f"Pass-through mode {'ENABLED' if self.passthrough_mode else 'DISABLED'}",
+            "User toggled transparent unblocked DNS forwarding for LAN TV",
+            "ok",
+        )
+        return (
+            "AstraShield Pass-Through ON: all LAN/TV DNS queries forward normally with zero blocking."
+            if self.passthrough_mode
+            else "AstraShield Pass-Through OFF: active ad/tracker blocking resumed."
+        )
 
     def resume_from_pause(self) -> None:
         self._paused_until = 0.0
+        self.passthrough_mode = False
 
     @staticmethod
     def _query_upstream_doh(packet: bytes, provider: str = "cloudflare", timeout: float = 2.5) -> bytes | None:

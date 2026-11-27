@@ -622,14 +622,29 @@ class LanTvAdShield:
         dns_port: int = 53,
         router_ip: str = "1.1.1.1",
     ) -> dict[str, Any]:
-        """Produces zero-breakage YouTube + TV ad-blocking instructions with automatic failsafe Secondary DNS."""
+        """Produces zero-breakage YouTube + TV ad-blocking instructions accounting for single-DNS Samsung TVs."""
         brand_low = device.brand.lower()
-        dns_line = f"Primary DNS = {lan_ip} | Secondary (Failsafe) DNS = {router_ip}"
-        steps = [
-            f"1. Turn ON 'Auto-Start Sinkhole on Startup' + 'LAN TV DNS' in AstraCradle ({lan_ip}:{dns_port}).",
-            f"2. On your {device.brand} ({device.ip}), open Network Settings -> Manual DNS and set:\n     • Primary DNS: {lan_ip}\n     • Secondary (Failsafe) DNS: {router_ip} (so your TV never loses internet if this PC sleeps or AstraCradle exits!)",
-            "3. AstraCradle blocks Smart TV ad servers, Roku/LG/Samsung telemetry & external YouTube ad-networks while protecting *.googlevideo.com streams.",
-        ]
+        is_samsung = ("samsung" in brand_low or "tizen" in brand_low)
+        if is_samsung:
+            dns_line = f"Router DHCP Primary DNS = {lan_ip}, Secondary DNS = 1.1.1.1 (or TV Manual DNS = {lan_ip}, IPv6 = Off)"
+            steps = [
+                f"1. Turn ON 'Auto-Start Sinkhole on Startup' + 'LAN TV DNS' in AstraCradle ({lan_ip}:{dns_port}).",
+                (
+                    f"2. Samsung TVs only have ONE Manual 'DNS Server' box (no Secondary DNS on the TV) plus an IPv6 toggle:\n"
+                    f"     • Best Auto-Revert Setup (works even when PC is OFF): Leave Samsung TV on 'Get Automatically' + set TV IPv6 = Off (Network -> Expert Settings), "
+                    f"and in your Router ({router_ip}) LAN DHCP settings set Primary DNS = {lan_ip} and Secondary DNS = 1.1.1.1.\n"
+                    f"     • Direct Single-DNS Setup (while PC stays on): On TV set DNS Setting -> Enter Manually -> DNS Server = {lan_ip}, AND turn TV IPv6 = Off so IPv6 doesn't bypass the sinkhole. "
+                    f"Use AstraShield Pass-Through/Pause anytime to revert to normal DNS while PC stays on."
+                ),
+                "3. AstraCradle blocks Smart TV ad servers, Samsung telemetry & external YouTube ad-networks while protecting *.googlevideo.com streams.",
+            ]
+        else:
+            dns_line = f"Primary DNS = {lan_ip} | Secondary (Failsafe) DNS = {router_ip}"
+            steps = [
+                f"1. Turn ON 'Auto-Start Sinkhole on Startup' + 'LAN TV DNS' in AstraCradle ({lan_ip}:{dns_port}).",
+                f"2. On your {device.brand} ({device.ip}), open Network Settings -> Manual DNS and set:\n     • Primary DNS: {lan_ip}\n     • Secondary (Failsafe) DNS: {router_ip} (so your TV never loses internet if this PC sleeps or AstraCradle exits!)",
+                "3. AstraCradle blocks Smart TV ad servers, Roku/LG/Samsung telemetry & external YouTube ad-networks while protecting *.googlevideo.com streams.",
+            ]
         if any(k in brand_low for k in ("android", "google", "shield", "fire", "sony", "tcl", "hisense")):
             steps.append(
                 f"4. For 100% ad-free in-stream YouTube on {device.brand}: enable ADB Debugging and install SmartTube (ad-free YouTube TV client) via: adb connect {device.ip}:5555"
