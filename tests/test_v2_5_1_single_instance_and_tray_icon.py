@@ -1698,6 +1698,7 @@ def test_hermes_personas_standard_plus_ten_and_think_strip(monkeypatch) -> None:
 
         def _fake_urlopen(req, timeout=0):
             captured_timeouts.append(timeout)
+            assert req.full_url.endswith("/api/chat")
             return _OllamaResp()
 
         monkeypatch.setattr("astracradle.core.hermes_agent.urllib.request.urlopen", _fake_urlopen)
@@ -1711,6 +1712,255 @@ def test_hermes_personas_standard_plus_ten_and_think_strip(monkeypatch) -> None:
     assert len(hermes_page._QUICK_ACTION_CHIPS) == 8
     assert callable(hermes_page._build_chat_workspace)
     assert callable(hermes_page._render_chat_bubbles)
+
+
+def test_ui_theme_fonts_palette_and_hermes_page_render_headless(monkeypatch) -> None:
+    import re
+    import types
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager, HermesHardwareRecommendation, HermesSetupStatus
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.theme import get_palette, get_ui_fonts
+    from astracradle.ui.pages import hermes_page
+
+    # 1. Static guard across ALL UI files for valid font keys and palette attributes
+    pal = get_palette("dark")
+    fonts = get_ui_fonts(1.0)
+    ui_root = Path(__file__).resolve().parents[1] / "astracradle" / "ui"
+    for pyf in ui_root.rglob("*.py"):
+        txt = pyf.read_text(encoding="utf-8")
+        for m in re.finditer(r'(?:fonts|f)\["([a-z_]+)"\]', txt):
+            assert m.group(1) in fonts, f"{pyf}: invalid font key {m.group(1)}"
+        for m in re.finditer(r"\b(?:p|palette)\.(accent_[a-z_]+|badge_[a-z_]+|bg_[a-z_]+|text_[a-z_]+|border_[a-z_]+)\b", txt):
+            assert hasattr(pal, m.group(1)), f"{pyf}: invalid ThemePalette attribute {m.group(1)}"
+
+    # 2. Headless end-to-end execution of render_hermes_page (standard + fullscreen) and open_quick_assistant_modal
+    class _FakeVar:
+        def __init__(self, value=None) -> None:
+            self._v = value
+
+        def get(self):
+            return self._v
+
+        def set(self, v) -> None:
+            self._v = v
+
+    class _FakeWidget:
+        def __init__(self, *_a, **_kw) -> None:
+            self._children: list[_FakeWidget] = []
+            self._parent = _a[0] if (_a and hasattr(_a[0], "_children")) else None
+            self._parent_canvas = types.SimpleNamespace(yview_moveto=lambda *_x: None)
+            if self._parent is not None:
+                self._parent._children.append(self)
+
+        def pack(self, *_a, **_kw) -> None:
+            pass
+
+        def grid(self, *_a, **_kw) -> None:
+            pass
+
+        def grid_columnconfigure(self, *_a, **_kw) -> None:
+            pass
+
+        def bind(self, *_a, **_kw) -> None:
+            pass
+
+        def configure(self, *_a, **_kw) -> None:
+            pass
+
+        def insert(self, *_a, **_kw) -> None:
+            pass
+
+        def delete(self, *_a, **_kw) -> None:
+            pass
+
+        def get(self, *_a, **_kw) -> str:
+            return ""
+
+        def set(self, *_a, **_kw) -> None:
+            pass
+
+        def focus_set(self) -> None:
+            pass
+
+        def focus_force(self) -> None:
+            pass
+
+        def lift(self) -> None:
+            pass
+
+        def destroy(self) -> None:
+            if self._parent is not None and self in self._parent._children:
+                self._parent._children.remove(self)
+
+        def title(self, *_a) -> None:
+            pass
+
+        def geometry(self, *_a) -> None:
+            pass
+
+        def minsize(self, *_a) -> None:
+            pass
+
+        def transient(self, *_a) -> None:
+            pass
+
+        def winfo_exists(self) -> bool:
+            return True
+
+        def winfo_children(self):
+            return list(self._children)
+
+        def update_idletasks(self) -> None:
+            pass
+
+        def add(self, _name: str):
+            w = _FakeWidget(self)
+            return w
+
+    fake_ctk = types.SimpleNamespace(
+        CTkFrame=_FakeWidget,
+        CTkScrollableFrame=_FakeWidget,
+        CTkLabel=_FakeWidget,
+        CTkButton=_FakeWidget,
+        CTkOptionMenu=_FakeWidget,
+        CTkEntry=_FakeWidget,
+        CTkTextbox=_FakeWidget,
+        CTkSwitch=_FakeWidget,
+        CTkProgressBar=_FakeWidget,
+        CTkTabview=_FakeWidget,
+        CTkToplevel=_FakeWidget,
+    )
+    fake_tk = types.SimpleNamespace(StringVar=_FakeVar, BooleanVar=_FakeVar)
+    monkeypatch.setattr(hermes_page, "ctk", fake_ctk)
+    monkeypatch.setattr(hermes_page, "tk", fake_tk)
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        cfg = AppConfig(hermes_local_only=True, hermes_mode="local_gpu", hermes_provider="ollama", hermes_model="qwen3.6:35b")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        hm.ensure_hermes_home(cfg)
+
+        fake_app = types.SimpleNamespace(
+            hermes_scroll=_FakeWidget(),
+            palette=pal,
+            fonts=fonts,
+            config_obj=cfg,
+            cfg_mgr=cm,
+            hermes_mgr=hm,
+            current_nav="hermes",
+            _hermes_rec_cache=HermesHardwareRecommendation(
+                gpu_name="card2",
+                gpu_vram_gb=24.0,
+                system_ram_gb=126.0,
+                is_apple_silicon=False,
+                tier_name="24GB+",
+                recommended_local_model="qwen3.6:35b",
+                local_alternatives=[],
+                recommended_context_tokens=65536,
+                local_reason="24 GB VRAM",
+                local_viable=True,
+                optimal_free_provider="openrouter_free",
+                optimal_free_model="qwen/qwen3-coder:free",
+                free_reason="free",
+            ),
+            _hermes_status_cache=HermesSetupStatus(
+                hermes_home=str(hm.hermes_home),
+                hermes_cli_installed=False,
+                hermes_pkg_installed=False,
+                ollama_installed=True,
+                ollama_running=True,
+                pulled_models=["qwen3.6:35b"],
+                active_mode="local_gpu",
+                active_provider="ollama",
+                active_model="qwen3.6:35b",
+                api_key_configured=True,
+                ready=True,
+                summary="READY (Local GPU · qwen3.6:35b)",
+            ),
+            _content_wrap=lambda pad=0: max(400, 1000 - pad),
+            show_toast=lambda *_a: None,
+            switch_nav=lambda *_a: None,
+            after=lambda _ms, fn: None,
+        )
+
+        # Standard view
+        hermes_page.render_hermes_page(fake_app)
+        assert len(fake_app.hermes_scroll._children) >= 2
+
+        # Full-screen chat view
+        fake_app._hermes_fullscreen_chat = True
+        hermes_page.render_hermes_page(fake_app)
+        assert len(fake_app.hermes_scroll._children) == 2
+
+        # Quick assistant modal
+        hermes_page.open_quick_assistant_modal(fake_app)
+        assert fake_app._quick_ai_win is not None
+
+
+def test_hermes_ollama_llama_server_segfault_auto_recovery(monkeypatch) -> None:
+    import io
+    import urllib.error
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        cfg = AppConfig(hermes_local_only=True, hermes_mode="local_gpu", hermes_provider="ollama", hermes_model="qwen3.6:35b")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        hm.ensure_hermes_home(cfg)
+
+        seen_options: list[dict[str, object]] = []
+        seen_urls: list[str] = []
+
+        class _OkResp:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {"message": {"role": "assistant", "content": "Recovered cleanly!", "tool_calls": []}}
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        def _flaky_ollama(req, timeout=0):
+            seen_urls.append(req.full_url)
+            body = json.loads(req.data.decode("utf-8"))
+            assert body.get("stream") is False
+            opts = dict(body.get("options") or {})
+            seen_options.append(opts)
+            if len(seen_options) <= 2:
+                raise urllib.error.HTTPError(
+                    req.full_url,
+                    500,
+                    "Internal Server Error",
+                    None,
+                    io.BytesIO(
+                        b'{"error":{"message":"llama-server process has terminated: signal: segmentation fault (core dumped)"}}'
+                    ),
+                )
+            return _OkResp()
+
+        monkeypatch.setattr("astracradle.core.hermes_agent.urllib.request.urlopen", _flaky_ollama)
+        monkeypatch.setattr("astracradle.core.hermes_agent.time.sleep", lambda *_a: None)
+
+        spec = hm.resolve_provider_spec(cfg)
+        spec["gpu_plan"] = {"num_ctx": 16384, "num_batch": 128, "num_gpu_layers": 13, "keep_alive": "1m"}
+        txt, calls = hm._call_llm(spec, "", [{"role": "user", "content": "Can you see this?"}], [])
+
+        assert len(seen_options) == 3
+        assert all(u.endswith("/api/chat") for u in seen_urls)
+        assert "num_gpu" in seen_options[0]
+        assert "num_gpu" not in seen_options[1]
+        assert seen_options[2].get("num_gpu") == 0
+        assert "Recovered cleanly!" in txt
+        assert "ROCR_VISIBLE_DEVICES=0" in txt
+        assert calls == []
+
+
 
 
 

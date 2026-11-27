@@ -3249,39 +3249,170 @@ class HermesAgentManager:
             "messages": messages,
             "tools": tools,
         }
-        if spec["provider"] == "ollama":
-            gpu_plan = spec.get("gpu_plan") or {}
-            delay_s = float(gpu_plan.get("throttle_delay_sec", 0.0) or 0.0)
-            if delay_s > 0.0:
-                time.sleep(min(2.0, delay_s))
-            opts: dict[str, Any] = {
-                "num_ctx": int(gpu_plan.get("num_ctx") or spec.get("context_tokens", 32768)),
-            }
-            if gpu_plan.get("num_batch"):
-                opts["num_batch"] = int(gpu_plan["num_batch"])
-            if gpu_plan.get("num_gpu_layers") is not None:
-                opts["num_gpu"] = int(gpu_plan["num_gpu_layers"])
-            payload["options"] = opts
-            if gpu_plan.get("keep_alive"):
-                payload["keep_alive"] = str(gpu_plan["keep_alive"])
-
-        req = urllib.request.Request(
-            f"{base_url}/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
         req_timeout = 240 if spec["provider"] == "ollama" else 90
-        with urllib.request.urlopen(req, timeout=req_timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        choice = (data.get("choices") or [{}])[0]
-        msg = choice.get("message") or {}
-        raw_content = str(msg.get("content") or "").strip()
-        # Cleanly strip <think>...</think> reasoning blocks if a local reasoning model (e.g. Qwen3.6) emits them
-        cleaned = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
-        content = cleaned or raw_content or str(msg.get("reasoning") or "").strip()
-        tool_calls = msg.get("tool_calls") or []
-        return content, tool_calls
+
+        def _extract_reply_and_tools(msg: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+            raw_content = str(msg.get("content") or "").strip()
+            # Cleanly strip <think>...</think> reasoning blocks if a local reasoning model (e.g. Qwen3.6) emits them
+            cleaned = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+            content = (
+                cleaned
+                or raw_content
+                or str(msg.get("thinking") or msg.get("reasoning") or "").strip()
+            )
+            raw_calls = msg.get("tool_calls") or []
+            norm_calls: list[dict[str, Any]] = []
+            for i, tc in enumerate(raw_calls):
+                if not isinstance(tc, dict):
+                    continue
+                fn = dict(tc.get("function") or {})
+                norm_calls.append(
+                    {
+                        "id": str(tc.get("id") or f"call_{i}"),
+                        "type": "function",
+                        "function": fn,
+                    }
+                )
+            return content, norm_calls
+
+        def _post_chat_openai(body_dict: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+            req = urllib.request.Request(
+                f"{base_url}/chat/completions",
+                data=json.dumps(body_dict).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=req_timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            choice = (data.get("choices") or [{}])[0]
+            return _extract_reply_and_tools(choice.get("message") or {})
+
+        if spec["provider"] != "ollama":
+            return _post_chat_openai(payload)
+
+        # Native Ollama /api/chat endpoint — unlike /v1/chat/completions, /api/chat ACTUALLY honors
+        # options.num_gpu, options.num_ctx, options.num_batch, and keep_alive!
+        ollama_root = base_url[:-3] if base_url.endswith("/v1") else base_url
+        if ollama_root.endswith("/api"):
+            ollama_chat_url = f"{ollama_root}/chat"
+        else:
+            ollama_chat_url = f"{ollama_root}/api/chat"
+
+        def _to_native_ollama_messages(src_msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            for m in src_msgs:
+                role = str(m.get("role") or "user")
+                item: dict[str, Any] = {"role": role, "content": str(m.get("content") or "")}
+                if role == "tool" and m.get("name"):
+                    item["tool_name"] = str(m.get("name"))
+                if m.get("tool_calls"):
+                    nat_tcs = []
+                    for tc in m["tool_calls"]:
+                        fn = dict((tc or {}).get("function") or {})
+                        args_val = fn.get("arguments", {})
+                        if isinstance(args_val, str):
+                            try:
+                                args_val = json.loads(args_val) if args_val.strip() else {}
+                            except Exception:
+                                args_val = {}
+                        nat_tcs.append({"function": {"name": str(fn.get("name") or ""), "arguments": args_val}})
+                    item["tool_calls"] = nat_tcs
+                out.append(item)
+            return out
+
+        def _post_chat_ollama_native(body_dict: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+            req = urllib.request.Request(
+                ollama_chat_url,
+                data=json.dumps(body_dict).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=req_timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            if "message" in data:
+                return _extract_reply_and_tools(data.get("message") or {})
+            choice = (data.get("choices") or [{}])[0]
+            return _extract_reply_and_tools(choice.get("message") or {})
+
+        gpu_plan = spec.get("gpu_plan") or {}
+        delay_s = float(gpu_plan.get("throttle_delay_sec", 0.0) or 0.0)
+        if delay_s > 0.0:
+            time.sleep(min(2.0, delay_s))
+
+        # Stage 0: Requested GPU budget options
+        opts_primary: dict[str, Any] = {
+            "num_ctx": int(gpu_plan.get("num_ctx") or spec.get("context_tokens", 32768)),
+        }
+        if gpu_plan.get("num_batch"):
+            opts_primary["num_batch"] = int(gpu_plan["num_batch"])
+        if gpu_plan.get("num_gpu_layers") is not None:
+            opts_primary["num_gpu"] = int(gpu_plan["num_gpu_layers"])
+
+        native_msgs = _to_native_ollama_messages(messages)
+        attempts: list[tuple[str, dict[str, Any], bool]] = [
+            ("primary", opts_primary, True),
+            # Stage 1: Drop partial num_gpu/num_batch splits (common ROCm/MoE segfault trigger on Qwen3.6) + lean 8K ctx
+            ("gpu_safe", {"num_ctx": min(8192, int(opts_primary.get("num_ctx", 8192)))}, True),
+            # Stage 2: Pure CPU/RAM safe fallback (num_gpu=0) if GPU/ROCm runner itself segfaults
+            ("cpu_safe", {"num_gpu": 0, "num_ctx": 4096}, True),
+            # Stage 3: Pure CPU/RAM fallback without tool schema payload if Jinja tool template crashed runner
+            ("cpu_notools", {"num_gpu": 0, "num_ctx": 4096}, False),
+        ]
+
+        last_http_exc: urllib.error.HTTPError | None = None
+        for idx, (_stage_name, stage_opts, include_tools) in enumerate(attempts):
+            try_payload: dict[str, Any] = {
+                "model": spec["model"],
+                "messages": native_msgs,
+                "stream": False,
+                "options": stage_opts,
+            }
+            if include_tools and tools:
+                try_payload["tools"] = tools
+            if gpu_plan.get("keep_alive"):
+                try_payload["keep_alive"] = str(gpu_plan["keep_alive"])
+            try:
+                content, t_calls = _post_chat_ollama_native(try_payload)
+                if idx >= 2 and content and not t_calls:
+                    content += (
+                        "\n\n_(Auto-recovered via safe CPU/RAM fallback after Ollama GPU runner crashed. "
+                        "Tip: if you have an AMD Ryzen iGPU + Radeon discrete GPU on Linux/CachyOS, setting "
+                        "`ROCR_VISIBLE_DEVICES=0` in Ollama's systemd override fixes ROCm multi-GPU segfaults.)_"
+                    )
+                return content, t_calls
+            except urllib.error.HTTPError as exc:
+                last_http_exc = exc
+                err_txt = ""
+                try:
+                    err_txt = exc.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    err_txt = str(exc)
+                low_err = err_txt.lower()
+                is_runner_crash = exc.code >= 500 and any(
+                    tok in low_err
+                    for tok in (
+                        "segmentation fault",
+                        "llama-server",
+                        "llama runner",
+                        "unable to allocate",
+                        "out of memory",
+                        "terminated",
+                        "exit status",
+                    )
+                )
+                if not is_runner_crash or idx == len(attempts) - 1:
+                    raise urllib.error.HTTPError(
+                        exc.url,
+                        exc.code,
+                        f"{exc.reason} — {err_txt[:320]}",
+                        exc.headers,
+                        None,
+                    )
+                time.sleep(0.35)
+
+        if last_http_exc is not None:
+            raise last_http_exc
+        return "", []
 
     def run_prompt(
         self,

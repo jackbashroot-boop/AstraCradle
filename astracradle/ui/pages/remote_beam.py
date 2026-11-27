@@ -33,7 +33,7 @@ class AstraBeamViewerWindow(ctk.CTkToplevel):
         self._photo = None
         self.title(f"AstraBeam Remote Viewer · {peer_label}")
         self.geometry("980x620")
-        self.configure(fg_color=app.palette.bg_base)
+        self.configure(fg_color=app.palette.bg_canvas)
 
         bar = ctk.CTkFrame(self, fg_color=app.palette.bg_card, corner_radius=0, height=40)
         bar.pack(fill="x")

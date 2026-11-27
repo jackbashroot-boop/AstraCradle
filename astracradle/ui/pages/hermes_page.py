@@ -155,7 +155,7 @@ def _render_chat_bubbles(
             container,
             fg_color=p.bg_card,
             border_width=1,
-            border_color=p.accent_amber,
+            border_color=p.accent_brass,
             corner_radius=11,
         )
         tcard.pack(fill="x", padx=(6, 32), pady=4)
@@ -163,7 +163,7 @@ def _render_chat_bubbles(
             tcard,
             text=f"{persona['name']} · Working...",
             font=f["caption_bold"],
-            text_color=p.accent_amber,
+            text_color=p.accent_brass,
         ).pack(anchor="w", padx=12, pady=(8, 2))
         ctk.CTkLabel(
             tcard,
@@ -179,7 +179,7 @@ def _render_chat_bubbles(
             container,
             fg_color=p.bg_card,
             border_width=1,
-            border_color=p.accent_rose,
+            border_color=p.accent_coral,
             corner_radius=11,
         )
         ecard.pack(fill="x", padx=(6, 32), pady=4)
@@ -187,7 +187,7 @@ def _render_chat_bubbles(
             ecard,
             text=f"{persona['name']} · Notice / Error",
             font=f["caption_bold"],
-            text_color=p.accent_rose,
+            text_color=p.accent_coral,
         ).pack(anchor="w", padx=12, pady=(8, 2))
         ctk.CTkLabel(
             ecard,
@@ -486,15 +486,23 @@ def _build_chat_workspace(
         text=("⤢ Exit Full-Screen" if is_fullscreen else "⛶ Full-Screen Chat"),
         width=145,
         height=28,
-        fg_color=(p.accent_amber if is_fullscreen else p.accent_cyan),
+        fg_color=(p.accent_brass if is_fullscreen else p.accent_cyan),
         text_color="#071216",
         font=f["small_bold"],
         command=_toggle_fs,
     ).pack(side="right")
 
+    try:
+        win_h = int(app.winfo_height() or 900)
+    except Exception:
+        win_h = 900
+    if win_h < 400:
+        win_h = 900
+    chat_h = max(320, min(640, win_h - 330)) if is_fullscreen else max(210, min(380, win_h - 490))
+
     chat_scroll = ctk.CTkScrollableFrame(
         container,
-        height=(460 if is_fullscreen else 320),
+        height=chat_h,
         fg_color=p.bg_elevated,
         border_width=1,
         border_color=p.border_subtle,
@@ -668,7 +676,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     ).pack(side="right")
 
     if rec is not None and status is not None:
-        status_col = p.accent_jade if status.ready else p.accent_amber
+        status_col = p.accent_jade if status.ready else p.accent_brass
         pc_prof = hm.get_pc_usage_profile()
         ctk.CTkLabel(
             hdr,
@@ -903,7 +911,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
 
             def _done() -> None:
                 prog_bar.set(1.0 if ok else 0.7)
-                prog_lbl.configure(text=summary, text_color=(p.accent_jade if ok else p.accent_amber))
+                prog_lbl.configure(text=summary, text_color=(p.accent_jade if ok else p.accent_brass))
                 app.show_toast("Hermes OS AI setup complete!" if ok else "Hermes setup finished with notes.")
                 render_hermes_page(app)
 
@@ -1045,7 +1053,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
             text="Delete",
             width=70,
             height=24,
-            fg_color=p.accent_rose,
+            fg_color=p.accent_coral,
             command=lambda jid=job.get("job_id", ""): (hm.delete_cron_job(jid), render_hermes_page(app)),
         ).pack(side="right", padx=8, pady=4)
 
@@ -1246,4 +1254,4 @@ def render_hermes_page(app: AstraCradleApp) -> None:
             render_hermes_page(app)
 
     ctk.CTkButton(gw_btns, text="Save Tokens & Start Gateway", fg_color=p.accent_jade, text_color="#071510", command=_start_gw).pack(side="left", padx=(0, 8))
-    ctk.CTkButton(gw_btns, text="Stop Gateway", fg_color=p.accent_rose, command=lambda: (hm.stop_gateway(), app.show_toast("Stopped Hermes gateway."))).pack(side="left")
+    ctk.CTkButton(gw_btns, text="Stop Gateway", fg_color=p.accent_coral, command=lambda: (hm.stop_gateway(), app.show_toast("Stopped Hermes gateway."))).pack(side="left")
