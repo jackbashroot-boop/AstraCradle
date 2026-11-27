@@ -313,19 +313,15 @@ class TrayController:
             self._icon = None
 
     def notify(self, title: str, message: str) -> bool:
-        icon = self._icon
-        if icon is not None:
-            safe_msg = self._safe_tray_text(message, max_len=240)
-            safe_title = self._safe_tray_text(title, max_len=64)
-
-            def _send() -> None:
-                try:
-                    icon.notify(safe_msg, safe_title)
-                except Exception:
-                    pass
-
-            threading.Thread(target=_send, daemon=True).start()
-            return True
+        if self._icon is not None:
+            try:
+                self._icon.notify(
+                    self._safe_tray_text(message, max_len=240),
+                    self._safe_tray_text(title, max_len=64),
+                )
+                return True
+            except Exception:
+                return False
         return False
 
     def stop(self) -> None:

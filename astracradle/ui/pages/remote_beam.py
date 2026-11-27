@@ -271,30 +271,18 @@ def render_remote_beam_page(app: AstraCradleApp) -> None:
     if is_live and srv is not None:
         share_host = ts.self_ip or srv.bind_host
         base_u = f"{srv.scheme}://{share_host}:{srv.port}"
-        iphone_u = f"{base_u}/iphone"
         fp_txt = f"  ·  Cert SHA-256: {srv.cert_fingerprint_sha256[:23]}..." if srv.cert_fingerprint_sha256 else ""
-        live_row = ctk.CTkFrame(hcard, fg_color="transparent")
-        live_row.pack(fill="x", padx=14, pady=(2, 10))
         ctk.CTkLabel(
-            live_row,
+            hcard,
             text=(
                 f"HOST LIVE ({srv.scheme.upper()})  ·  PIN: {srv.pin}  ·  Frames: {srv.frames_served}  ·  Inputs: {srv.inputs_handled}{fp_txt}\n"
-                f"iPhone 16 Pro Max App: {iphone_u}   |   Desktop Stream: {base_u}/   |   Watch: {base_u}/watch"
+                f"iOS/Android PWA: {base_u}/   |   Apple Watch Companion: {base_u}/watch   |   BT Handshake API: {base_u}/api/bt/handshake"
             ),
             font=app.fonts["mono_small"],
             text_color=p.accent_jade,
             justify="left",
-            wraplength=app._content_wrap(200),
-        ).pack(side="left", anchor="w")
-        ctk.CTkButton(
-            live_row,
-            text="Copy iPhone App URL",
-            height=26,
-            fg_color=p.bg_elevated,
-            hover_color=p.accent_cyan,
-            font=app.fonts["small"],
-            command=lambda u=iphone_u: (app.clipboard_clear(), app.clipboard_append(u), app.show_toast(f"Copied iPhone App URL: {u}")),
-        ).pack(side="right", padx=(8, 0))
+            wraplength=app._content_wrap(80),
+        ).pack(anchor="w", padx=14, pady=(2, 10))
     else:
         ctk.CTkFrame(hcard, height=6, fg_color="transparent").pack()
 
@@ -492,26 +480,7 @@ def render_remote_beam_page(app: AstraCradleApp) -> None:
         hover_color=p.accent_jade,
         font=app.fonts["small"],
         command=app._on_apply_sunshine_tailscale_conf,
-    ).pack(side="right", padx=(6, 0))
-    if sm.sunshine_installed:
-        ctk.CTkButton(
-            top_s,
-            text="Optimize for iPad / Main Monitor",
-            height=26,
-            fg_color=p.bg_elevated,
-            hover_color=p.accent_cyan,
-            font=app.fonts["small"],
-            command=app._on_optimize_sunshine_ipad,
-        ).pack(side="right", padx=(6, 0))
-        ctk.CTkButton(
-            top_s,
-            text="Start / Restart Sunshine",
-            height=26,
-            fg_color=p.accent_jade if not sm.sunshine_running else p.bg_elevated,
-            text_color="#071510" if not sm.sunshine_running else p.text_primary,
-            font=app.fonts["small"],
-            command=app._on_restart_sunshine_service,
-        ).pack(side="right")
+    ).pack(side="right")
 
     conn_r = ctk.CTkFrame(ccard, fg_color="transparent")
     conn_r.pack(fill="x", padx=14, pady=4)

@@ -79,7 +79,6 @@ class LifecycleManager:
             )
         elif sys_name == "Windows":
             desktop = home / "Desktop"
-            resolved_desk = self._resolve_windows_desktop(home)
             appdata = Path(os.environ.get("APPDATA", str(home / "AppData" / "Roaming")))
             start_menu = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs"
             startup_dir = start_menu / "Startup"
@@ -93,33 +92,7 @@ class LifecycleManager:
                     startup_dir / "AstraCradle.bat",
                 ]
             )
-            if resolved_desk is not None and resolved_desk != desktop:
-                paths.extend(
-                    [
-                        resolved_desk / "AstraCradle.lnk",
-                        resolved_desk / "AstraCradle.bat",
-                    ]
-                )
         return paths
-
-    @staticmethod
-    def _resolve_windows_desktop(home: Path) -> Path | None:
-        """Resolves the active Windows Desktop folder (supports Windows 11 OneDrive Desktop redirection)."""
-        if platform.system() == "Windows":
-            try:
-                import ctypes
-
-                buf = ctypes.create_unicode_buffer(260)
-                if ctypes.windll.shell32.SHGetFolderPathW(0, 0x0010, 0, 0, buf) == 0 and buf.value:  # type: ignore[attr-defined]
-                    p = Path(buf.value)
-                    if p.exists():
-                        return p
-            except Exception:
-                pass
-        for cand in (home / "OneDrive" / "Desktop", home / "Desktop"):
-            if cand.exists():
-                return cand
-        return home / "Desktop"
 
     def install_shortcuts(
         self,
@@ -242,23 +215,6 @@ class LifecycleManager:
                         pass
                     created.append(target)
 
-            # Refresh existing autostart entry so upgrades never keep launching an older v1.x path
-            autostart_desktop = home / ".config" / "autostart" / "astracradle.desktop"
-            if autostart_desktop.exists():
-                try:
-                    prev_txt = autostart_desktop.read_text(encoding="utf-8", errors="replace")
-                    extra_flags = ""
-                    if "--minimized" in prev_txt:
-                        extra_flags += " --minimized"
-                    if "--widget" in prev_txt:
-                        extra_flags += " --widget"
-                    autostart_exec = f"{exec_cmd}{extra_flags}"
-                    autostart_body = desktop_content.replace(f"Exec={exec_cmd}\n", f"Exec={autostart_exec}\n", 1)
-                    autostart_desktop.write_text(autostart_body, encoding="utf-8")
-                    autostart_desktop.chmod(0o755)
-                except Exception:
-                    pass
-
             # Refresh desktop & icon caches quietly if available
             for cmd in (
                 ["update-desktop-database", str(home / ".local" / "share" / "applications")],
@@ -331,44 +287,37 @@ class LifecycleManager:
         elif sys_name == "Windows":
             standalone_exe = repo_root / "dist" / "AstraCradle" / "AstraCradle.exe"
             py_exe = Path(sys.executable)
-            venv_py = repo_root / ".venv" / "Scripts" / "python.exe"
+            gui_exe_script = py_exe.parent / "astracradle-gui.exe"
+            pyw_exe = py_exe.parent / "pythonw.exe"
             if standalone_exe.exists():
                 target_exe = str(standalone_exe)
                 target_args = ""
-            elif venv_py.exists():
-                target_exe = str(venv_py)
-                target_args = "-m astracradle"
+            elif gui_exe_script.exists():
+                target_exe = str(gui_exe_script)
+                target_args = ""
             else:
-                target_exe = str(py_exe)
+                target_exe = str(pyw_exe if pyw_exe.exists() else py_exe)
                 target_args = "-m astracradle"
 
             bat_content = (
                 "@echo off\r\n"
                 f'cd /d "{repo_root}"\r\n'
-                f'if exist "{target_exe}" (\r\n'
-                f'    start "AstraCradle" "{target_exe}" {target_args}\r\n'
-                f') else if exist "{repo_root}\\run_astracradle.bat" (\r\n'
-                f'    call "{repo_root}\\run_astracradle.bat"\r\n'
-                ") else (\r\n"
-                '    echo AstraCradle launcher not found. Please re-run Install_AstraCradle.bat.\r\n'
-                "    pause\r\n"
-                ")\r\n"
+                f'start "" "{target_exe}" {target_args}\r\n'
             )
             appdata = Path(os.environ.get("APPDATA", str(home / "AppData" / "Roaming")))
             start_menu = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs"
-            win_desktop = self._resolve_windows_desktop(home)
             win_bat_targets = [start_menu / "AstraCradle.bat"]
-            if include_desktop_icon and win_desktop is not None:
-                win_bat_targets.append(win_desktop / "AstraCradle.bat")
+            if include_desktop_icon:
+                win_bat_targets.append(home / "Desktop" / "AstraCradle.bat")
             for target in win_bat_targets:
                 if target.parent.exists():
                     target.write_text(bat_content, encoding="utf-8")
                     created.append(target)
-            # Create native Start Menu (and optional Desktop) .lnk shortcuts using verified python.exe runtime
+            # Create native Start Menu (and optional Desktop) .lnk shortcuts launching zero-console GUI executable with AstraCradle.ico
             if platform.system() == "Windows":
                 win_lnk_targets = [start_menu / "AstraCradle.lnk"]
-                if include_desktop_icon and win_desktop is not None:
-                    win_lnk_targets.append(win_desktop / "AstraCradle.lnk")
+                if include_desktop_icon:
+                    win_lnk_targets.append(home / "Desktop" / "AstraCradle.lnk")
                 for lnk in win_lnk_targets:
                     if lnk.parent.exists():
                         ps = (
@@ -377,7 +326,6 @@ class LifecycleManager:
                             f'$s.TargetPath = "{target_exe}"; '
                             f'$s.Arguments = "{target_args}"; '
                             f'$s.WorkingDirectory = "{repo_root}"; '
-                            f'$s.WindowStyle = 7; '
                             f'$s.IconLocation = "{icon_ico},0"; '
                             f'$s.Description = "AstraCradle — Dyson-Core OS Optimizer & Self-Healing Studio"; '
                             f'$s.Save()'
@@ -401,14 +349,12 @@ class LifecycleManager:
     def set_launch_at_login(
         self,
         enabled: bool,
-        repo_root: Path | None = None,
+        repo_root: Path,
         start_minimized: bool = False,
         os_override: str | None = None,
         start_widget: bool = False,
     ) -> tuple[bool, str]:
         """Configures or removes OS login autostart (optionally passing --minimized / --widget)."""
-        if repo_root is None:
-            repo_root = Path(__file__).resolve().parents[2]
         sys_name = os_override or platform.system()
         home = Path.home()
         flags = (" --minimized" if start_minimized else "") + (" --widget" if start_widget else "")
@@ -476,14 +422,15 @@ class LifecycleManager:
                 return True, "Removed Windows Startup folder entry."
             startup_dir.mkdir(parents=True, exist_ok=True)
             py_exe = Path(sys.executable)
-            venv_py = repo_root / ".venv" / "Scripts" / "python.exe"
-            target_exe = str(venv_py if venv_py.exists() else py_exe)
-            args = "-m astracradle"
+            gui_exe = py_exe.parent / "astracradle-gui.exe"
+            pyw_exe = py_exe.parent / "pythonw.exe"
+            target_exe = str(gui_exe if gui_exe.exists() else (pyw_exe if pyw_exe.exists() else py_exe))
+            args = "" if gui_exe.exists() else "-m astracradle"
             if start_minimized:
                 args = (args + " --minimized").strip()
             if start_widget:
                 args = (args + " --widget").strip()
-            bat_file.write_text(f'@echo off\r\ncd /d "{repo_root}"\r\nstart "AstraCradle" "{target_exe}" {args}\r\n', encoding="utf-8")
+            bat_file.write_text(f'@echo off\r\ncd /d "{repo_root}"\r\nstart "" "{target_exe}" {args}\r\n', encoding="utf-8")
             return True, f"Enabled Windows login autostart ({'minimized to tray' if start_minimized else 'normal'})."
 
         return False, f"Unsupported OS for login autostart: {sys_name}"
@@ -512,18 +459,8 @@ class LifecycleManager:
         uninstall_pip_package: bool = False,
         extra_shortcut_paths: list[Path] | None = None,
     ) -> UninstallSummary:
-        """Safely reverts active scripts, optionally restores quarantine, removes shortcuts/hooks/links, and deletes all AstraCradle data."""
+        """Safely reverts active scripts, optionally restores quarantine, removes shortcuts, and deletes all AstraCradle data."""
         summary = UninstallSummary(ok=True)
-        home = Path.home()
-
-        # 0. Gracefully stop any other running AstraCradle GUI/tray instance first
-        try:
-            from .single_instance import SingleInstanceManager
-            terminated = SingleInstanceManager(self.cfg_mgr).terminate_existing_instances(timeout_sec=2.0)
-            if terminated:
-                summary.notes.append(f"Stopped {terminated} running AstraCradle instance(s).")
-        except Exception:
-            pass
 
         # 1. Revert any enabled toggleable scripts cleanly
         if self.scripts_engine is not None:
@@ -549,59 +486,12 @@ class LifecycleManager:
                     f"Restored {summary.restored_quarantine_entries} quarantined batch(es) to original locations."
                 )
 
-        # 3. Remove Desktop & App Menu shortcuts + Login Autostart
+        # 3. Remove Desktop & App Menu shortcuts
         summary.removed_shortcuts = self.remove_shortcuts(extra_paths=extra_shortcut_paths)
         if summary.removed_shortcuts:
             summary.notes.append(f"Removed {len(summary.removed_shortcuts)} AstraCradle shortcut(s).")
-        try:
-            ok_login, msg_login = self.set_launch_at_login(False)
-            if ok_login and ("Removed" in msg_login):
-                summary.notes.append(msg_login)
-        except Exception:
-            pass
 
-        # 3b. Remove global CLI symlinks (~/.local/bin/astracradle*) and CachyOS/Fish Wi-Fi hooks/timers
-        removed_cli: list[str] = []
-        local_bin = home / ".local" / "bin"
-        for bin_name in ("astracradle", "astracradle-gui", "astracradle-wifi"):
-            cand = local_bin / bin_name
-            try:
-                if cand.is_symlink() or cand.exists():
-                    is_ac_wrapper = cand.is_symlink() or ("astracradle" in cand.read_text(encoding="utf-8", errors="ignore"))
-                    if is_ac_wrapper:
-                        cand.unlink(missing_ok=True)
-                        removed_cli.append(str(cand))
-            except OSError:
-                pass
-        if removed_cli:
-            summary.notes.append(f"Removed {len(removed_cli)} CLI launcher(s) from ~/.local/bin.")
-
-        fish_wifi = home / ".config" / "fish" / "conf.d" / "astracradle_wifi.fish"
-        sd_user = home / ".config" / "systemd" / "user"
-        wifi_svc = sd_user / "astracradle-wifi-opt.service"
-        wifi_tmr = sd_user / "astracradle-wifi-opt.timer"
-        if wifi_tmr.exists() and shutil.which("systemctl"):
-            try:
-                subprocess.run(
-                    ["systemctl", "--user", "disable", "--now", "astracradle-wifi-opt.timer"],
-                    capture_output=True,
-                    timeout=3,
-                    check=False,
-                )
-            except Exception:
-                pass
-        removed_hooks = 0
-        for hook_p in (fish_wifi, wifi_svc, wifi_tmr):
-            if hook_p.exists():
-                try:
-                    hook_p.unlink(missing_ok=True)
-                    removed_hooks += 1
-                except OSError:
-                    pass
-        if removed_hooks:
-            summary.notes.append(f"Removed {removed_hooks} Fish/systemd Wi-Fi hook file(s).")
-
-        # 3c. Remove any background schedule units/tasks, reboot persistence, TV failsafe & AstraShield hosts sinkhole
+        # 3b. Remove any background schedule units/tasks, reboot persistence & AstraShield hosts sinkhole cleanly
         try:
             from .scheduler import BackgroundSchedulerManager
             BackgroundSchedulerManager(self.cfg_mgr, self.journal).remove_schedule()
@@ -613,15 +503,8 @@ class LifecycleManager:
             pass
         try:
             from .adblock_shield import AstraShieldManager
-            shield_mgr = AstraShieldManager(self.cfg_mgr, self.rollback_mgr, self.journal)
-            shield_notes = shield_mgr.cleanup_on_uninstall()
+            shield_notes = AstraShieldManager(self.cfg_mgr, self.rollback_mgr, self.journal).cleanup_on_uninstall()
             summary.notes.extend(shield_notes)
-            from .lan_tv_shield import LanTvAdShield
-            tv_shield = LanTvAdShield(self.journal)
-            tv_st = tv_shield.load_failsafe_state()
-            if tv_st and tv_st.get("active"):
-                _, tv_msg = tv_shield.restore_tv_settings(reason="uninstall", shield=shield_mgr)
-                summary.notes.append(tv_msg)
         except Exception:
             pass
 
@@ -649,23 +532,18 @@ class LifecycleManager:
             except Exception as exc:
                 summary.notes.append(f"Package uninstall skipped ({exc}).")
 
-        # 6. Delete ALL AstraCradle profiles, configs, certs, install memory, logs, quarantine & data if requested
+        # 6. Delete ALL AstraCradle profiles, configs, logs, quarantine & data if requested
         if delete_user_data:
             target = self.cfg_mgr.base_dir
             if self._is_safe_astracradle_dir(target):
                 if target.exists():
                     shutil.rmtree(target, ignore_errors=False)
                 summary.deleted_data_dir = True
-                summary.notes.append(f"Deleted all AstraCradle profiles, certs, install memory, logs, and data at {target}.")
+                summary.notes.append(f"Deleted all AstraCradle profiles, logs, and data at {target}.")
             else:
                 summary.ok = False
                 summary.notes.append(f"Guardrail refused to delete unsafe directory: {target}")
         else:
-            # Clean transient wizard drafts/temp files while preserving user configs & profiles
-            try:
-                (self.cfg_mgr.state_dir / "setup_wizard_draft.json").unlink(missing_ok=True)
-            except OSError:
-                pass
             summary.notes.append(f"Kept user profiles and data at {self.cfg_mgr.base_dir} as requested.")
 
         return summary

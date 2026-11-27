@@ -11,7 +11,7 @@ if [ -x ".venv/bin/python" ]; then
   PY_BIN="./.venv/bin/python"
 fi
 
-"$PY_BIN" -m astracradle --uninstall --uninstall-package "$@"
+"$PY_BIN" -m astracradle --uninstall --uninstall-package
 
 if [ -d ".venv" ]; then
   echo "Removing isolated AstraCradle .venv directory..."

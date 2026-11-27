@@ -314,17 +314,7 @@ class SunshineMoonlightBridge:
             if platform.system() == "Windows" and Path(r"C:\Program Files\Moonlight Game Streaming\Moonlight.exe").exists()
             else ""
         )
-        sun_running = cls._is_port_open("127.0.0.1", 47989) or cls._is_port_open("127.0.0.1", 47984)
-        if not sun_running and platform.system() == "Linux" and shutil.which("systemctl"):
-            try:
-                chk = subprocess.run(
-                    ["systemctl", "--user", "is-active", "--quiet", "sunshine"],
-                    timeout=1.5,
-                    check=False,
-                )
-                sun_running = chk.returncode == 0
-            except Exception:
-                pass
+        sun_running = cls._is_port_open("127.0.0.1", 47989) or cls._is_port_open("127.0.0.1", 47990)
         ts_ip = ts_status.self_ip if ts_status and ts_status.self_ip else "127.0.0.1"
         notes = [
             "Moonlight iOS & Moonlight Android connect natively over Tailscale IP (TCP 47984,47989,47990 · UDP 47998-48010).",
@@ -339,58 +329,6 @@ class SunshineMoonlightBridge:
             sunshine_url=f"https://{ts_ip}:47990" if sun_running else "",
             notes=notes,
         )
-
-    @classmethod
-    def start_or_restart_sunshine(cls) -> tuple[bool, str]:
-        """Resets start-limit, enables & restarts native Sunshine user service (or launches binary)."""
-        sun_bin = shutil.which("sunshine")
-        if not sun_bin:
-            return False, "Native Sunshine binary is not installed."
-        sys_name = platform.system()
-        if sys_name == "Linux" and shutil.which("systemctl"):
-            try:
-                subprocess.run(
-                    ["systemctl", "--user", "reset-failed", "sunshine.service"],
-                    capture_output=True,
-                    text=True,
-                    timeout=3.0,
-                    check=False,
-                )
-                res = subprocess.run(
-                    ["systemctl", "--user", "restart", "sunshine.service"],
-                    capture_output=True,
-                    text=True,
-                    timeout=6.0,
-                    check=False,
-                )
-                if res.returncode == 0:
-                    return True, "Native Sunshine started cleanly (Moonlight TCP 47984/47989 · Web UI :47990)."
-                err_tail = ""
-                if shutil.which("journalctl"):
-                    j = subprocess.run(
-                        ["journalctl", "--user", "-n", "8", "-u", "sunshine.service", "--no-pager"],
-                        capture_output=True,
-                        text=True,
-                        timeout=3.0,
-                        check=False,
-                    )
-                    lines = [ln.strip() for ln in (j.stdout or "").splitlines() if ln.strip()]
-                    if lines:
-                        err_tail = " | " + lines[-1]
-                msg = (res.stderr or res.stdout or "systemctl failed").strip()
-                return False, f"Sunshine service failed to start: {msg}{err_tail}"
-            except Exception as exc:
-                return False, f"Could not restart Sunshine service: {exc}"
-        try:
-            subprocess.Popen(
-                [sun_bin],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            return True, f"Started Sunshine process ({sun_bin})."
-        except Exception as exc:
-            return False, f"Failed to start Sunshine: {exc}"
 
     @staticmethod
     def generate_tailscale_sunshine_conf(tailscale_ip: str) -> str:
@@ -432,98 +370,6 @@ class SunshineMoonlightBridge:
         except Exception as exc:
             return False, f"Could not write Sunshine config ({target}): {exc}"
 
-    @staticmethod
-    def detect_primary_display_output() -> str:
-        """Detects primary monitor connector name (e.g. DP-5) via kscreen-doctor or xrandr."""
-        import re
-
-        if shutil.which("kscreen-doctor"):
-            try:
-                out = subprocess.run(
-                    ["kscreen-doctor", "-o"],
-                    capture_output=True,
-                    text=True,
-                    timeout=3.0,
-                    check=False,
-                ).stdout
-                cur_out = ""
-                best_out = ""
-                best_pri = 999
-                for ln in (out or "").splitlines():
-                    m_out = re.search(r"Output:\s*\d+\s+([A-Za-z0-9_-]+)", ln)
-                    if m_out:
-                        cur_out = m_out.group(1)
-                    m_pri = re.search(r"priority\s+(\d+)", ln)
-                    if m_pri and cur_out:
-                        pri = int(m_pri.group(1))
-                        if pri < best_pri:
-                            best_pri = pri
-                            best_out = cur_out
-                if best_out:
-                    return best_out
-            except Exception:
-                pass
-        if shutil.which("xrandr"):
-            try:
-                out = subprocess.run(
-                    ["xrandr", "--query"],
-                    capture_output=True,
-                    text=True,
-                    timeout=3.0,
-                    check=False,
-                ).stdout
-                for ln in (out or "").splitlines():
-                    if " connected primary " in ln:
-                        return ln.split()[0]
-            except Exception:
-                pass
-        return ""
-
-    @classmethod
-    def optimize_sunshine_for_tablet(
-        cls, tailscale_ip: str = "", conf_path: Path | None = None
-    ) -> tuple[bool, str]:
-        """Configures Sunshine for smooth iPad/tablet streaming: primary monitor, VA-API (on AMD/Intel), encryption & FEC."""
-        target = conf_path or cls.default_sunshine_conf_path()
-        ok_base, msg_base = cls.apply_hardened_tailscale_config(tailscale_ip, conf_path=target)
-        if not ok_base:
-            return False, msg_base
-        try:
-            primary_out = cls.detect_primary_display_output()
-            extra: dict[str, str] = {}
-            if primary_out:
-                extra["output_name"] = primary_out
-            if platform.system() == "Linux":
-                # Prefer VA-API over Vulkan AV1 on Linux AMD/Intel to prevent 10-bit AV1 black frames on iPadOS
-                has_dri = any(Path("/dev/dri").glob("renderD*")) if Path("/dev/dri").exists() else False
-                if has_dri and not shutil.which("nvidia-smi"):
-                    extra["encoder"] = "vaapi"
-
-            existing = target.read_text(encoding="utf-8", errors="ignore")
-            lines = [
-                ln
-                for ln in existing.splitlines()
-                if not any(ln.strip().startswith(f"{k} ") or ln.strip().startswith(f"{k}=") for k in extra)
-            ]
-            for k, v in extra.items():
-                lines.append(f"{k} = {v}")
-            target.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-            cap_note = ""
-            sun_bin = shutil.which("sunshine")
-            if sun_bin and platform.system() == "Linux" and shutil.which("getcap"):
-                try:
-                    real_sun = str(Path(sun_bin).resolve())
-                    caps = subprocess.run(["getcap", real_sun], capture_output=True, text=True, timeout=2.0, check=False).stdout
-                    if "cap_sys_admin" not in (caps or ""):
-                        cap_note = f" (Tip: run `sudo setcap cap_sys_admin+p {real_sun}` for KMS capture)"
-                except Exception:
-                    pass
-            summary_bits = [f"{k}={v}" for k, v in extra.items()] or ["hardened defaults"]
-            return True, f"Optimized Sunshine for iPad/Tablet ({', '.join(summary_bits)}){cap_note}"
-        except Exception as exc:
-            return False, f"Could not apply iPad Sunshine optimizations: {exc}"
-
     @classmethod
     def launch_moonlight(cls, target_host: str, app_name: str = "Desktop") -> tuple[bool, str]:
         moon = shutil.which("moonlight") or shutil.which("moonlight-qt")
@@ -557,285 +403,14 @@ class SunshineMoonlightBridge:
 
 _WEB_MANIFEST_JSON = json.dumps(
     {
-        "name": "AstraCradle · iPhone Remote",
-        "short_name": "AstraCradle",
-        "start_url": "/iphone",
+        "name": "AstraBeam Remote",
+        "short_name": "AstraBeam",
+        "start_url": "/",
         "display": "standalone",
         "background_color": "#070b11",
-        "theme_color": "#0b1220",
-        "icons": [
-            {"src": "/apple-touch-icon.png", "sizes": "256x256", "type": "image/png", "purpose": "any maskable"}
-        ],
+        "theme_color": "#0d141f",
     }
 )
-
-
-_IPHONE_APP_HTML = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="AstraCradle">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<link rel="manifest" href="/manifest.webmanifest">
-<title>AstraCradle · iPhone 16 Pro Max Companion</title>
-<style>
-  :root{--bg:#060a10;--card:#0e1522;--elev:#152033;--line:#22324d;--cyan:#38bdf8;--jade:#34d399;--amber:#fbbf24;--coral:#fb7185;--txt:#eef4fa;--muted:#8da2b8}
-  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{margin:0;padding:0;height:100%;background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",system-ui,sans-serif;overscroll-behavior:none}
-  .shell{display:flex;flex-direction:column;height:100dvh;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
-  .top{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:rgba(14,21,34,.92);backdrop-filter:blur(18px);border-bottom:1px solid var(--line)}
-  .brand{display:flex;align-items:center;gap:10px}
-  .brand img{width:28px;height:28px;border-radius:8px}
-  .pill{font-size:11px;font-weight:700;padding:4px 9px;border-radius:999px;background:#0f2b24;color:var(--jade);border:1px solid #1e5b49}
-  .pill.off{background:#2b121b;color:var(--coral);border-color:#5a2133}
-  .main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 14px 86px 14px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;margin-bottom:12px}
-  .hero{display:flex;align-items:center;justify-content:space-between;gap:12px}
-  .score{width:70px;height:70px;border-radius:50%;border:4px solid var(--jade);display:flex;flex-direction:column;align-items:center;justify-content:center;font-weight:800;font-size:22px;background:#09141d}
-  .score span{font-size:10px;color:var(--muted);font-weight:600}
-  .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px}
-  .stat{background:var(--elev);border-radius:12px;padding:10px}
-  .stat .k{font-size:11px;color:var(--muted)}.stat .v{font-size:16px;font-weight:700;margin-top:2px}
-  .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
-  button{border:none;border-radius:13px;padding:13px 12px;font-size:14px;font-weight:700;cursor:pointer;background:var(--jade);color:#041610;transition:transform .08s}
-  button:active{transform:scale(.97)}
-  button.sec{background:var(--elev);color:var(--txt);border:1px solid var(--line)}
-  button.cyan{background:var(--cyan);color:#04131c}
-  button.warn{background:#291a12;color:var(--amber);border:1px solid #593b1a}
-  input{width:100%;padding:12px 13px;border-radius:12px;border:1px solid var(--line);background:#070c14;color:var(--txt);font-size:16px;margin-bottom:10px}
-  .tabs{position:fixed;left:0;right:0;bottom:0;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:rgba(10,16,26,.95);backdrop-filter:blur(20px);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-  .tab{background:transparent;color:var(--muted);padding:9px 6px;border-radius:12px;font-size:12px;font-weight:700;border:none}
-  .tab.active{background:var(--elev);color:var(--cyan)}
-  .view{display:none}.view.active{display:block}
-  .stage{background:#020408;border:1px solid var(--line);border-radius:16px;overflow:hidden;touch-action:none;position:relative}
-  #screen{width:100%;display:block;min-height:210px;object-fit:contain;background:#04070d}
-  .padbox{margin-top:10px;height:175px;border-radius:16px;background:linear-gradient(160deg,#0f1827,#0a101b);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;touch-action:none;user-select:none}
-  .krow{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-  .krow button{padding:9px 11px;font-size:12px;border-radius:10px;flex:1 1 auto}
-</style>
-</head>
-<body>
-<div class="shell">
-  <div class="top">
-    <div class="brand">
-      <img src="/apple-touch-icon.png" alt="AstraCradle" />
-      <div>
-        <div style="font-weight:800;font-size:15px">AstraCradle</div>
-        <div id="hostLbl" style="font-size:11px;color:var(--muted)">iPhone 16 Pro Max · Tailscale TLS</div>
-      </div>
-    </div>
-    <div id="connPill" class="pill off">Locked</div>
-  </div>
-
-  <div class="main">
-    <div id="pairCard" class="card">
-      <div style="font-weight:700;font-size:16px;margin-bottom:4px">Pair with Your PC</div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Enter the AstraBeam PIN shown in Remote Stream & Devices on your desktop.</div>
-      <input id="pinInput" type="password" inputmode="numeric" placeholder="6-digit AstraBeam PIN" />
-      <button style="width:100%" onclick="pairNow()">Connect Over Tailscale TLS</button>
-      <div id="pairMsg" style="font-size:12px;color:var(--amber);margin-top:8px"></div>
-    </div>
-
-    <div id="v-deck" class="view active">
-      <div class="card">
-        <div class="hero">
-          <div>
-            <div style="font-size:12px;color:var(--muted)">PC Equilibrium</div>
-            <div id="profLbl" style="font-size:18px;font-weight:800;margin:2px 0">Waiting for pair...</div>
-            <div id="wifiLbl" style="font-size:12px;color:var(--cyan)">Wi-Fi & Sunshine ready</div>
-          </div>
-          <div class="score"><span id="scoreVal">--</span><span>SCORE</span></div>
-        </div>
-        <div class="stats">
-          <div class="stat"><div class="k">CPU Load / Temp</div><div class="v" id="cpuVal">--</div></div>
-          <div class="stat"><div class="k">Memory</div><div class="v" id="ramVal">--</div></div>
-          <div class="stat"><div class="k">GPU Temp</div><div class="v" id="gpuVal">--</div></div>
-          <div class="stat"><div class="k">Shield / Sunshine</div><div class="v" id="srvVal">--</div></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div style="font-weight:700;font-size:14px;margin-bottom:8px">1-Tap PC Controls</div>
-        <div class="grid2">
-          <button onclick="act('fix_safe')">Fix Everything Safe</button>
-          <button class="cyan" onclick="act('deep_scan')">Deep Scan PC</button>
-          <button class="sec" onclick="act('optimize_wifi')">Optimize Wi-Fi</button>
-          <button class="sec" onclick="act('restart_sunshine')">Restart Sunshine</button>
-          <button class="sec" onclick="act('toggle_shield')">Toggle AstraShield</button>
-          <button class="warn" onclick="act('pause_shield_5m')">Pause Shield 5m</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <div style="font-weight:700;font-size:14px;margin-bottom:8px">Situation Profile</div>
-        <div class="grid2">
-          <button class="sec" onclick="act('switch_profile','Balanced Daily')">Balanced Daily</button>
-          <button class="sec" onclick="act('switch_profile','Gaming / Low-Latency')">Gaming Low-Latency</button>
-          <button class="sec" onclick="act('switch_profile','Battery Endurance')">Battery Endurance</button>
-          <button class="sec" onclick="act('switch_profile','Quiet Focus')">Quiet Focus</button>
-        </div>
-      </div>
-      <div id="actMsg" style="font-size:12px;color:var(--jade);padding:0 4px"></div>
-    </div>
-
-    <div id="v-screen" class="view">
-      <div class="stage">
-        <img id="screen" alt="Connect PIN to stream PC screen" />
-      </div>
-      <div id="trackpad" class="padbox">
-        Trackpad · Slide to move · Tap = Left Click · 2-Finger Tap = Right Click
-      </div>
-      <div class="card" style="margin-top:10px">
-        <div style="display:flex;gap:8px">
-          <input id="txtSend" type="text" placeholder="Type text or paste clipboard..." style="margin:0" />
-          <button style="min-width:74px" onclick="sendTxt()">Send</button>
-          <button class="sec" style="min-width:64px" onclick="syncClip()">Clip</button>
-        </div>
-        <div class="krow">
-          <button class="sec" onclick="sendKey('Escape')">ESC</button>
-          <button class="sec" onclick="sendKey('Tab')">TAB</button>
-          <button class="sec" onclick="sendKey('Return')">ENTER</button>
-          <button class="sec" onclick="sendKey('Space')">SPACE</button>
-          <button class="sec" onclick="sendKey('BackSpace')">DEL</button>
-          <button class="sec" onclick="sendClick('left')">L-CLK</button>
-          <button class="sec" onclick="sendClick('right')">R-CLK</button>
-        </div>
-      </div>
-    </div>
-
-    <div id="v-stream" class="view">
-      <div class="card">
-        <div style="font-weight:800;font-size:16px;margin-bottom:4px">120fps Desktop via Moonlight</div>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Use AstraCradle here for control & quick view, or jump straight into Moonlight iOS for full-screen 120Hz ProMotion streaming.</div>
-        <button class="cyan" style="width:100%;margin-bottom:8px" onclick="location.href='moonlight://'">Open Moonlight App</button>
-        <button class="sec" style="width:100%;margin-bottom:8px" onclick="copyHost()">Copy PC Tailscale / Host IP</button>
-        <button class="sec" style="width:100%" onclick="act('restart_sunshine')">Start / Restart Sunshine Host</button>
-      </div>
-      <div class="card">
-        <div style="font-weight:700;font-size:14px;margin-bottom:6px">Install on iPhone 16 Pro Max Home Screen</div>
-        <div style="font-size:12px;color:var(--muted);line-height:1.5">
-          1. In Safari, tap the <b>Share</b> button (square with up arrow).<br>
-          2. Tap <b>Add to Home Screen</b>.<br>
-          3. Launch <b>AstraCradle</b> full-screen like a native iOS app.
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="tabs">
-    <button class="tab active" onclick="showTab('deck',this)">Control Deck</button>
-    <button class="tab" onclick="showTab('screen',this)">Screen & Pad</button>
-    <button class="tab" onclick="showTab('stream',this)">Moonlight / App</button>
-  </div>
-</div>
-<script>
-let TOK = localStorage.getItem("astrabeam_tok") || "";
-const pill = document.getElementById("connPill");
-const pairCard = document.getElementById("pairCard");
-const scr = document.getElementById("screen");
-let curX = 0.5, curY = 0.5, lastTx = 0, lastTy = 0, moved = false;
-
-function showTab(id, btn){
-  document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));
-  document.querySelectorAll(".tab").forEach(b=>b.classList.remove("active"));
-  document.getElementById("v-"+id).classList.add("active");
-  btn.classList.add("active");
-  if(id==="screen" && TOK && !scr.src) scr.src="/stream.mjpeg?token="+encodeURIComponent(TOK);
-}
-
-async function pairNow(){
-  const pin = document.getElementById("pinInput").value.trim();
-  const r = await fetch("/api/pair",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin})});
-  const d = await r.json();
-  if(!d.ok){ document.getElementById("pairMsg").textContent = d.error || "Invalid PIN"; return; }
-  TOK = d.token;
-  localStorage.setItem("astrabeam_tok", TOK);
-  setPairedUI(true);
-  refreshSummary();
-}
-
-function setPairedUI(ok){
-  pill.textContent = ok ? "Encrypted TLS" : "Locked";
-  pill.className = ok ? "pill" : "pill off";
-  pairCard.style.display = ok ? "none" : "block";
-}
-
-async function refreshSummary(){
-  if(!TOK) return;
-  try{
-    const r = await fetch("/api/watch/summary",{headers:{"X-AstraBeam-Token":TOK}});
-    if(r.status===401){ localStorage.removeItem("astrabeam_tok"); TOK=""; setPairedUI(false); return; }
-    const d = await r.json();
-    if(!d.ok) return;
-    setPairedUI(true);
-    document.getElementById("hostLbl").textContent = (d.hostname||"PC") + (d.tailscale_ip ? " · "+d.tailscale_ip : "");
-    document.getElementById("scoreVal").textContent = d.health_score ?? "--";
-    document.getElementById("profLbl").textContent = d.active_profile || "Balanced";
-    document.getElementById("cpuVal").textContent = `${d.cpu_percent ?? 0}%` + (d.cpu_temp_c!=null ? ` · ${d.cpu_temp_c}°C` : "");
-    document.getElementById("ramVal").textContent = `${d.mem_percent ?? 0}%`;
-    document.getElementById("gpuVal").textContent = d.gpu_temp_c!=null ? `${d.gpu_temp_c}°C` : "Ready";
-    document.getElementById("srvVal").textContent = (d.astrashield_running?"Shield ON":"Shield OFF") + " · " + (d.sunshine_running?"Sun ON":"Sun OFF");
-    document.getElementById("wifiLbl").textContent = d.wifi_ssid ? `Wi-Fi: ${d.wifi_ssid} (Ch ${d.wifi_channel||"?"})` : "Tailscale Zero-Trust Active";
-  }catch(e){}
-}
-
-async function act(name, val=""){
-  if(!TOK) return;
-  const r = await fetch("/api/watch/action",{method:"POST",headers:{"Content-Type":"application/json","X-AstraBeam-Token":TOK},body:JSON.stringify({action:name,value:val})});
-  const d = await r.json();
-  document.getElementById("actMsg").textContent = d.message || (d.ok?"Done":"Failed");
-  setTimeout(refreshSummary, 800);
-}
-
-async function sendInput(p){ if(TOK) await fetch("/api/input",{method:"POST",headers:{"Content-Type":"application/json","X-AstraBeam-Token":TOK},body:JSON.stringify(p)}); }
-function sendKey(key){ sendInput({kind:"key", key}); }
-function sendClick(button){ sendInput({kind:"click", button, x:curX, y:curY}); }
-function sendTxt(){ const el=document.getElementById("txtSend"); if(el.value){ sendInput({kind:"text", text:el.value}); el.value=""; } }
-async function syncClip(){
-  if(!TOK) return;
-  const el=document.getElementById("txtSend");
-  if(el.value){ await fetch("/api/clipboard",{method:"POST",headers:{"Content-Type":"application/json","X-AstraBeam-Token":TOK},body:JSON.stringify({text:el.value})}); document.getElementById("actMsg").textContent="Clipboard pushed to PC"; }
-  else { const r=await fetch("/api/clipboard",{headers:{"X-AstraBeam-Token":TOK}}); const d=await r.json(); if(d.text) el.value=d.text; }
-}
-function copyHost(){ navigator.clipboard?.writeText(location.hostname); alert("Copied PC host: " + location.hostname); }
-
-scr.addEventListener("touchstart", e=>{
-  if(e.touches.length===2){ e.preventDefault(); sendClick("right"); return; }
-  const t=e.touches[0], rc=scr.getBoundingClientRect();
-  if(rc.width>0){ curX=(t.clientX-rc.left)/rc.width; curY=(t.clientY-rc.top)/rc.height; sendInput({kind:"click",button:"left",x:curX,y:curY}); }
-},{passive:false});
-
-const tp = document.getElementById("trackpad");
-tp.addEventListener("touchstart", e=>{
-  if(e.touches.length===2){ e.preventDefault(); sendClick("right"); return; }
-  lastTx=e.touches[0].clientX; lastTy=e.touches[0].clientY; moved=false;
-},{passive:false});
-tp.addEventListener("touchmove", e=>{
-  e.preventDefault();
-  if(e.touches.length===2){
-    const dy = e.touches[0].clientY - lastTy;
-    lastTy = e.touches[0].clientY;
-    sendInput({kind:"scroll", dy: dy>0 ? -2 : 2});
-    return;
-  }
-  const t=e.touches[0], dx=t.clientX-lastTx, dy=t.clientY-lastTy;
-  if(Math.abs(dx)>1 || Math.abs(dy)>1) moved=true;
-  lastTx=t.clientX; lastTy=t.clientY;
-  curX = Math.max(0, Math.min(1, curX + dx/280));
-  curY = Math.max(0, Math.min(1, curY + dy/180));
-  sendInput({kind:"move", x:curX, y:curY});
-},{passive:false});
-tp.addEventListener("touchend", ()=>{ if(!moved) sendClick("left"); });
-
-if(TOK) refreshSummary();
-setInterval(refreshSummary, 4000);
-</script>
-</body>
-</html>
-"""
 
 
 _WEB_VIEWER_HTML = """<!doctype html>
@@ -1211,16 +786,11 @@ class AstraBeamServer:
                 img = None
 
         if img is None and platform.system() == "Linux":
-            for cmd in ("grim", "scrot", "spectacle"):
+            for cmd in ("grim", "scrot"):
                 if shutil.which(cmd):
                     try:
                         with tempfile.NamedTemporaryFile(suffix=".png") as tf:
-                            args = (
-                                [cmd, "-b", "-n", "-o", tf.name]
-                                if cmd == "spectacle"
-                                else [cmd, tf.name]
-                            )
-                            subprocess.run(args, capture_output=True, timeout=1.5, check=True)
+                            subprocess.run([cmd, tf.name], capture_output=True, timeout=1.5, check=True)
                             img = Image.open(tf.name).convert("RGB")
                             break
                     except Exception:
@@ -1294,30 +864,12 @@ class AstraBeamServer:
                 elif kind == "click":
                     btn = "3" if payload.get("button") == "right" else "1"
                     subprocess.run(["xdotool", "mousemove", str(int(float(payload.get("x", 0.5)) * w)), str(int(float(payload.get("y", 0.5)) * h)), "click", btn], timeout=1)
-                elif kind == "scroll":
-                    dy = int(payload.get("dy", 0))
-                    if dy != 0:
-                        btn = "4" if dy > 0 else "5"
-                        subprocess.run(["xdotool", "click", "--repeat", str(min(10, abs(dy))), btn], timeout=1)
                 elif kind == "text":
                     subprocess.run(["xdotool", "type", "--delay", "2", str(payload.get("text") or "")], timeout=1)
                 elif kind == "key":
                     key_tok = str(payload.get("key") or "")
                     if key_tok.isalnum() and len(key_tok) <= 12:
                         subprocess.run(["xdotool", "key", key_tok], timeout=1)
-                return True
-            except Exception:
-                pass
-        if platform.system() == "Linux" and shutil.which("ydotool"):
-            try:
-                if kind == "move":
-                    subprocess.run(["ydotool", "mousemove", "--absolute", "-x", str(int(float(payload.get("x", 0.5)) * w)), "-y", str(int(float(payload.get("y", 0.5)) * h))], timeout=1)
-                elif kind == "click":
-                    btn = "0xC1" if payload.get("button") == "right" else "0xC0"
-                    subprocess.run(["ydotool", "mousemove", "--absolute", "-x", str(int(float(payload.get("x", 0.5)) * w)), "-y", str(int(float(payload.get("y", 0.5)) * h))], timeout=1)
-                    subprocess.run(["ydotool", "click", btn], timeout=1)
-                elif kind == "text":
-                    subprocess.run(["ydotool", "type", str(payload.get("text") or "")], timeout=1)
                 return True
             except Exception:
                 pass
@@ -1376,13 +928,8 @@ class AstraBeamServer:
                 cip = self._client_ip()
                 parsed = urllib.parse.urlparse(self.path)
                 qs = urllib.parse.parse_qs(parsed.query)
-                if parsed.path in ("/", "/watch", "/iphone"):
-                    html_doc = (
-                        _WATCH_VIEWER_HTML
-                        if parsed.path == "/watch"
-                        else (_IPHONE_APP_HTML if parsed.path == "/iphone" else _WEB_VIEWER_HTML)
-                    )
-                    raw = html_doc.encode("utf-8")
+                if parsed.path in ("/", "/watch"):
+                    raw = (_WATCH_VIEWER_HTML if parsed.path == "/watch" else _WEB_VIEWER_HTML).encode("utf-8")
                     self.send_response(200)
                     self._add_sec_headers()
                     self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1390,19 +937,6 @@ class AstraBeamServer:
                     self.end_headers()
                     self.wfile.write(raw)
                     return
-                if parsed.path == "/apple-touch-icon.png":
-                    icon_file = Path(__file__).resolve().parents[1] / "assets" / "astracradle_emblem_256.png"
-                    if not icon_file.exists():
-                        icon_file = Path(__file__).resolve().parents[1] / "assets" / "astracradle_emblem.png"
-                    if icon_file.exists():
-                        raw = icon_file.read_bytes()
-                        self.send_response(200)
-                        self._add_sec_headers()
-                        self.send_header("Content-Type", "image/png")
-                        self.send_header("Content-Length", str(len(raw)))
-                        self.end_headers()
-                        self.wfile.write(raw)
-                        return
                 if parsed.path == "/manifest.webmanifest":
                     raw = _WEB_MANIFEST_JSON.encode("utf-8")
                     self.send_response(200)

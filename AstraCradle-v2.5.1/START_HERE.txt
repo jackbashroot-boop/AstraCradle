@@ -1,0 +1,36 @@
+============================================================
+  AstraCradle v2.5.1 — Easy Unpack & 1-Click Install Guide
+============================================================
+
+1. UNPACK this entire folder somewhere permanent on your PC
+   (for example: Desktop\AstraCradle or Documents\AstraCradle).
+
+2. INSTALL & LAUNCH (choose your OS):
+   - Windows:
+       Double-click:  Install_AstraCradle.bat
+       (Automatically finds Python 3.10+ or installs via winget if available.)
+
+   - macOS:
+       Double-click:  Install_AstraCradle.command
+       (If Gatekeeper asks, right-click -> Open. Automatically checks python-tk.)
+
+   - Linux:
+       Run in terminal:  ./install_astracradle.sh
+       (Checks Python 3.10+ & python3-tk automatically.)
+
+3. WHAT THE INSTALLER DOES AUTOMATICALLY:
+   - Creates an isolated .venv folder inside this directory (never pollutes system Python).
+   - Installs AstraCradle v2.5.1 and verifies all 7 self-healing integrity invariants.
+   - Adds Desktop / Start Menu / Applications 1-click shortcuts.
+   - Opens AstraCradle ready to use — on first load, you will be asked for explicit
+     permission before AstraCradle inspects your local PC baseline!
+
+4. CLEAN UNINSTALL (ANYTIME):
+   - Inside the app: Settings & Updates -> "Uninstall AstraCradle..."
+   - Or double-click / run:
+       Windows: Uninstall_AstraCradle.bat
+       macOS:   Uninstall_AstraCradle.command
+       Linux:   ./uninstall_astracradle.sh
+   You will be asked whether to also delete all profiles, logs, and saved data,
+   leaving your OS and personal files completely untouched.
+============================================================

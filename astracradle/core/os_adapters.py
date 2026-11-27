@@ -662,13 +662,7 @@ class WindowsAdapter(BaseOSAdapter):
     def power_profile_info(self) -> dict[str, str]:
         if platform.system() == "Windows" and shutil.which("powercfg"):
             try:
-                r = subprocess.run(
-                    ["powercfg", "/getactivescheme"],
-                    capture_output=True,
-                    text=True,
-                    timeout=3,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
+                r = subprocess.run(["powercfg", "/getactivescheme"], capture_output=True, text=True, timeout=3)
                 if r.returncode == 0:
                     return {"governor": "Windows Power Plan", "mode": r.stdout.strip()}
             except Exception:

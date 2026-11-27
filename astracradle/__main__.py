@@ -407,7 +407,7 @@ def run_cli(args: argparse.Namespace) -> int:
 
     if args.uninstall:
         delete_data = args.delete_data
-        if not args.yes and sys.stdin.isatty():
+        if not args.yes:
             ans = input(
                 f"Delete ALL AstraCradle profiles, settings, logs & data in {cfg_mgr.base_dir}? [y/N]: "
             ).strip().lower()
@@ -796,152 +796,6 @@ def run_cli(args: argparse.Namespace) -> int:
             print(f"  [{cf.severity.upper()}] {cf.name} ({cf.service_unit or f'PID {cf.pid}'}) — {cf.reason}")
         return 0
 
-    if args.list_modules:
-        from .core.modules import ASTRA_MODULES, INSTALL_BUNDLE_PRESETS, normalize_enabled_modules
-
-        active = set(normalize_enabled_modules(getattr(cfg, "enabled_modules", None)))
-        print(f"AstraCradle Modules (Bundle: {getattr(cfg, 'install_bundle_preset', 'Full Suite (Everything)')}):")
-        for idx, m in enumerate(ASTRA_MODULES, start=1):
-            st = "LOCKED ON" if m.locked else ("ENABLED" if m.module_id in active else "DISABLED")
-            print(f"  {idx}. [{st}] {m.module_id} — {m.name} ({m.footprint_label})")
-        print("\nBundle Presets (--modules <key>):")
-        for pname, spec in INSTALL_BUNDLE_PRESETS.items():
-            print(f"  - {spec['short_key']}: {pname} ({len(spec['modules'])} modules) — {spec['tagline']}")
-        return 0
-
-    if args.modules:
-        from .core.modules import resolve_preset_or_modules
-        from .core.updater import ModuleAndUpdateManager
-
-        mods, pname = resolve_preset_or_modules(args.modules)
-        cfg.apply_module_selection(mods, preset_name=pname, sync_simple_mode=True)
-        cfg.setup_wizard_completed = True
-        cfg_mgr.save(cfg)
-        ModuleAndUpdateManager(cfg_mgr, journal).record_install_memory(
-            install_method="cli_modules",
-            step_note=f"Selected {len(mods)} module(s) ({pname})",
-            config=cfg,
-        )
-        print(f"Configured {len(mods)} AstraCradle module(s) [{pname}]: {', '.join(mods)}")
-        return 0
-
-    if args.setup_wizard:
-        from .core.modules import (
-            ASTRA_MODULES,
-            INSTALL_BUNDLE_PRESETS,
-            normalize_enabled_modules,
-            resolve_preset_or_modules,
-        )
-        from .core.updater import ModuleAndUpdateManager
-
-        preset_list = list(INSTALL_BUNDLE_PRESETS.items())
-        print("============================================================")
-        print("  AstraCradle — Modular First-Install Setup Wizard (CLI)")
-        print("============================================================")
-        for i, (pname, spec) in enumerate(preset_list, start=1):
-            print(f"  [{i}] {pname} ({len(spec['modules'])}/{len(ASTRA_MODULES)} modules) — {spec['tagline']}")
-        print(f"  [{len(preset_list) + 1}] Custom (Pick individual modules)")
-
-        if sys.stdin.isatty():
-            choice = input(f"Choose bundle [1-{len(preset_list) + 1}, default 1]: ").strip() or "1"
-            if choice.isdigit() and 1 <= int(choice) <= len(preset_list):
-                pname, spec = preset_list[int(choice) - 1]
-                mods = list(spec["modules"])
-            elif choice.isdigit() and int(choice) == len(preset_list) + 1:
-                print("\nAvailable optional modules (core_diagnostics is always enabled):")
-                opt_mods = [m for m in ASTRA_MODULES if not m.locked]
-                for j, m in enumerate(opt_mods, start=1):
-                    print(f"  {j}. {m.module_id} — {m.name}")
-                raw_nums = input("Enter numbers or module IDs to ENABLE (comma-separated, or 'all'): ").strip() or "all"
-                if raw_nums.lower() == "all":
-                    mods, pname = resolve_preset_or_modules("all")
-                else:
-                    picked: list[str] = []
-                    for tok in raw_nums.split(","):
-                        t = tok.strip()
-                        if t.isdigit() and 1 <= int(t) <= len(opt_mods):
-                            picked.append(opt_mods[int(t) - 1].module_id)
-                        elif t:
-                            picked.append(t)
-                    mods = normalize_enabled_modules(picked)
-                    pname = "Custom"
-            else:
-                mods, pname = resolve_preset_or_modules(choice)
-
-            def _ask_yn(prompt: str, default_yes: bool = True) -> bool:
-                tag = "[Y/n]" if default_yes else "[y/N]"
-                ans = input(f"  {prompt} {tag}: ").strip().lower()
-                if not ans:
-                    return default_yes
-                return ans.startswith("y")
-
-            print("\n--- Plain-English Permissions (100% local, zero cloud uploads) ---")
-            p_mode = input("Permissions: [1] Recommended (scan health/apps/caches)  [2] Allow All  [3] Minimal  [4] Ask each [1]: ").strip() or "1"
-            if p_mode == "2":
-                perms = {
-                    "consent_telemetry": True, "consent_process_scan": True, "consent_installed_apps": True,
-                    "consent_bloat_scan": True, "consent_privacy_scan": True, "consent_crash_diagnostics": True,
-                    "consent_auto_remediate": True, "consent_wifi_auto_channel": True, "consent_auto_install_deps": True,
-                }
-            elif p_mode == "3":
-                perms = {
-                    "consent_telemetry": False, "consent_process_scan": False, "consent_installed_apps": False,
-                    "consent_bloat_scan": False, "consent_privacy_scan": False, "consent_crash_diagnostics": False,
-                    "consent_auto_remediate": False, "consent_wifi_auto_channel": False, "consent_auto_install_deps": False,
-                }
-            elif p_mode == "4":
-                perms = {
-                    "consent_telemetry": _ask_yn("Allow reading PC hardware & health sensors?", True),
-                    "consent_process_scan": _ask_yn("Allow checking running apps & idle AI helpers?", True),
-                    "consent_installed_apps": _ask_yn("Allow inspecting installed apps & startup items?", True),
-                    "consent_bloat_scan": _ask_yn("Allow scanning temp files & oversized caches?", True),
-                    "consent_privacy_scan": _ask_yn("Allow scanning browser caches (keeps passwords/logins)?", False),
-                    "consent_crash_diagnostics": _ask_yn("Allow reading local crash & freeze clues?", True),
-                    "consent_auto_remediate": _ask_yn("Allow auto-cleaning safe stale caches to Undo Vault?", True),
-                    "consent_wifi_auto_channel": _ask_yn("Allow auto-switching to a cleaner Wi-Fi channel?", False),
-                    "consent_auto_install_deps": _ask_yn("Allow auto-installing missing helper tools when needed?", False),
-                }
-            else:
-                perms = {
-                    "consent_telemetry": True, "consent_process_scan": True, "consent_installed_apps": True,
-                    "consent_bloat_scan": True, "consent_privacy_scan": False, "consent_crash_diagnostics": True,
-                    "consent_auto_remediate": True, "consent_wifi_auto_channel": False, "consent_auto_install_deps": False,
-                }
-
-            print("\n--- Everyday Preferences ---")
-            prof_pick = input("PC Mode: [1] Everyday Balanced  [2] Gaming  [3] Battery Saver  [4] Read-Only Safe [1]: ").strip() or "1"
-            prof_map = {"1": "Balanced Daily", "2": "Gaming / Low-Latency", "3": "Battery Endurance", "4": "Minimal Safe Mode"}
-            wizard_choices: dict[str, Any] = {
-                "enabled_modules": mods,
-                "preset_name": pname,
-                "active_profile": prof_map.get(prof_pick, "Balanced Daily"),
-                "simple_mode": _ask_yn("Keep menus simple and beginner-friendly?", True),
-                "show_tray_icon": _ask_yn("Show AstraCradle icon in the system tray?", True),
-                "launch_at_login": _ask_yn("Start AstraCradle automatically when you log in?", False),
-                "confirm_important_prompts": _ask_yn("Ask Yes/No before making major system or Wi-Fi changes?", True),
-                **perms,
-            }
-            cfg.apply_wizard_choices(wizard_choices)
-            try:
-                LifecycleManager(cfg_mgr, rollback_mgr, journal).set_launch_at_login(bool(cfg.launch_at_login))
-            except Exception:
-                pass
-        else:
-            mods = list(cfg.enabled_modules)
-            pname = str(getattr(cfg, "install_bundle_preset", "Full Suite (Everything)"))
-            cfg.apply_module_selection(mods, preset_name=pname, sync_simple_mode=True)
-            cfg.setup_wizard_completed = True
-            cfg.consent_prompted = True
-
-        cfg_mgr.save(cfg)
-        ModuleAndUpdateManager(cfg_mgr, journal).record_install_memory(
-            install_method="cli_setup_wizard",
-            step_note=f"Setup Wizard configured {len(mods)} module(s) ({pname})",
-            config=cfg,
-        )
-        print(f"All choices saved & configured: {pname} ({cfg.active_profile}) -> {', '.join(mods)}")
-        return 0
-
     if args.comprehensive_setup:
         from .core.config import COMPREHENSIVE_SETUPS
 
@@ -1014,26 +868,7 @@ def run_cli(args: argparse.Namespace) -> int:
     return 0
 
 
-def _ensure_valid_stdio(cfg_dir: str | None = None) -> None:
-    """Windows pythonw.exe / gui-script wrappers set sys.stdout & sys.stderr to None; redirect safely."""
-    if sys.stdout is not None and sys.stderr is not None:
-        return
-    try:
-        base = Path(cfg_dir).expanduser() if cfg_dir else (Path.home() / ".astracradle")
-        log_dir = base / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_dir / "gui_stdio.log", "a", encoding="utf-8", errors="replace")
-    except Exception:
-        import os as _os
-        log_file = open(_os.devnull, "w", encoding="utf-8")
-    if sys.stdout is None:
-        sys.stdout = log_file
-    if sys.stderr is None:
-        sys.stderr = log_file
-
-
 def main(argv: list[str] | None = None) -> int:
-    _ensure_valid_stdio()
     parser = argparse.ArgumentParser(
         prog="astracradle",
         description=f"{__app_name__} v{__version__} — {__tagline__}",
@@ -1065,10 +900,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--conflicts", action="store_true", help="Check for overlapping DNS, fan, or optimizer tools.")
     parser.add_argument("--export-crash-log", action="store_true", help="Export a paste-ready Forensic & Crash Vault log file.")
     parser.add_argument("--comprehensive-setup", type=str, default=None, help="Apply a comprehensive studio setup preset (e.g. 'Recommended All-Rounder').")
-    parser.add_argument("--list-modules", action="store_true", help="List modular AstraCradle features, enabled state, and bundle presets.")
-    parser.add_argument("--modules", type=str, default=None, help="Enable specific modules (comma-separated IDs or preset: full, essential, streamer, privacy, minimal).")
-    parser.add_argument("--setup-wizard", action="store_true", help="Run the interactive terminal modular setup wizard.")
-    parser.add_argument("--gui-setup-wizard", action="store_true", help="Launch the GUI and open the step-by-step Modular Setup Wizard.")
     parser.add_argument("--export-ai-bundle", action="store_true", help="Consolidate old logs and export an AI-ready diagnostic report.")
     parser.add_argument("--minimized", action="store_true", help="Start AstraCradle minimized in the bottom-right system tray.")
     parser.add_argument("--quit", action="store_true", help="Gracefully close any running AstraCradle GUI instance and exit.")
@@ -1151,9 +982,6 @@ def main(argv: list[str] | None = None) -> int:
         or args.conflicts
         or args.export_crash_log
         or args.comprehensive_setup
-        or args.list_modules
-        or args.modules
-        or args.setup_wizard
         or args.export_ai_bundle
         or args.self_check
         or args.install_shortcuts
@@ -1202,32 +1030,11 @@ def main(argv: list[str] | None = None) -> int:
 
     from .ui.app import launch_gui
 
-    try:
-        launch_gui(
-            base_dir=args.config_dir,
-            start_minimized=bool(args.minimized),
-            start_widget=bool(args.widget),
-            open_setup_wizard=bool(args.gui_setup_wizard),
-        )
-    except Exception as exc:
-        import traceback
-
-        crash_path = crash_analyzer.record_unhandled_exception(exc)
-        tb = traceback.format_exc()
-        sys.stderr.write(f"AstraCradle failed to start: {exc}\nLog: {crash_path}\n{tb}\n")
-        if sys.platform.startswith("win"):
-            try:
-                import ctypes
-
-                ctypes.windll.user32.MessageBoxW(
-                    0,
-                    f"AstraCradle failed to start:\n{exc}\n\nCrash log saved to:\n{crash_path}\n\nTry running run_astracradle.bat or Install_AstraCradle.bat to repair dependencies.",
-                    "AstraCradle Startup Error",
-                    0x10,
-                )
-            except Exception:
-                pass
-        return 1
+    launch_gui(
+        base_dir=args.config_dir,
+        start_minimized=bool(args.minimized),
+        start_widget=bool(args.widget),
+    )
     return 0
 
 

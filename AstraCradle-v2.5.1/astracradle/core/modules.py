@@ -97,6 +97,16 @@ ASTRA_MODULES: tuple[AstraModuleSpec, ...] = (
         default_enabled=True,
         background_flags=("probalance_enabled", "app_auto_detect_enabled"),
     ),
+    AstraModuleSpec(
+        module_id="hermes_ai",
+        name="Hermes OS AI Agent (Local GPU & Free Cloud)",
+        category="Autonomous AI",
+        summary="Native Nous Research Hermes AI agent with persistent memory, self-learned SKILL.md workflows, cron tasks, messaging gateways, auto-picked GPU model (Ollama) & free cloud APIs.",
+        nav_keys=("hermes",),
+        footprint_label="Zero idle overhead until enabled",
+        default_enabled=True,
+        background_flags=("hermes_cron_enabled", "hermes_gateway_auto_start"),
+    ),
 )
 
 MODULE_BY_ID: dict[str, AstraModuleSpec] = {m.module_id: m for m in ASTRA_MODULES}

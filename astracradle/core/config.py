@@ -11,13 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from .models import AutomationRule, utc_now_iso
-from .modules import (
-    ALL_MODULE_IDS,
-    DEFAULT_ENABLED_MODULE_IDS,
-    INSTALL_BUNDLE_PRESETS,
-    MODULE_BY_ID,
-    normalize_enabled_modules,
-)
 
 
 DEFAULT_PROTECTED_PROCESSES = [
@@ -42,20 +35,6 @@ DEFAULT_PROTECTED_PROCESSES = [
     "astracradle",
     "python",
     "python3",
-    # Remote Desktop, Game Streaming, Audio & Compositor processes (never throttle during streams)
-    "sunshine",
-    "moonlight",
-    "moonlight-qt",
-    "tailscaled",
-    "pipewire",
-    "pipewire-pulse",
-    "wireplumber",
-    "xdg-desktop-portal",
-    "xdg-desktop-portal-kde",
-    "kwin_wayland",
-    "kwin_x11",
-    "rustdesk",
-    "parsec",
 ]
 
 
@@ -365,9 +344,6 @@ class AppConfig:
     elevated_actions_mode: str = "playbook_only"
     # Explicit Local Diagnostic Permission Gates (user-consented)
     consent_prompted: bool = False
-    setup_wizard_completed: bool = False
-    install_bundle_preset: str = "Full Suite (Everything)"
-    enabled_modules: list[str] = field(default_factory=lambda: list(DEFAULT_ENABLED_MODULE_IDS))
     first_run_scan_completed: bool = False
     consent_telemetry: bool = True
     consent_process_scan: bool = True
@@ -486,126 +462,6 @@ class AppConfig:
             if hasattr(self, key):
                 setattr(self, key, val)
                 applied.append(f"{key}={val}")
-        self.last_updated = utc_now_iso()
-        return applied
-
-    def is_module_enabled(self, module_id: str) -> bool:
-        spec = MODULE_BY_ID.get(module_id)
-        if spec is not None and spec.locked:
-            return True
-        mods = getattr(self, "enabled_modules", None)
-        if not mods:
-            return True
-        return module_id in mods
-
-    def apply_module_selection(
-        self,
-        module_ids: list[str] | tuple[str, ...] | set[str],
-        preset_name: str = "Custom",
-        *,
-        sync_simple_mode: bool = True,
-    ) -> list[str]:
-        """Applies a modular feature selection and disables background loops for turned-off modules."""
-        normalized = normalize_enabled_modules(module_ids)
-        self.enabled_modules = normalized
-        if preset_name in INSTALL_BUNDLE_PRESETS:
-            self.install_bundle_preset = preset_name
-        else:
-            matched = next(
-                (p for p, spec in INSTALL_BUNDLE_PRESETS.items() if set(spec["modules"]) == set(normalized)),
-                "Custom",
-            )
-            self.install_bundle_preset = matched
-
-        enabled_set = set(normalized)
-        # Gate background auto-starters/watchers so disabled modules use zero runtime overhead
-        if "privacy_shield" not in enabled_set:
-            self.astrashield_auto_start = False
-            self.astrashield_enabled = False
-            self.astrashield_dns_enabled = False
-            self.badusb_guard_enabled = False
-        if "wifi_failover_mesh" not in enabled_set:
-            self.wifi_auto_optimize = False
-            self.failover_enabled = False
-        if "system_scanner" not in enabled_set:
-            self.catalog_passive_scan = False
-            self.catalog_watch_new_apps = False
-        if "pro_tuning" not in enabled_set:
-            self.probalance_enabled = False
-            self.app_auto_detect_enabled = False
-
-        if sync_simple_mode:
-            if "pro_tuning" in enabled_set and self.install_bundle_preset == "Full Suite (Everything)":
-                self.simple_mode = False
-            elif "pro_tuning" not in enabled_set:
-                self.simple_mode = True
-
-        self.last_updated = utc_now_iso()
-        return normalized
-
-    def apply_wizard_choices(self, choices: dict[str, Any]) -> list[str]:
-        """Applies all permissions, modules, profile, look & protection choices from the Setup Wizard."""
-        applied: list[str] = []
-        if "enabled_modules" in choices and isinstance(choices["enabled_modules"], (list, tuple, set)):
-            preset_name = str(choices.get("preset_name") or "Custom")
-            mods = self.apply_module_selection(
-                choices["enabled_modules"],
-                preset_name=preset_name,
-                sync_simple_mode=("simple_mode" not in choices),
-            )
-            applied.append(f"modules={len(mods)}")
-
-        if choices.get("active_profile") in SITUATION_PROFILES:
-            self.apply_profile(str(choices["active_profile"]))
-            applied.append(f"profile={self.active_profile}")
-
-        direct_keys = (
-            "consent_telemetry",
-            "consent_process_scan",
-            "consent_installed_apps",
-            "consent_bloat_scan",
-            "consent_privacy_scan",
-            "consent_crash_diagnostics",
-            "consent_auto_remediate",
-            "consent_wifi_auto_channel",
-            "consent_auto_install_deps",
-            "theme",
-            "language",
-            "auto_update_mode",
-            "simple_mode",
-            "confirm_important_prompts",
-            "quarantine_enabled",
-            "auto_self_heal",
-            "show_tray_icon",
-            "minimize_to_tray",
-            "desktop_widget_enabled",
-            "launch_at_login",
-            "astrashield_auto_start",
-            "badusb_guard_enabled",
-            "wifi_prefer_5ghz",
-            "failover_enabled",
-            "astrabeam_tailscale_only",
-        )
-        for k in direct_keys:
-            if k in choices and hasattr(self, k):
-                setattr(self, k, choices[k])
-                applied.append(f"{k}={choices[k]}")
-
-        # Re-enforce module gates so disabled modules stay off even if a flag defaulted True
-        enabled_set = set(self.enabled_modules)
-        if "privacy_shield" not in enabled_set:
-            self.astrashield_auto_start = False
-            self.badusb_guard_enabled = False
-        if "wifi_failover_mesh" not in enabled_set:
-            self.wifi_auto_optimize = False
-            self.failover_enabled = False
-        elif self.consent_wifi_auto_channel:
-            self.wifi_auto_optimize = True
-            self.wifi_prompt_before_apply = False
-            self.wifi_min_channel_hold_min = max(10, int(getattr(self, "wifi_min_channel_hold_min", 10)))
-
-        self.consent_prompted = True
-        self.setup_wizard_completed = True
         self.last_updated = utc_now_iso()
         return applied
 
@@ -756,7 +612,6 @@ class ConfigManager:
             "pause_during_fullscreen",
             "require_confirm_moderate",
             "consent_prompted",
-            "setup_wizard_completed",
             "first_run_scan_completed",
             "consent_telemetry",
             "consent_process_scan",
@@ -784,13 +639,6 @@ class ConfigManager:
         filtered["excluded_processes"] = _safe_str_list(
             filtered.get("excluded_processes"), defaults.excluded_processes
         )
-        if "enabled_modules" in filtered:
-            filtered["enabled_modules"] = normalize_enabled_modules(
-                _safe_str_list(filtered.get("enabled_modules"), list(ALL_MODULE_IDS))
-            )
-        # Existing pre-wizard installs that already answered consent shouldn't be blocked on upgrade
-        if "setup_wizard_completed" not in filtered and bool(filtered.get("consent_prompted", False)):
-            filtered["setup_wizard_completed"] = True
         filtered["custom_protected_paths"] = _safe_str_list(
             filtered.get("custom_protected_paths"), defaults.custom_protected_paths
         )

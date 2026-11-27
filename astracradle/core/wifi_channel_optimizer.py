@@ -459,60 +459,6 @@ class WifiChannelOptimizer:
             "band": locked_band,
         }
 
-    @staticmethod
-    def detect_active_remote_desktop_session() -> tuple[bool, str]:
-        """Returns (True, reason) when Sunshine/Moonlight/RDP/VNC/RustDesk/Steam Remote Play is actively streaming."""
-        import psutil
-
-        streaming_ports = {
-            3389: "RDP",
-            5900: "VNC",
-            5901: "VNC",
-            21115: "RustDesk",
-            21116: "RustDesk",
-            27036: "Steam Remote Play",
-            47984: "Sunshine/Moonlight",
-            47989: "Sunshine/Moonlight",
-            47998: "Sunshine/Moonlight",
-            47999: "Sunshine/Moonlight",
-            48000: "Sunshine/Moonlight",
-            48002: "Sunshine/Moonlight",
-            48010: "Sunshine/Moonlight",
-        }
-        try:
-            for conn in psutil.net_connections(kind="inet"):
-                lport = int(getattr(getattr(conn, "laddr", None), "port", 0) or 0)
-                raddr = getattr(conn, "raddr", None)
-                rport = int(getattr(raddr, "port", 0) or 0) if raddr else 0
-                status = str(getattr(conn, "status", "") or "").upper()
-                # Active remote peer connected on any streaming/RDP/VNC port
-                if raddr and (lport in streaming_ports or rport in streaming_ports):
-                    label = streaming_ports.get(lport) or streaming_ports.get(rport) or "Remote Desktop"
-                    if status in ("ESTABLISHED", "NONE", ""):
-                        return True, f"{label} stream active (port {lport or rport})"
-        except Exception:
-            pass
-
-        client_procs = {
-            "moonlight",
-            "moonlight-qt",
-            "parsec",
-            "rustdesk",
-            "remmina",
-            "krdc",
-            "anydesk",
-            "teamviewer",
-            "xfreerdp",
-        }
-        try:
-            for p in psutil.process_iter(["name"]):
-                nm = str((p.info or {}).get("name") or "").lower()
-                if nm in client_procs:
-                    return True, f"Remote desktop client '{nm}' running"
-        except Exception:
-            pass
-        return False, ""
-
     def optimize_connection(
         self,
         dry_run: bool = False,
@@ -524,22 +470,14 @@ class WifiChannelOptimizer:
         min_hold_sec: float = DEFAULT_MIN_HOLD_SEC,
         force_switch: bool = False,
         now_epoch: float | None = None,
-        remote_stream_active: bool | None = None,
     ) -> WifiOptimizationResult:
         """Evaluates current channel congestion and switches/tunes Wi-Fi to the cleanest BSSID/band."""
-        if remote_stream_active is None:
-            stream_active, stream_reason = self.detect_active_remote_desktop_session()
-        else:
-            stream_active = bool(remote_stream_active)
-            stream_reason = "Remote Desktop / streaming session active" if stream_active else ""
-
-        effective_rescan = False if (stream_active and not force_switch) else rescan
         if aps_override is not None:
             aps = list(aps_override)
             iface = self.detect_wifi_interface() or "wlan0"
             link_meta = {"interface": iface, "powersave": self._is_powersave_enabled(iface)}
         else:
-            aps, link_meta = self.scan_wifi_environment(rescan=effective_rescan)
+            aps, link_meta = self.scan_wifi_environment(rescan=rescan)
             iface = str(link_meta.get("interface") or "wlan0")
 
         by_band = self.score_channels(aps)
@@ -564,8 +502,8 @@ class WifiChannelOptimizer:
             min_hold_sec=min_hold_sec,
             now_epoch=now_epoch,
         )
-        hold_active = bool((hold_info.get("active", False) or stream_active) and not force_switch)
-        hold_rem_sec = float(hold_info.get("remaining_sec") or 0.0) if hold_info.get("active", False) and not force_switch else 0.0
+        hold_active = bool(hold_info.get("active", False) and not force_switch)
+        hold_rem_sec = float(hold_info.get("remaining_sec") or 0.0) if hold_active else 0.0
 
         # Candidate BSSIDs sharing the exact same SSID (e.g. dual-band 2.4/5/6 GHz or mesh nodes)
         same_ssid = [
@@ -601,14 +539,7 @@ class WifiChannelOptimizer:
             notes.append(
                 f"Active link: '{cur_ssid}' ({cur_bssid}) on {cur_band} ch {cur_chan} (Signal {cur_sig}%, Interference {cur_interf:.1f})."
             )
-            if stream_active and not force_switch:
-                notes.append(
-                    f"Stream Guard active ({stream_reason}): Wi-Fi channel switches and off-channel rescans are suppressed to prevent freezes."
-                )
-                actions.append(
-                    f"Stream Guard active ({stream_reason}): keeping {cur_band} Ch {cur_chan} uninterrupted"
-                )
-            elif hold_active:
+            if hold_active:
                 notes.append(
                     f"Channel hold active ({hold_info['remaining_min_str']} remaining of {int(hold_info['min_hold_sec'] // 60)}m min hold): "
                     f"keeping {cur_band} Ch {cur_chan}."
@@ -757,7 +688,6 @@ class WifiChannelOptimizer:
         aps_override: list[WifiApObservation] | None = None,
         min_hold_sec: float = DEFAULT_MIN_HOLD_SEC,
         now_epoch: float | None = None,
-        remote_stream_active: bool | None = None,
     ) -> dict[str, Any]:
         """Scans channels non-destructively and builds a 1-button Yes/No recommendation when less traffic is found."""
         res = self.optimize_connection(
@@ -768,21 +698,11 @@ class WifiChannelOptimizer:
             aps_override=aps_override,
             min_hold_sec=min_hold_sec,
             now_epoch=now_epoch,
-            remote_stream_active=remote_stream_active,
         )
         can_roam = bool((not res.hold_active) and res.best_bssid_for_ssid and "DRY-RUN:" in res.action_taken)
-        powersave_note = (
-            "Wi-Fi power_save is ON (can disable for lower latency)"
-            if (not res.hold_active) and ("power_save" in res.action_taken)
-            else ""
-        )
-        has_rec = bool((not res.hold_active) and (can_roam or powersave_note))
-        if res.hold_active and "Stream Guard active" in res.action_taken:
-            summary = (
-                f"Remote Desktop / streaming session active on '{res.connected_ssid}' "
-                f"({res.connected_band} Ch {res.connected_channel}) — Wi-Fi channel switches suppressed."
-            )
-        elif res.hold_active:
+        powersave_note = "Wi-Fi power_save is ON (can disable for lower latency)" if "power_save" in res.action_taken else ""
+        has_rec = bool(can_roam or powersave_note)
+        if res.hold_active:
             summary = (
                 f"Channel hold active on '{res.connected_ssid}' ({res.connected_band} Ch {res.connected_channel}) — "
                 f"keeping channel for {int(res.hold_remaining_sec // 60)}m {int(res.hold_remaining_sec % 60):02d}s more."

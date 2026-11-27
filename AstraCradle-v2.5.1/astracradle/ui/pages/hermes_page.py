@@ -1,0 +1,626 @@
+"""Hermes OS AI Agent UI Page — GPU-Matched Local Models, Free Cloud APIs, 1-Click Auto-Setup, Chat, Skills, Memory & Cron."""
+
+from __future__ import annotations
+
+import threading
+import tkinter as tk
+from typing import TYPE_CHECKING
+
+import customtkinter as ctk
+
+from ...core.hermes_agent import (
+    CUSTOM_API_PROVIDERS,
+    FREE_CLOUD_PROVIDERS,
+    HERMES_PERMISSION_LEVELS,
+    HermesHardwareRecommendation,
+    HermesSetupStatus,
+    recommend_hermes_models,
+)
+
+if TYPE_CHECKING:
+    from ..app import AstraCradleApp
+
+
+def _build_provider_options() -> tuple[list[str], dict[str, tuple[str, str]]]:
+    labels: list[str] = []
+    mapping: dict[str, tuple[str, str]] = {}
+    lbl_local = "100% Local-Only AI (Offline · Auto-Matched GPU Model via Ollama)"
+    labels.append(lbl_local)
+    mapping[lbl_local] = ("local_gpu", "ollama")
+    for k, spec in FREE_CLOUD_PROVIDERS.items():
+        lbl = f"Free Cloud · {spec['label']}"
+        labels.append(lbl)
+        mapping[lbl] = ("free_cloud", k)
+    for k, spec in CUSTOM_API_PROVIDERS.items():
+        lbl = f"Own Key · {spec['label']}"
+        labels.append(lbl)
+        mapping[lbl] = ("custom_api", k)
+    return labels, mapping
+
+
+def render_hermes_page(app: AstraCradleApp) -> None:
+    parent = app.hermes_scroll
+    for child in parent.winfo_children():
+        child.destroy()
+
+    p = app.palette
+    f = app.fonts
+    cfg = app.config_obj
+    hm = app.hermes_mgr
+
+    # Use cached recommendation/status immediately so UI never freezes; refresh async in background
+    rec: HermesHardwareRecommendation | None = getattr(app, "_hermes_rec_cache", None)
+    status: HermesSetupStatus | None = getattr(app, "_hermes_status_cache", None)
+    if rec is None or status is None:
+        def _bg_probe() -> None:
+            r = recommend_hermes_models()
+            s = hm.get_status(cfg)
+            app._hermes_rec_cache = r
+            app._hermes_status_cache = s
+            app.after(0, lambda: render_hermes_page(app) if app.current_nav == "hermes" else None)
+
+        threading.Thread(target=_bg_probe, daemon=True).start()
+
+    # ── Top Banner: Hermes OS AI Status & Hardware Match ─────────────────────
+    hdr = ctk.CTkFrame(parent, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12)
+    hdr.pack(fill="x", padx=4, pady=(2, 10))
+
+    top_row = ctk.CTkFrame(hdr, fg_color="transparent")
+    top_row.pack(fill="x", padx=14, pady=(12, 6))
+    ctk.CTkLabel(
+        top_row,
+        text="Hermes OS AI Agent · Autonomous Assistant, Skills, Memory & Cron",
+        font=f["section"],
+        text_color=p.accent_cyan,
+    ).pack(side="left")
+
+    def _refresh_async() -> None:
+        app._hermes_rec_cache = None
+        app._hermes_status_cache = None
+        render_hermes_page(app)
+
+    ctk.CTkButton(
+        top_row,
+        text="Refresh Hardware & Status",
+        height=28,
+        corner_radius=7,
+        fg_color=p.bg_elevated,
+        hover_color=p.border_strong,
+        font=f["small"],
+        command=_refresh_async,
+    ).pack(side="right")
+
+    if rec is not None and status is not None:
+        status_col = p.accent_jade if status.ready else p.accent_amber
+        ctk.CTkLabel(
+            hdr,
+            text=(
+                f"Status: {status.summary}   ·   Home: {status.hermes_home}\n"
+                f"Detected Hardware: {rec.gpu_name} ({rec.gpu_vram_gb:.1f} GB VRAM, {rec.system_ram_gb:.0f} GB RAM) · Tier: {rec.tier_name}\n"
+                f"Best GPU-Local Pick: {rec.recommended_local_model} ({rec.recommended_context_tokens // 1024}K ctx)   ·   "
+                f"Best Free Cloud Pick: {rec.optimal_free_model} (0 GB VRAM)"
+            ),
+            font=f["small"],
+            text_color=status_col,
+            justify="left",
+            wraplength=app._content_wrap(80),
+        ).pack(anchor="w", padx=14, pady=(0, 8))
+
+        # Quick 1-click recommendation cards
+        rec_row = ctk.CTkFrame(hdr, fg_color="transparent")
+        rec_row.pack(fill="x", padx=14, pady=(0, 12))
+
+        local_card = ctk.CTkFrame(rec_row, fg_color=p.bg_elevated, corner_radius=9)
+        local_card.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        ctk.CTkLabel(
+            local_card,
+            text=f"GPU-Optimized Local: {rec.recommended_local_model}",
+            font=f["body_bold"],
+            text_color=p.accent_cyan,
+        ).pack(anchor="w", padx=10, pady=(8, 2))
+        ctk.CTkLabel(
+            local_card,
+            text=rec.local_reason,
+            font=f["caption"],
+            text_color=p.text_secondary,
+            justify="left",
+            wraplength=360,
+        ).pack(anchor="w", padx=10, pady=(0, 8))
+
+        cloud_card = ctk.CTkFrame(rec_row, fg_color=p.bg_elevated, corner_radius=9)
+        cloud_card.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        ctk.CTkLabel(
+            cloud_card,
+            text=f"Optimal Free Cloud: {rec.optimal_free_model}",
+            font=f["body_bold"],
+            text_color=p.accent_jade,
+        ).pack(anchor="w", padx=10, pady=(8, 2))
+        ctk.CTkLabel(
+            cloud_card,
+            text=rec.free_reason,
+            font=f["caption"],
+            text_color=p.text_secondary,
+            justify="left",
+            wraplength=360,
+        ).pack(anchor="w", padx=10, pady=(0, 8))
+    else:
+        ctk.CTkLabel(
+            hdr,
+            text="Probing GPU VRAM, Ollama runtime, and Hermes workspace...",
+            font=f["small"],
+            text_color=p.text_muted,
+        ).pack(anchor="w", padx=14, pady=(0, 10))
+
+    # ── Automated 1-Click Setup & Provider Configuration ─────────────────────
+    setup_card = ctk.CTkFrame(parent, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12)
+    setup_card.pack(fill="x", padx=4, pady=(0, 10))
+
+    ctk.CTkLabel(
+        setup_card,
+        text="1-Click Automated Setup & Model Selection",
+        font=f["body_bold"],
+        text_color=p.text_primary,
+    ).pack(anchor="w", padx=14, pady=(10, 6))
+
+    prov_labels, prov_map = _build_provider_options()
+    cur_local_only = bool(getattr(cfg, "hermes_local_only", False))
+    cur_mode = "local_gpu" if cur_local_only else str(getattr(cfg, "hermes_mode", "free_cloud"))
+    cur_prov = "ollama" if cur_local_only else str(getattr(cfg, "hermes_provider", "openrouter_free"))
+    default_lbl = next(
+        (lbl for lbl, (m, pr) in prov_map.items() if m == cur_mode and pr == cur_prov),
+        prov_labels[1] if len(prov_labels) > 1 else prov_labels[0],
+    )
+    prov_var = tk.StringVar(value=default_lbl)
+    local_only_var = tk.BooleanVar(value=cur_local_only)
+    ctx_var = tk.StringVar(value=str(int(getattr(cfg, "hermes_context_tokens", 32768) or 32768)))
+
+    row1 = ctk.CTkFrame(setup_card, fg_color="transparent")
+    row1.pack(fill="x", padx=14, pady=4)
+    ctk.CTkLabel(row1, text="Backend / Provider:", font=f["small"], width=130, anchor="w").pack(side="left")
+
+    row2 = ctk.CTkFrame(setup_card, fg_color="transparent")
+    row3 = ctk.CTkFrame(setup_card, fg_color="transparent")
+
+    ctk.CTkLabel(row2, text="Model Name:", font=f["small"], width=130, anchor="w").pack(side="left")
+    model_ent = ctk.CTkEntry(
+        row2,
+        width=220,
+        placeholder_text="Leave blank for auto-picked optimal",
+    )
+    if getattr(cfg, "hermes_model", ""):
+        model_ent.insert(0, str(cfg.hermes_model))
+
+    ctk.CTkLabel(row2, text="API Key (if Cloud):", font=f["small"]).pack(side="left", padx=(4, 4))
+    key_ent = ctk.CTkEntry(
+        row2,
+        width=240,
+        show="*",
+        placeholder_text="Paste key (not needed for Local-Only)",
+    )
+
+    ctk.CTkLabel(row3, text="Endpoint URL:", font=f["small"], width=130, anchor="w").pack(side="left")
+    url_ent = ctk.CTkEntry(
+        row3,
+        placeholder_text="Optional override (http://127.0.0.1:11434/v1 for Ollama)",
+    )
+    if getattr(cfg, "hermes_base_url", ""):
+        url_ent.insert(0, str(cfg.hermes_base_url))
+
+    def _on_prov_changed(choice: str) -> None:
+        mode, prov = prov_map.get(choice, ("free_cloud", "openrouter_free"))
+        model_ent.delete(0, "end")
+        url_ent.delete(0, "end")
+        if mode == "local_gpu":
+            local_only_var.set(True)
+            if rec is not None:
+                model_ent.insert(0, rec.recommended_local_model)
+                ctx_var.set(str(rec.recommended_context_tokens))
+            url_ent.insert(0, "http://127.0.0.1:11434/v1")
+        elif prov in FREE_CLOUD_PROVIDERS:
+            local_only_var.set(False)
+            spec = FREE_CLOUD_PROVIDERS[prov]
+            model_ent.insert(0, spec["model"])
+            url_ent.insert(0, spec["base_url"])
+        elif prov in CUSTOM_API_PROVIDERS:
+            local_only_var.set(False)
+            spec = CUSTOM_API_PROVIDERS[prov]
+            model_ent.insert(0, spec["model"])
+            url_ent.insert(0, spec["base_url"])
+
+    ctk.CTkOptionMenu(
+        row1,
+        values=prov_labels,
+        variable=prov_var,
+        width=390,
+        command=_on_prov_changed,
+    ).pack(side="left", padx=(4, 10))
+    ctk.CTkLabel(row1, text="Context:", font=f["small"]).pack(side="left", padx=(8, 4))
+    ctk.CTkOptionMenu(row1, values=["16384", "32768", "65536"], variable=ctx_var, width=100).pack(side="left")
+
+    row2.pack(fill="x", padx=14, pady=4)
+    model_ent.pack(side="left", padx=(4, 10), before=key_ent)
+    # Re-pack cleanly so order is Model Label -> model_ent -> Key Label -> key_ent
+    for w_child in row2.winfo_children():
+        w_child.pack_forget()
+    row2.winfo_children()[0].pack(side="left")
+    model_ent.pack(side="left", padx=(4, 10))
+    row2.winfo_children()[2].pack(side="left", padx=(4, 4))
+    key_ent.pack(side="left", fill="x", expand=True)
+
+    row3.pack(fill="x", padx=14, pady=4)
+    url_ent.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+    ctk.CTkSwitch(
+        setup_card,
+        text="Strict 100% Local-Only Mode (Offline Ollama only — never connect to cloud APIs)",
+        variable=local_only_var,
+    ).pack(anchor="w", padx=14, pady=(4, 2))
+
+    perm_labels = [spec["label"] for spec in HERMES_PERMISSION_LEVELS.values()]
+    perm_key_by_lbl = {spec["label"]: k for k, spec in HERMES_PERMISSION_LEVELS.items()}
+    cur_perm_key = str(getattr(cfg, "hermes_permission_level", "safe_user") or "safe_user")
+    if cur_perm_key not in HERMES_PERMISSION_LEVELS:
+        cur_perm_key = "safe_user"
+    perm_var = tk.StringVar(value=HERMES_PERMISSION_LEVELS[cur_perm_key]["label"])
+
+    perm_row = ctk.CTkFrame(setup_card, fg_color="transparent")
+    perm_row.pack(fill="x", padx=14, pady=(4, 2))
+    ctk.CTkLabel(perm_row, text="AI Access Level:", font=f["small"], width=130, anchor="w").pack(side="left")
+    ctk.CTkOptionMenu(perm_row, values=perm_labels, variable=perm_var, width=480).pack(side="left", padx=(4, 0))
+
+    prog_lbl = ctk.CTkLabel(setup_card, text="", font=f["caption"], text_color=p.text_muted)
+    prog_lbl.pack(anchor="w", padx=14, pady=(4, 0))
+    prog_bar = ctk.CTkProgressBar(setup_card, height=8)
+    prog_bar.set(0.0)
+    prog_bar.pack(fill="x", padx=14, pady=(4, 8))
+
+    btn_row = ctk.CTkFrame(setup_card, fg_color="transparent")
+    btn_row.pack(fill="x", padx=14, pady=(0, 12))
+
+    def _apply_form_to_config() -> None:
+        is_local_only = bool(local_only_var.get())
+        mode, prov = prov_map.get(prov_var.get(), ("free_cloud", "openrouter_free"))
+        if is_local_only:
+            mode, prov = "local_gpu", "ollama"
+        cfg.hermes_local_only = is_local_only
+        cfg.hermes_mode = mode
+        cfg.hermes_provider = prov
+        cfg.hermes_model = model_ent.get().strip()
+        cfg.hermes_base_url = url_ent.get().strip()
+        sel_perm = perm_key_by_lbl.get(perm_var.get(), "safe_user")
+        cfg.hermes_permission_level = sel_perm
+        cfg.hermes_allow_shell = sel_perm in ("standard_user", "sudo_with_prompt")
+        try:
+            cfg.hermes_context_tokens = int(ctx_var.get())
+        except Exception:
+            cfg.hermes_context_tokens = 32768
+        app.cfg_mgr.save(cfg)
+
+    def _run_auto_setup(pull_model: bool = True) -> None:
+        _apply_form_to_config()
+        api_key = key_ent.get().strip()
+        prog_lbl.configure(text="Starting automated Hermes OS AI setup...", text_color=p.accent_cyan)
+        prog_bar.set(0.08)
+
+        def _worker() -> None:
+            def _on_prog(step: str, pct: float, detail: str) -> None:
+                app.after(
+                    0,
+                    lambda s=step, x=pct, d=detail: (
+                        prog_bar.set(max(0.0, min(1.0, x))),
+                        prog_lbl.configure(text=f"{s}: {d}", text_color=p.accent_cyan),
+                    ),
+                )
+
+            ok, summary, st = hm.install_and_setup_hermes(
+                cfg,
+                api_key=api_key,
+                install_upstream_pkg=True,
+                pull_local_model=pull_model,
+                progress_cb=_on_prog,
+            )
+            app._hermes_status_cache = st
+
+            def _done() -> None:
+                prog_bar.set(1.0 if ok else 0.7)
+                prog_lbl.configure(text=summary, text_color=(p.accent_jade if ok else p.accent_amber))
+                app.show_toast("Hermes OS AI setup complete!" if ok else "Hermes setup finished with notes.")
+                render_hermes_page(app)
+
+            app.after(0, _done)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    ctk.CTkButton(
+        btn_row,
+        text="Auto-Install & Set Up Hermes AI Now",
+        height=32,
+        fg_color=p.accent_jade,
+        text_color="#071510",
+        font=f["body_bold"],
+        command=lambda: _run_auto_setup(pull_model=True),
+    ).pack(side="left", padx=(0, 8))
+
+    def _pick_optimal_local() -> None:
+        local_only_var.set(True)
+        prov_var.set(prov_labels[0])
+        _on_prov_changed(prov_labels[0])
+        _run_auto_setup(pull_model=True)
+
+    ctk.CTkButton(
+        btn_row,
+        text="1-Click Local-Only GPU Setup (Offline)",
+        height=32,
+        fg_color=p.accent_cyan,
+        text_color="#071216",
+        font=f["body_bold"],
+        command=_pick_optimal_local,
+    ).pack(side="left", padx=(0, 8))
+
+    def _save_only() -> None:
+        _apply_form_to_config()
+        if key_ent.get().strip():
+            spec = hm.resolve_provider_spec(cfg)
+            hm.save_env_vars({spec["env_var"]: key_ent.get().strip()})
+        hm.ensure_hermes_home(cfg)
+        app._hermes_status_cache = hm.get_status(cfg)
+        app.show_toast("Saved Hermes AI configuration & credentials.")
+        render_hermes_page(app)
+
+    ctk.CTkButton(
+        btn_row,
+        text="Save Settings Only",
+        height=32,
+        fg_color=p.bg_elevated,
+        hover_color=p.border_strong,
+        font=f["small"],
+        command=_save_only,
+    ).pack(side="left")
+
+    # ── Native Workspace Tabs: Chat, Memory & Skills, Cron, Safety & Gateway ─
+    tabs = ctk.CTkTabview(parent, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12)
+    tabs.pack(fill="both", expand=True, padx=4, pady=(0, 6))
+    t_chat = tabs.add("Autonomous Chat & Tools")
+    t_mem = tabs.add("Memory & Learned Skills")
+    t_cron = tabs.add("Cron & Subagents")
+    t_safe = tabs.add("Safety & Messaging Gateways")
+
+    # ── Tab 1: Chat & Tool Execution ─────────────────────────────────────────
+    session_id = str(getattr(app, "_hermes_session_id", "default"))
+    chat_top = ctk.CTkFrame(t_chat, fg_color="transparent")
+    chat_top.pack(fill="x", padx=8, pady=(4, 4))
+
+    sessions = hm.list_sessions(limit=20)
+    sess_ids = [s["session_id"] for s in sessions] or ["default"]
+    if session_id not in sess_ids:
+        sess_ids.insert(0, session_id)
+    sess_var = tk.StringVar(value=session_id)
+
+    ctk.CTkLabel(chat_top, text="Session:", font=f["small"]).pack(side="left", padx=(0, 6))
+
+    def _switch_sess(val: str) -> None:
+        app._hermes_session_id = val
+        render_hermes_page(app)
+
+    ctk.CTkOptionMenu(chat_top, values=sess_ids, variable=sess_var, width=200, command=_switch_sess).pack(side="left", padx=(0, 8))
+
+    def _new_session() -> None:
+        import time as _t
+
+        app._hermes_session_id = f"session_{int(_t.time())}"
+        render_hermes_page(app)
+
+    ctk.CTkButton(chat_top, text="+ New Session", width=110, height=26, fg_color=p.bg_elevated, command=_new_session).pack(side="left")
+
+    transcript = ctk.CTkTextbox(t_chat, height=260, font=f["body"], fg_color=p.bg_elevated, wrap="word")
+    transcript.pack(fill="both", expand=True, padx=8, pady=4)
+    msgs = hm.get_session_messages(session_id, limit=40)
+    if not msgs:
+        transcript.insert(
+            "end",
+            "Hermes OS AI is ready.\n"
+            "Try asking:\n"
+            "  • Diagnose my PC right now and explain any bottlenecks.\n"
+            "  • Check my Wi-Fi channels and GPU temperature.\n"
+            "  • Preview safe cache cleanup without deleting personal files.\n"
+            "  • Remember my preference and turn this workflow into a reusable skill.\n",
+        )
+    else:
+        for m in msgs:
+            who = "You" if m["role"] == "user" else "Hermes AI"
+            transcript.insert("end", f"[{who}] {m['content']}\n")
+            if m.get("tool_trace"):
+                transcript.insert("end", f"  └─ Tools: {m['tool_trace']}\n")
+            transcript.insert("end", "\n")
+    transcript.configure(state="disabled")
+    transcript.see("end")
+
+    # Quick-action prompt chips
+    chips = ctk.CTkFrame(t_chat, fg_color="transparent")
+    chips.pack(fill="x", padx=8, pady=(2, 4))
+    prompt_entry = ctk.CTkEntry(t_chat, placeholder_text="Ask Hermes OS AI to inspect, diagnose, automate, or build a skill...")
+
+    def _send_prompt(override: str | None = None) -> None:
+        q = (override if override is not None else prompt_entry.get()).strip()
+        if not q:
+            return
+        if override is None:
+            prompt_entry.delete(0, "end")
+        transcript.configure(state="normal")
+        transcript.insert("end", f"[You] {q}\n[Hermes AI] Thinking & calling OS tools...\n")
+        transcript.configure(state="disabled")
+        transcript.see("end")
+
+        def _worker() -> None:
+            res = hm.run_prompt(q, cfg, session_id=session_id)
+
+            def _ui() -> None:
+                app._hermes_status_cache = hm.get_status(cfg)
+                render_hermes_page(app)
+                if not res.ok:
+                    app.show_toast(f"Hermes error: {res.error}")
+                elif res.skill_created:
+                    app.show_toast("Hermes auto-learned a new reusable SKILL.md!")
+
+            app.after(0, _ui)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    for label_txt, q_txt in (
+        ("Diagnose PC", "Run a deep system scan and check live CPU/GPU/RAM status, then summarize in plain English."),
+        ("Wi-Fi & Temps", "Check my GPU temperature and Wi-Fi channels, and suggest safe improvements."),
+        ("Preview Safe Fix", "Preview safe cache cleanup with dry_run=true and show what can be safely reclaimed."),
+    ):
+        ctk.CTkButton(
+            chips,
+            text=label_txt,
+            height=24,
+            fg_color=p.bg_elevated,
+            hover_color=p.accent_cyan,
+            font=f["caption"],
+            command=lambda qt=q_txt: _send_prompt(qt),
+        ).pack(side="left", padx=(0, 6))
+
+    in_row = ctk.CTkFrame(t_chat, fg_color="transparent")
+    in_row.pack(fill="x", padx=8, pady=(2, 6))
+    prompt_entry.pack_forget()
+    prompt_entry = ctk.CTkEntry(in_row, placeholder_text="Ask Hermes OS AI anything about your PC or tasks...")
+    prompt_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+    prompt_entry.bind("<Return>", lambda _e: _send_prompt())
+    ctk.CTkButton(
+        in_row,
+        text="Send to Hermes",
+        width=130,
+        height=32,
+        fg_color=p.accent_cyan,
+        text_color="#071216",
+        font=f["body_bold"],
+        command=_send_prompt,
+    ).pack(side="right")
+
+    # ── Tab 2: Memory & Learned Skills ───────────────────────────────────────
+    hm.ensure_hermes_home(cfg)
+    mem_box = ctk.CTkTextbox(t_mem, height=130, font=f["small"], fg_color=p.bg_elevated)
+    ctk.CTkLabel(t_mem, text="Persistent Memory (MEMORY.md):", font=f["body_bold"]).pack(anchor="w", padx=8, pady=(6, 2))
+    mem_box.pack(fill="x", padx=8, pady=(0, 6))
+    mem_box.insert("1.0", hm.memory_path.read_text(encoding="utf-8", errors="ignore"))
+
+    def _save_mem_md() -> None:
+        hm.memory_path.write_text(mem_box.get("1.0", "end").strip() + "\n", encoding="utf-8")
+        app.show_toast("Saved MEMORY.md")
+
+    ctk.CTkButton(t_mem, text="Save MEMORY.md", width=130, height=26, fg_color=p.accent_jade, text_color="#071510", command=_save_mem_md).pack(anchor="w", padx=8, pady=(0, 8))
+
+    ctk.CTkLabel(t_mem, text="Learned Skills (skills/*/SKILL.md):", font=f["body_bold"]).pack(anchor="w", padx=8, pady=(2, 2))
+    skills_box = ctk.CTkTextbox(t_mem, height=130, font=f["small"], fg_color=p.bg_elevated)
+    skills_box.pack(fill="both", expand=True, padx=8, pady=(0, 6))
+    for sk in hm.list_skills():
+        skills_box.insert("end", f"=== {sk['slug']} ({sk['path']}) ===\n{sk['content']}\n\n")
+    skills_box.configure(state="disabled")
+
+    # ── Tab 3: Cron & Subagents ──────────────────────────────────────────────
+    cron_form = ctk.CTkFrame(t_cron, fg_color="transparent")
+    cron_form.pack(fill="x", padx=8, pady=6)
+    cname_var = tk.StringVar(value="Hourly Health Check")
+    cprompt_var = tk.StringVar(value="Check system status and note any high thermals or RAM bloat in MEMORY.md.")
+    cint_var = tk.StringVar(value="60")
+
+    ctk.CTkEntry(cron_form, textvariable=cname_var, width=160, placeholder_text="Job name").pack(side="left", padx=(0, 6))
+    ctk.CTkEntry(cron_form, textvariable=cprompt_var, placeholder_text="Prompt to run on schedule").pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ctk.CTkEntry(cron_form, textvariable=cint_var, width=60).pack(side="left", padx=(0, 6))
+
+    def _add_cron() -> None:
+        try:
+            mins = int(cint_var.get())
+        except Exception:
+            mins = 60
+        hm.add_cron_job(cname_var.get(), cprompt_var.get(), mins)
+        cfg.hermes_cron_enabled = True
+        app.cfg_mgr.save(cfg)
+        render_hermes_page(app)
+
+    ctk.CTkButton(cron_form, text="Add Cron Task", width=110, fg_color=p.accent_cyan, text_color="#071216", command=_add_cron).pack(side="right")
+
+    for job in hm.list_cron_jobs():
+        jrow = ctk.CTkFrame(t_cron, fg_color=p.bg_elevated, corner_radius=8)
+        jrow.pack(fill="x", padx=8, pady=3)
+        ctk.CTkLabel(
+            jrow,
+            text=f"{job.get('name')} · every {job.get('interval_minutes')} min · {job.get('last_status', 'pending')}",
+            font=f["small"],
+        ).pack(side="left", padx=10, pady=6)
+        ctk.CTkButton(
+            jrow,
+            text="Delete",
+            width=70,
+            height=24,
+            fg_color=p.accent_rose,
+            command=lambda jid=job.get("job_id", ""): (hm.delete_cron_job(jid), render_hermes_page(app)),
+        ).pack(side="right", padx=8, pady=4)
+
+    # ── Tab 4: Safety & Messaging Gateways ───────────────────────────────────
+    req_app_var = tk.BooleanVar(value=bool(getattr(cfg, "hermes_require_approval", True)))
+    cron_en_var = tk.BooleanVar(value=bool(getattr(cfg, "hermes_cron_enabled", False)))
+    safe_perm_var = tk.StringVar(value=HERMES_PERMISSION_LEVELS[cur_perm_key]["label"])
+    perm_desc_lbl = ctk.CTkLabel(
+        t_safe,
+        text=HERMES_PERMISSION_LEVELS[cur_perm_key]["summary"],
+        font=f["caption"],
+        text_color=p.text_secondary,
+        wraplength=680,
+        justify="left",
+    )
+
+    def _save_safety(_choice=None) -> None:
+        sel_p = perm_key_by_lbl.get(safe_perm_var.get(), "safe_user")
+        cfg.hermes_permission_level = sel_p
+        cfg.hermes_allow_shell = sel_p in ("standard_user", "sudo_with_prompt")
+        cfg.hermes_require_approval = bool(req_app_var.get())
+        cfg.hermes_cron_enabled = bool(cron_en_var.get())
+        perm_desc_lbl.configure(text=HERMES_PERMISSION_LEVELS[sel_p]["summary"])
+        perm_var.set(safe_perm_var.get())
+        app.cfg_mgr.save(cfg)
+        hm.write_config_yaml(cfg)
+        app.show_toast("Updated Hermes OS permission level & safety settings.")
+
+    ctk.CTkLabel(t_safe, text="How Much System Control Should Hermes OS AI Have?", font=f["body_bold"], text_color=p.accent_cyan).pack(anchor="w", padx=10, pady=(10, 4))
+    ctk.CTkOptionMenu(t_safe, values=perm_labels, variable=safe_perm_var, width=520, command=_save_safety).pack(anchor="w", padx=10, pady=(0, 4))
+    perm_desc_lbl.pack(anchor="w", padx=12, pady=(0, 8))
+
+    ctk.CTkSwitch(t_safe, text="Require explicit approval / dry-run before risky changes (Recommended)", variable=req_app_var, command=_save_safety).pack(anchor="w", padx=10, pady=6)
+    ctk.CTkSwitch(t_safe, text="Enable scheduled Hermes Cron tasks while AstraCradle runs", variable=cron_en_var, command=_save_safety).pack(anchor="w", padx=10, pady=6)
+
+    gw_row = ctk.CTkFrame(t_safe, fg_color=p.bg_elevated, corner_radius=9)
+    gw_row.pack(fill="x", padx=10, pady=10)
+    ctk.CTkLabel(
+        gw_row,
+        text="Messaging Gateways (Telegram / Discord / Slack / WhatsApp / Email via upstream `hermes gateway`):",
+        font=f["body_bold"],
+    ).pack(anchor="w", padx=10, pady=(8, 4))
+
+    gw_inputs = ctk.CTkFrame(gw_row, fg_color="transparent")
+    gw_inputs.pack(fill="x", padx=10, pady=4)
+    tg_ent = ctk.CTkEntry(gw_inputs, show="*", placeholder_text="TELEGRAM_BOT_TOKEN (optional)")
+    tg_ent.pack(side="left", fill="x", expand=True, padx=(0, 6))
+    dc_ent = ctk.CTkEntry(gw_inputs, show="*", placeholder_text="DISCORD_BOT_TOKEN (optional)")
+    dc_ent.pack(side="left", fill="x", expand=True)
+
+    gw_btns = ctk.CTkFrame(gw_row, fg_color="transparent")
+    gw_btns.pack(fill="x", padx=10, pady=(4, 10))
+
+    def _start_gw() -> None:
+        ups = {}
+        if tg_ent.get().strip():
+            ups["TELEGRAM_BOT_TOKEN"] = tg_ent.get().strip()
+        if dc_ent.get().strip():
+            ups["DISCORD_BOT_TOKEN"] = dc_ent.get().strip()
+        if ups:
+            hm.save_env_vars(ups)
+        ok, msg = hm.start_gateway(cfg)
+        app.show_toast(msg)
+        app._hermes_status_cache = hm.get_status(cfg)
+        if ok:
+            render_hermes_page(app)
+
+    ctk.CTkButton(gw_btns, text="Save Tokens & Start Gateway", fg_color=p.accent_jade, text_color="#071510", command=_start_gw).pack(side="left", padx=(0, 8))
+    ctk.CTkButton(gw_btns, text="Stop Gateway", fg_color=p.accent_rose, command=lambda: (hm.stop_gateway(), app.show_toast("Stopped Hermes gateway."))).pack(side="left")

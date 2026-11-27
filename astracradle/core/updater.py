@@ -32,7 +32,6 @@ class ModuleAndUpdateManager:
         self.cfg_mgr = cfg_mgr
         self.journal = journal
         self.install_memory_path = self.cfg_mgr.base_dir / "machine_install_memory.json"
-        self.install_memory_bak_path = self.cfg_mgr.base_dir / "machine_install_memory.json.bak"
 
     def load_install_memory(self) -> dict[str, object]:
         """Loads persistent machine install & update memory from ~/.astracradle/machine_install_memory.json."""
@@ -55,39 +54,30 @@ class ModuleAndUpdateManager:
             "remembered_steps": [],
             "update_history": [],
         }
-        for candidate in (self.install_memory_path, self.install_memory_bak_path):
-            if not candidate.exists():
-                continue
-            try:
-                raw = json.loads(candidate.read_text(encoding="utf-8"))
-                if isinstance(raw, dict):
-                    merged = dict(defaults)
-                    merged.update(raw)
-                    if not isinstance(merged.get("remembered_steps"), list):
-                        merged["remembered_steps"] = []
-                    if not isinstance(merged.get("update_history"), list):
-                        merged["update_history"] = []
-                    if candidate == self.install_memory_bak_path:
-                        # Automatically heal truncated/corrupted primary memory file from shadow backup
-                        self.save_install_memory(merged)
-                    return merged
-            except Exception:
-                continue
+        if not self.install_memory_path.exists():
+            return defaults
+        try:
+            raw = json.loads(self.install_memory_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                merged = dict(defaults)
+                merged.update(raw)
+                if not isinstance(merged.get("remembered_steps"), list):
+                    merged["remembered_steps"] = []
+                if not isinstance(merged.get("update_history"), list):
+                    merged["update_history"] = []
+                return merged
+        except Exception:
+            pass
         return defaults
 
     def save_install_memory(self, mem: dict[str, object]) -> None:
         self.cfg_mgr.ensure_directories()
-        payload = json.dumps(mem, indent=2)
         tmp = self.install_memory_path.with_suffix(".json.tmp")
-        tmp.write_text(payload, encoding="utf-8")
+        tmp.write_text(json.dumps(mem, indent=2), encoding="utf-8")
         tmp.replace(self.install_memory_path)
-        tmp_bak = self.install_memory_bak_path.with_suffix(".bak.tmp")
-        tmp_bak.write_text(payload, encoding="utf-8")
-        tmp_bak.replace(self.install_memory_bak_path)
 
     def clear_install_memory(self) -> None:
         self.install_memory_path.unlink(missing_ok=True)
-        self.install_memory_bak_path.unlink(missing_ok=True)
 
     def record_install_memory(
         self,
@@ -145,9 +135,6 @@ class ModuleAndUpdateManager:
         mem["remembered_steps"] = steps
 
         if config is not None:
-            mem["enabled_modules"] = list(getattr(config, "enabled_modules", []) or [])
-            mem["install_bundle_preset"] = str(getattr(config, "install_bundle_preset", "Full Suite (Everything)"))
-            mem["setup_wizard_completed"] = bool(getattr(config, "setup_wizard_completed", False))
             mem["saved_permissions"] = {
                 "consent_prompted": bool(config.consent_prompted),
                 "consent_wifi_auto_channel": bool(getattr(config, "consent_wifi_auto_channel", False)),
@@ -199,17 +186,6 @@ class ModuleAndUpdateManager:
                 reapplied.append(
                     f"Re-applied {len(created)} App Menu shortcut(s) (Desktop Icon: {'YES' if want_desk else 'NO'})"
                 )
-            except Exception:
-                pass
-
-        if isinstance(mem.get("enabled_modules"), list) and mem.get("enabled_modules"):
-            try:
-                preset_m = str(mem.get("install_bundle_preset") or "Custom")
-                config.apply_module_selection(mem["enabled_modules"], preset_name=preset_m, sync_simple_mode=False)
-                if mem.get("setup_wizard_completed"):
-                    config.setup_wizard_completed = True
-                self.cfg_mgr.save(config)
-                reapplied.append(f"Restored {len(config.enabled_modules)} selected module(s) ({preset_m})")
             except Exception:
                 pass
 

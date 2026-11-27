@@ -9,7 +9,6 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
-import time
 from typing import Any
 
 import psutil
@@ -398,10 +397,6 @@ class GpuPowerAndFanController:
 
     @staticmethod
     def probe_live_power_and_fan() -> dict[str, Any]:
-        cached = getattr(GpuPowerAndFanController, "_probe_cache", None)
-        now_m = time.monotonic()
-        if cached and (now_m - cached[0]) < 4.0:
-            return dict(cached[1])
         if shutil.which("nvidia-smi"):
             try:
                 p = subprocess.run(
@@ -412,13 +407,12 @@ class GpuPowerAndFanController:
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=1.5,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    timeout=2,
                 )
                 if p.returncode == 0 and p.stdout.strip():
                     parts = [x.strip() for x in p.stdout.strip().splitlines()[0].split(",")]
                     if len(parts) >= 6:
-                        out = {
+                        return {
                             "available": True,
                             "name": parts[0],
                             "power_draw_w": parts[1],
@@ -427,8 +421,6 @@ class GpuPowerAndFanController:
                             "fan_percent": parts[4],
                             "temp_c": parts[5],
                         }
-                        GpuPowerAndFanController._probe_cache = (now_m, dict(out))  # type: ignore[attr-defined]
-                        return out
             except Exception:
                 pass
         if platform.system() == "Linux":

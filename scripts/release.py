@@ -77,15 +77,7 @@ def build_bundle(version: str, out_dir: Path) -> tuple[Path, Path]:
             rel = p.relative_to(ROOT)
             if any(part in skip_parts or part.endswith(".egg-info") for part in rel.parts):
                 continue
-            arc = str(Path(f"AstraCradle-v{version}") / rel)
-            zi = zipfile.ZipInfo.from_file(p, arcname=arc)
-            zi.compress_type = zipfile.ZIP_DEFLATED
-            zi.create_system = 3  # Unix permissions
-            if p.suffix in (".sh", ".fish", ".command") or (p.stat().st_mode & 0o111):
-                zi.external_attr = (0o100755) << 16
-            else:
-                zi.external_attr = (0o100644) << 16
-            zf.writestr(zi, p.read_bytes())
+            zf.write(p, arcname=str(Path(f"AstraCradle-v{version}") / rel))
     digest = hashlib.sha256(out_zip.read_bytes()).hexdigest()
     sha_file.write_text(f"{digest}  {out_zip.name}\n", encoding="utf-8")
     return out_zip, sha_file

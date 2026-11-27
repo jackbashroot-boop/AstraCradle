@@ -4,15 +4,12 @@ cd (dirname (status -f))
 
 set -l no_launch 0
 set -l desktop_icon 0
-set -l modules_arg ""
 set -l pass_args
 for arg in $argv
     if test "$arg" = "--no-launch"
         set no_launch 1
     else if test "$arg" = "--desktop-icon"
         set desktop_icon 1
-    else if string match -q -- "--modules=*" "$arg"
-        set modules_arg (string replace -- "--modules=" "" "$arg")
     else
         set -a pass_args $arg
     end
@@ -38,11 +35,7 @@ if not python3 -c "import tkinter" 2>/dev/null; or not python3 -c "import gi; gi
     end
 end
 
-if not test -x .venv/bin/python; or not ./.venv/bin/python -m pip --version >/dev/null 2>&1
-    if test -d .venv
-        echo "[Recover] Detected incomplete/corrupt .venv from an interrupted install — recreating cleanly..."
-        rm -rf .venv
-    end
+if not test -x .venv/bin/python
     echo "[2/6] Creating virtual environment (.venv)..."
     python3 -m venv --system-site-packages .venv
 else if test -f .venv/pyvenv.cfg
@@ -55,10 +48,6 @@ echo "[3/6] Installing AstraCradle v2.5.1..."
 
 echo "[4/6] Linking global Fish/CLI launchers into ~/.local/bin..."
 mkdir -p ~/.local/bin
-# Remove any stale system/user pip astracradle outside this .venv so old v1.x never shadows v2.5.1
-if python3 -m pip show astracradle >/dev/null 2>&1
-    python3 -m pip uninstall -y --break-system-packages astracradle >/dev/null 2>&1; or python3 -m pip uninstall -y astracradle >/dev/null 2>&1; or true
-end
 for bin_name in astracradle astracradle-gui astracradle-wifi
     if test -x (pwd)/.venv/bin/$bin_name
         ln -sf (pwd)/.venv/bin/$bin_name ~/.local/bin/$bin_name
@@ -68,31 +57,8 @@ if not contains ~/.local/bin $PATH
     fish_add_path ~/.local/bin
 end
 
-echo "[5/6] Running full self-check, modular setup & App Menu setup (using Machine Update Memory)..."
+echo "[5/6] Running full self-check & App Menu setup (using Machine Update Memory)..."
 ./.venv/bin/python -m astracradle --self-check
-if test -n "$modules_arg"
-    ./.venv/bin/python -m astracradle --modules "$modules_arg"
-else
-    set -l has_mods (./.venv/bin/python -c "import json,pathlib; p=pathlib.Path.home()/'.astracradle/machine_install_memory.json'; d=json.loads(p.read_text()) if p.exists() else {}; print('yes' if d.get('enabled_modules') else 'no')" 2>/dev/null)
-    if test "$has_mods" = "yes"
-        echo "[Memory] Restoring remembered module selection from previous install..."
-    else if isatty stdin
-        echo "Modular Setup: choose which features to enable (or press Enter to pick inside the GUI Setup Wizard):"
-        echo "  [1] Full Suite (all modules)   [2] Essential Optimizer   [3] Streamer & iPhone Remote   [4] Privacy & Network   [5] Custom Picker   [Enter] Configure in GUI Wizard"
-        read -l -P "Module preset [1-5 / Enter]: " mod_choice
-        if test "$mod_choice" = "1"
-            ./.venv/bin/python -m astracradle --modules full
-        else if test "$mod_choice" = "2"
-            ./.venv/bin/python -m astracradle --modules essential
-        else if test "$mod_choice" = "3"
-            ./.venv/bin/python -m astracradle --modules streamer
-        else if test "$mod_choice" = "4"
-            ./.venv/bin/python -m astracradle --modules privacy
-        else if test "$mod_choice" = "5"
-            ./.venv/bin/python -m astracradle --setup-wizard
-        end
-    end
-end
 set -l mem_desk (./.venv/bin/python -c "import json,pathlib; p=pathlib.Path.home()/'.astracradle/machine_install_memory.json'; d=json.loads(p.read_text()) if p.exists() else {}; v=d.get('desktop_icon'); print('yes' if v is True else ('no' if v is False else 'ask'))" 2>/dev/null)
 if test $desktop_icon -eq 1
     ./.venv/bin/python -m astracradle --install-shortcuts --desktop-icon --reapply-memory --install-method fish --install-dir (pwd)

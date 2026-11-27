@@ -1,9 +1,9 @@
 {
   "version": "2.5.1",
-  "short_sha": "a83ae60",
-  "commit_full": "a83ae6089d9efe81f5541cea9af010d48b04d239",
-  "commit_count": "16",
+  "short_sha": "c59a608",
+  "commit_full": "c59a608818bbec76f79749586f76d7491d394da4",
+  "commit_count": "21",
   "branch": "main",
-  "commit_date": "2026-11-25",
-  "display_version": "v2.5.1 \u00b7 build #16 \u00b7 a83ae60 \u00b7 2026-11-25"
+  "commit_date": "2026-11-24",
+  "display_version": "v2.5.1 \u00b7 build #21 \u00b7 c59a608 \u00b7 2026-11-24"
 }

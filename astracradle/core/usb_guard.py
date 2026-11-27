@@ -223,16 +223,8 @@ class UsbAndPeripheralGuard:
             pass
         return out
 
-    _win_pnp_cache: tuple[float, list[PeripheralDevice]] | None = None
-
     @staticmethod
     def _scan_windows_pnp() -> list[PeripheralDevice]:
-        import time as _t
-
-        now_m = _t.monotonic()
-        cached = UsbAndPeripheralGuard._win_pnp_cache
-        if cached is not None and (now_m - cached[0]) < 15.0:
-            return list(cached[1])
         out: list[PeripheralDevice] = []
         try:
             p = subprocess.run(
@@ -246,7 +238,6 @@ class UsbAndPeripheralGuard:
                 text=True,
                 timeout=4,
                 check=False,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if p.returncode != 0 or not p.stdout.strip():
                 return out
@@ -271,7 +262,6 @@ class UsbAndPeripheralGuard:
                 )
         except Exception:
             pass
-        UsbAndPeripheralGuard._win_pnp_cache = (now_m, list(out))
         return out
 
     def scan_all_peripherals(self) -> list[PeripheralDevice]:

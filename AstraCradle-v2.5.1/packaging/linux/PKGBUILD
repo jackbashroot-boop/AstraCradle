@@ -1,0 +1,17 @@
+pkgname=astracradle
+pkgver=2.5.1
+pkgrel=1
+pkgdesc="Cross-platform Dyson-Core OS Equilibrium, AstraShield DNS/DoH & AstraBeam Tailscale Streaming Studio"
+arch=('x86_64')
+url="https://github.com/jackbashroot-boop/AstraCradle"
+license=('MIT')
+depends=('python>=3.10' 'tk' 'python-customtkinter' 'python-pillow' 'python-psutil')
+optdepends=('tailscale: encrypted peer-to-peer AstraBeam streaming anywhere'
+            'sunshine: hardware HEVC/AV1 game stream host')
+source=("AstraCradle-v${pkgver}-bundle.zip::https://github.com/jackbashroot-boop/AstraCradle/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "$srcdir"
+  python -m pip install --no-deps --root="$pkgdir" .
+}
