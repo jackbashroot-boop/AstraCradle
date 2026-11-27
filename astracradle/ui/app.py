@@ -5965,6 +5965,36 @@ class AstraCradleApp(ctk.CTk):
         done.wait(timeout=180.0)
         return holder["pw"]
 
+    def _prompt_hermes_approval_from_worker(self, title: str, detail: str) -> bool:
+        """Thread-safe interactive approval gate when hermes_require_approval is enabled."""
+        def _ask() -> bool:
+            dlg = YesNoActionDialog(
+                self,
+                title=f"Approve Hermes Action: {title}",
+                question=f"{detail}\n\nAllow Hermes OS AI to proceed?",
+                yes_label="Approve",
+                no_label="Deny",
+            )
+            self.wait_window(dlg)
+            return bool(getattr(dlg, "result", False))
+
+        if threading.current_thread() is threading.main_thread():
+            return _ask()
+        done = threading.Event()
+        holder: dict[str, bool] = {"ok": False}
+
+        def _ask_on_ui() -> None:
+            try:
+                holder["ok"] = _ask()
+            except Exception:
+                holder["ok"] = False
+            finally:
+                done.set()
+
+        self.after(0, _ask_on_ui)
+        done.wait(timeout=120.0)
+        return holder["ok"]
+
     def _render_remote_beam_page(self) -> None:
         render_remote_beam_page(self)
 

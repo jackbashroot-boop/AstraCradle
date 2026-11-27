@@ -42,6 +42,18 @@ def _persona_options() -> tuple[list[str], dict[str, str]]:
     return labels, by_lbl
 
 
+def _clean_bubble_markdown(raw: str) -> str:
+    """Turns raw Markdown headings/bold markers into crisp plain-text hierarchy for Tk chat bubbles."""
+    import re as _re
+
+    txt = str(raw or "")
+    txt = _re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", txt)
+    txt = _re.sub(r"\*\*(.+?)\*\*", r"\1", txt)
+    txt = _re.sub(r"__(.+?)__", r"\1", txt)
+    txt = _re.sub(r"`([^`\n]+)`", r"\1", txt)
+    return txt
+
+
 def _format_tool_trace(raw_trace: str) -> str:
     if not raw_trace:
         return ""
@@ -388,10 +400,46 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
             return
         if override is None:
             entry.delete(0, "end")
-        _reload_transcript(thinking=f"Prompt: \"{q[:140]}\"\nInspecting PC telemetry & running safe tools via {spec['model']}...")
+        att_now = list(popup_attachments)
+        popup_attachments.clear()
+        att_btn_p.configure(text="🖼 Image")
+        _reload_transcript(thinking=f"Prompt: \"{q[:140]}\"\nInspecting & streaming response via {spec['model']}...")
+
+        last_stream_ts = [0.0]
+
+        def _on_stream(partial: str) -> None:
+            import time as _t
+
+            now_t = _t.monotonic()
+            if (now_t - last_stream_ts[0]) < 0.12:
+                return
+            last_stream_ts[0] = now_t
+
+            def _upd() -> None:
+                if win.winfo_exists():
+                    _reload_transcript(thinking=_clean_bubble_markdown(partial))
+
+            app.after(0, _upd)
+
+        cancel_ev = threading.Event()
+        win._active_cancel = cancel_ev  # type: ignore[attr-defined]
+        steps_seen: list[str] = []
+
+        def _on_step(step_txt: str) -> None:
+            steps_seen.append(step_txt)
+            joined = "  |  ".join(steps_seen[-5:])
+            app.after(0, lambda j=joined: _reload_transcript(thinking=f"Steps: {j}") if win.winfo_exists() else None)
 
         def _worker() -> None:
-            res = hm.run_prompt(q, cfg, session_id=session_id)
+            res = hm.run_prompt(
+                q,
+                cfg,
+                session_id=session_id,
+                attachments=att_now or None,
+                stream_cb=_on_stream,
+                step_cb=_on_step,
+                cancel_event=cancel_ev,
+            )
 
             def _done() -> None:
                 app._hermes_status_cache = hm.get_status(cfg)
@@ -552,19 +600,67 @@ def _build_chat_workspace(
     )
     prompt_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
+    active_cancel: list[threading.Event | None] = [None]
+
+    def _stop_generation() -> None:
+        if active_cancel[0] is not None:
+            active_cancel[0].set()
+            app.show_toast("Stopping AI generation...")
+
+    stop_btn = ctk.CTkButton(
+        in_row,
+        text="⏹ Stop",
+        width=76,
+        height=38,
+        fg_color=p.bg_card,
+        font=f["small_bold"],
+        command=_stop_generation,
+    )
+
     def _send_prompt(override: str | None = None) -> None:
         q = (override if override is not None else prompt_entry.get()).strip()
         if not q:
             return
         if override is None:
             prompt_entry.delete(0, "end")
+        att_now = list(page_attachments)
+        page_attachments.clear()
+        att_btn.configure(text="🖼 Image")
         spec = hm.resolve_provider_spec(cfg)
-        _reload_chat(thinking=f"Prompt: \"{q[:160]}\"\nInspecting telemetry & running safe tools via {spec['model']}...")
+        _reload_chat(thinking=f"Prompt: \"{q[:160]}\"\nInspecting & streaming response via {spec['model']}...")
+
+        cancel_ev = threading.Event()
+        active_cancel[0] = cancel_ev
+        last_stream_ts = [0.0]
+        steps_seen: list[str] = []
+
+        def _on_stream(partial: str) -> None:
+            import time as _t
+
+            now_t = _t.monotonic()
+            if (now_t - last_stream_ts[0]) < 0.12:
+                return
+            last_stream_ts[0] = now_t
+            app.after(0, lambda txt=_clean_bubble_markdown(partial): _reload_chat(thinking=txt))
+
+        def _on_step(step_txt: str) -> None:
+            steps_seen.append(step_txt)
+            joined = "  |  ".join(steps_seen[-5:])
+            app.after(0, lambda j=joined: _reload_chat(thinking=f"Steps: {j}"))
 
         def _worker() -> None:
-            res = hm.run_prompt(q, cfg, session_id=session_id)
+            res = hm.run_prompt(
+                q,
+                cfg,
+                session_id=session_id,
+                attachments=att_now or None,
+                stream_cb=_on_stream,
+                step_cb=_on_step,
+                cancel_event=cancel_ev,
+            )
 
             def _ui() -> None:
+                active_cancel[0] = None
                 app._hermes_status_cache = hm.get_status(cfg)
                 if res.ok:
                     render_hermes_page(app)
@@ -583,13 +679,14 @@ def _build_chat_workspace(
     ctk.CTkButton(
         in_row,
         text="Send & Act",
-        width=136,
+        width=130,
         height=38,
         fg_color=p.accent_cyan,
         text_color="#071216",
         font=f["body_bold"],
         command=_send_prompt,
     ).pack(side="right")
+    stop_btn.pack(side="right", padx=(0, 6))
 
 
 def render_hermes_page(app: AstraCradleApp) -> None:
@@ -1135,6 +1232,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     ctk.CTkSwitch(t_safe, text="Allow AI Web Search, Online Docs Research & Skill URL Fetch (keeps local GPU model offline)", variable=web_search_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
     ctk.CTkSwitch(t_safe, text="Require explicit approval / dry-run before risky changes (Recommended)", variable=req_app_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
     ctk.CTkSwitch(t_safe, text="Enable scheduled Hermes Cron tasks while AstraCradle runs", variable=cron_en_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
+    ctk.CTkSwitch(t_safe, text="Speak Hermes AI replies aloud offline (TTS via espeak-ng / spd-say)", variable=voice_tts_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
 
     # GPU Usage Limit & Learned Games Manager
     gpu_card = ctk.CTkFrame(t_safe, fg_color=p.bg_elevated, corner_radius=9)

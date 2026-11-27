@@ -19,6 +19,7 @@ from typing import Any, Callable
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 import psutil
 
@@ -639,6 +640,7 @@ class HermesAgentManager:
         self.soul_md_path = self.hermes_home / "SOUL.md"
         self.skills_dir = self.hermes_home / "skills"
         self.sessions_db_path = self.hermes_home / "sessions.db"
+        self.memory_index_path = self.hermes_home / "memory_index.db"
         self.cron_path = self.hermes_home / "cron_jobs.json"
         self.learned_games_path = self.hermes_home / "learned_games.json"
         self.pc_usage_path = self.hermes_home / "pc_usage_profile.json"
@@ -646,6 +648,7 @@ class HermesAgentManager:
         self._gateway_proc: subprocess.Popen | None = None
         self._ollama_proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
+        self._load_runtime_model_health()
 
     # ------------------------------------------------------------------
     # Workspace, .env & Markdown Memory Initialization
@@ -1644,6 +1647,7 @@ class HermesAgentManager:
                     break
 
         if not detected_name:
+            self.apply_game_profile_if_active(None, self.cfg_mgr.load())
             return None
 
         d_key = self._normalize_proc_key(detected_name)
@@ -1660,11 +1664,62 @@ class HermesAgentManager:
                 "peak_vram_mb": round(max(float(prev.get("peak_vram_mb", 0.0) or 0.0), vram_used), 1),
                 "peak_gpu_util_pct": round(max(float(prev.get("peak_gpu_util_pct", 0.0) or 0.0), gpu_util), 1),
                 "user_pinned": bool(prev.get("user_pinned", False)),
+                "profile": prev.get("profile") or {"power_preference": "performance", "silence_bg_apps": True},
                 "last_seen": utc_now_iso(),
             }
             data[d_key] = rec
             self._save_learned_games(data)
+        self.apply_game_profile_if_active(rec, self.cfg_mgr.load())
+        return rec
+
+    def set_game_profile(
+        self,
+        proc_or_name: str,
+        *,
+        power_preference: str = "performance",
+        silence_bg_apps: bool = True,
+    ) -> dict[str, Any]:
+        """Saves per-game auto-tuning preferences in learned_games.json."""
+        key = self._normalize_proc_key(proc_or_name)
+        if not key:
+            return {}
+        with self._lock:
+            data = self._load_learned_games()
+            rec = dict(data.get(key) or {"key": key, "display_name": proc_or_name.strip(), "launch_count": 1, "peak_vram_mb": 0.0})
+            rec["profile"] = {
+                "power_preference": power_preference,
+                "silence_bg_apps": bool(silence_bg_apps),
+            }
+            rec["user_pinned"] = True
+            data[key] = rec
+            self._save_learned_games(data)
             return rec
+
+    def apply_game_profile_if_active(self, active_game_rec: dict[str, Any] | None, config: AppConfig) -> str:
+        """Applies per-game tuning when a game starts and restores defaults on exit."""
+        if active_game_rec:
+            gkey = str(active_game_rec.get("key") or "")
+            if gkey and gkey != self._active_game_profile_key:
+                self._active_game_profile_key = gkey
+                prof = active_game_rec.get("profile") or {"power_preference": "performance", "silence_bg_apps": True}
+                if self.probalance is not None and prof.get("silence_bg_apps", True):
+                    try:
+                        # Restrain background CPU hogs immediately while preserving the active game
+                        self.probalance.evaluate_tick([], str(active_game_rec.get("display_name") or ""), config, dry_run=False)
+                    except Exception:
+                        pass
+                return f"Applied per-game tuning for {active_game_rec.get('display_name', gkey)}"
+            return ""
+        if self._active_game_profile_key:
+            old_k = self._active_game_profile_key
+            self._active_game_profile_key = ""
+            if self.probalance is not None:
+                try:
+                    self.probalance.revert_all(config, dry_run=False)
+                except Exception:
+                    pass
+            return f"Restored desktop defaults after {old_k} exited"
+        return ""
 
     def get_pc_usage_profile(self) -> dict[str, Any]:
         if not self.pc_usage_path.exists():
@@ -2712,6 +2767,14 @@ class HermesAgentManager:
                 else:
                     ex = self.executor
                 if act == "terminate":
+                    ok_ap, msg_ap = self._request_mutation_approval(
+                        f"Terminate Process PID {pid}",
+                        f"Hermes wants to terminate PID {pid}.\nReason: {why}",
+                        config,
+                    )
+                    if not ok_ap:
+                        return {"ok": False, "blocked": True, "error": msg_ap}
+                    self._record_hermes_rollback("process_terminate", f"Terminated PID {pid}", why)
                     ok_p, msg_p = ex.safe_terminate_process(pid, config, why=why)
                 else:
                     ok_p, msg_p = ex.safe_renice_process(pid, config)
@@ -2747,6 +2810,13 @@ class HermesAgentManager:
                 target_e = next((e for e in entries if e.entry_id == eid), None)
                 if target_e is None:
                     return {"ok": False, "error": f"Startup entry '{eid}' not found among user entries."}
+                ok_ap, msg_ap = self._request_mutation_approval(
+                    f"Disable Startup Item '{target_e.name}'",
+                    f"Hermes wants to disable startup autorun '{target_e.name}' ({eid}).",
+                    config,
+                )
+                if not ok_ap:
+                    return {"ok": False, "blocked": True, "error": msg_ap}
                 ok_t, msg_t = aud.toggle_autorun_entry(target_e, enable=False, dry_run=False)
                 return {"ok": ok_t, "entry_id": eid, "message": msg_t}
 
@@ -2857,16 +2927,34 @@ class HermesAgentManager:
                 err = self._check_write_permission(p, perm, adapter)
                 if err:
                     return {"ok": False, "blocked": True, "error": err}
+                if not str(p).startswith(str(self.hermes_home.resolve())):
+                    ok_ap, msg_ap = self._request_mutation_approval(
+                        f"Write File {p.name}",
+                        f"Hermes wants to write file:\n{p}",
+                        config,
+                    )
+                    if not ok_ap:
+                        return {"ok": False, "blocked": True, "error": msg_ap}
                 if p.exists() and p.is_file():
                     bdir = self.hermes_home / "edit_backups"
                     bdir.mkdir(parents=True, exist_ok=True)
-                    (bdir / f"{p.name}.{int(time.time())}.bak").write_text(
-                        p.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8"
-                    )
+                    bak_w = bdir / f"{p.name}.{int(time.time())}.bak"
+                    bak_w.write_text(p.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+                    self._record_hermes_rollback("file_write", f"Wrote {p.name}", f"Backup saved at {bak_w}")
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(str(args.get("content", "")), encoding="utf-8")
+                post_verify: dict[str, Any] = {}
+                if p.suffix == ".py":
+                    import py_compile
+
+                    try:
+                        py_compile.compile(str(p), doraise=True)
+                        post_verify["syntax_ok"] = True
+                    except Exception as py_exc:
+                        post_verify["syntax_ok"] = False
+                        post_verify["syntax_error"] = str(py_exc)
                 self.journal.log_event("HermesOS", "file_write", f"Wrote {p}", "Hermes tool execution", "ok")
-                return {"ok": True, "path": str(p)}
+                return {"ok": True, "path": str(p), **({"post_verify": post_verify} if post_verify else {})}
 
             if name == "file_edit":
                 p = Path(str(args.get("path", ""))).expanduser().resolve()
@@ -2885,14 +2973,33 @@ class HermesAgentManager:
                     return {"ok": False, "error": "old_text not found in file. Read the exact lines with file_read first."}
                 if cnt > 1:
                     return {"ok": False, "error": f"old_text matched {cnt} places; pass more surrounding context for a unique match."}
+                if not str(p).startswith(str(self.hermes_home.resolve())):
+                    ok_ap, msg_ap = self._request_mutation_approval(
+                        f"Edit File {p.name}",
+                        f"Hermes wants to edit:\n{p}",
+                        config,
+                    )
+                    if not ok_ap:
+                        return {"ok": False, "blocked": True, "error": msg_ap}
                 bdir = self.hermes_home / "edit_backups"
                 bdir.mkdir(parents=True, exist_ok=True)
                 bak_path = bdir / f"{p.name}.{int(time.time())}.bak"
                 bak_path.write_text(cur, encoding="utf-8")
+                self._record_hermes_rollback("file_edit", f"Edited {p.name}", f"Backup saved at {bak_path}")
                 updated = cur.replace(old_txt, new_txt, 1)
                 p.write_text(updated, encoding="utf-8")
+                post_verify = {}
+                if p.suffix == ".py":
+                    import py_compile
+
+                    try:
+                        py_compile.compile(str(p), doraise=True)
+                        post_verify["syntax_ok"] = True
+                    except Exception as py_exc:
+                        post_verify["syntax_ok"] = False
+                        post_verify["syntax_error"] = str(py_exc)
                 self.journal.log_event("HermesOS", "file_edit", f"Edited {p} (backup={bak_path.name})", "Hermes surgical edit", "ok")
-                return {"ok": True, "path": str(p), "backup": str(bak_path)}
+                return {"ok": True, "path": str(p), "backup": str(bak_path), **({"post_verify": post_verify} if post_verify else {})}
 
             if name == "list_dir":
                 d = Path(str(args.get("path", ""))).expanduser().resolve()
@@ -3088,6 +3195,17 @@ class HermesAgentManager:
                 dangerous = ("rm -rf /", "mkfs", "format ", ":(){", "dd if=", "shutdown", "reboot", "del /s /q c:\\")
                 if any(tok in low for tok in dangerous):
                     return {"ok": False, "blocked": True, "error": "Command matched destructive pattern guard."}
+                # Ask interactive approval on mutating shell commands when require_approval is enabled
+                read_only_cmds = ("ls ", "cat ", "head ", "tail ", "ps ", "df ", "free ", "uname", "uptime", "whoami", "ip ", "ss ", "nmcli ", "journalctl ", "systemctl status", "systemctl --user status", "grep ", "rg ", "find ", "which ", "pwd")
+                if not any(low.startswith(rc) or low == rc.strip() for rc in read_only_cmds):
+                    ok_ap, msg_ap = self._request_mutation_approval(
+                        "Run Shell Command",
+                        f"Hermes wants to execute:\n{cmd[:320]}",
+                        config,
+                    )
+                    if not ok_ap:
+                        return {"ok": False, "blocked": True, "error": msg_ap}
+                    self._record_hermes_rollback("shell_exec", f"Shell: {cmd[:60]}", f"Executed shell command: {cmd[:180]}")
                 proc = subprocess.run(
                     cmd,
                     shell=True,
@@ -3158,17 +3276,15 @@ class HermesAgentManager:
 
     def _build_system_prompt(self, config: AppConfig) -> str:
         self.ensure_hermes_home(config)
-        soul = self.soul_md_path.read_text(encoding="utf-8", errors="ignore")[:1800]
-        user_txt = self.user_md_path.read_text(encoding="utf-8", errors="ignore")[:1500]
-        mem = self.memory_path.read_text(encoding="utf-8", errors="ignore")[:2200]
+        user_txt = self.user_md_path.read_text(encoding="utf-8", errors="ignore")[:700]
+        mem = self.memory_path.read_text(encoding="utf-8", errors="ignore")[:900]
         skills = self.list_skills()
-        skill_summary = "\n".join(f"- {s['slug']}: {s['content'][:200].replace(chr(10), ' ')}" for s in skills[:8])
+        skill_summary = ", ".join(s["slug"] for s in skills[:10]) or "none yet"
 
         prof = self.get_pc_usage_profile()
-        top_apps = sorted((prof.get("apps") or {}).items(), key=lambda kv: int(kv[1].get("hits", 0)), reverse=True)[:8]
-        apps_txt = ", ".join(f"{k}({v.get('category', 'app')})" for k, v in top_apps) or "still learning"
-        games_txt = ", ".join(g.get("display_name", "") for g in self.list_learned_games()[:5]) or "none recorded yet"
-        rem_svcs = ", ".join(sorted((prof.get("remote_services_seen") or {}).keys())) or "none active yet"
+        top_apps = sorted((prof.get("apps") or {}).items(), key=lambda kv: int(kv[1].get("hits", 0)), reverse=True)[:5]
+        apps_txt = ", ".join(k for k, _ in top_apps) or "learning"
+        games_txt = ", ".join(g.get("display_name", "") for g in self.list_learned_games()[:4]) or "none"
         perm_lbl = HERMES_PERMISSION_LEVELS.get(self._effective_permission_level(config), {}).get("label", "Safe")
 
         src_root = self.get_local_source_root()
@@ -3176,27 +3292,15 @@ class HermesAgentManager:
         persona = self.get_active_persona(config)
 
         return (
-            f"{soul}\n\n"
-            f"# Active Assistant Identity & Voice: {persona['name']} ({persona['badge']})\n"
-            f"- Core Traits: {persona['traits']}\n"
-            f"- Mannerisms: {persona['mannerisms']}\n"
-            f"- Voice & Behavioral Directive: {persona['prompt_directive']}\n\n"
-            f"{user_txt}\n\n{mem}\n\n"
-            "# Learned Whole-PC & Remote Usage Context\n"
-            f"- AstraCradle Local Build Root: {src_root}\n"
-            f"- Web Search & Research: {'ENABLED' if web_ok else 'DISABLED'}\n"
-            f"- Samples Observed: {prof.get('samples', 0)} (Avg CPU {prof.get('avg_cpu_pct', 0)}%, Avg RAM {prof.get('avg_ram_pct', 0)}%, Peak VRAM {prof.get('peak_vram_mb', 0)} MB)\n"
-            f"- Frequent Apps: {apps_txt}\n"
-            f"- Learned Games: {games_txt}\n"
-            f"- Remote Continuity Services: {rem_svcs}\n"
-            f"- Active Safety Tier: {perm_lbl}\n\n"
-            f"# Available Learned Skills\n{skill_summary or '(none yet)'}\n\n"
-            "# Action & Self-Development Assistant Guidelines\n"
-            "You are AstraCradle's integrated PC Action & Self-Development Assistant. Do NOT just give passive advice when you have real tools to research, inspect, edit, test, and safely fix things!\n"
-            "1. Inspect live telemetry (`astra_system_status`, `astra_deep_scan`, `astra_pc_usage_summary`) or codebase (`list_dir`, `grep_search`, `file_read`) first.\n"
-            "2. Actually fix safe PC issues (`astra_fix_safe`, `astra_probalance_and_profile`, `astra_wifi_optimize`, `astra_startup_audit`, `astra_process_manage`, `astra_self_heal_repair`, `astra_remote_tasks`).\n"
-            "3. When asked to research improvements or help build AstraCradle's next updates natively (as permissions allow): use `web_search`/`web_fetch` to research solutions, `skill_install_from_url`/`skill_save` to acquire new skills, `memory_save` to store learnings, `file_write`/`file_edit` to implement updates cleanly in the local build root, and `astra_dev_self_build` (`compile_check`, `run_tests`, `self_check`) to verify everything compiles and passes!\n"
-            "4. Never risk breaking the OS: respect protected system processes/files, back up edits automatically, use rollback/quarantine safeguards, and report clearly what you changed and verified."
+            f"You are {persona['name']} ({persona['badge']}), AstraCradle's PC Action & Self-Development AI.\n"
+            f"Traits: {persona['traits']}\n"
+            f"Mannerisms: {persona['mannerisms']}\n"
+            f"{persona['prompt_directive']}\n"
+            f"Learned Whole-PC & Remote Usage Context: Source={src_root} | WebSearch={'ON' if web_ok else 'OFF'} | Safety={perm_lbl} | "
+            f"TopApps={apps_txt} | Games={games_txt} | Skills={skill_summary}\n"
+            f"User Notes: {user_txt}\nMemory: {mem}\n"
+            "Action & Self-Development Assistant Guidelines: Use tools to inspect, read displays/clipboard, search memory/web, fix safe PC issues, or edit/test AstraCradle source cleanly. "
+            "Respect protected OS processes/files, verify code changes, and answer clearly without raw markdown clutter."
         )
 
     def _call_llm(
@@ -3205,8 +3309,11 @@ class HermesAgentManager:
         api_key: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        *,
+        stream_cb: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
-        """Executes one LLM chat-completion turn via OpenAI-compatible or Anthropic REST API."""
+        """Executes one LLM chat-completion turn via OpenAI-compatible, native Ollama (/api/chat), or Anthropic REST API."""
         style = spec.get("api_style", "openai")
         base_url = spec["base_url"].rstrip("/")
 
@@ -3276,9 +3383,24 @@ class HermesAgentManager:
             return content, norm_calls
 
         def _post_chat_openai(body_dict: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+            # Convert Ollama-style "images": [...] into OpenAI multimodal content blocks if present
+            oa_msgs = []
+            for m in body_dict.get("messages") or []:
+                if m.get("images"):
+                    blocks: list[dict[str, Any]] = [{"type": "text", "text": str(m.get("content") or "")}]
+                    for b64 in m["images"]:
+                        blocks.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
+                    nm = dict(m)
+                    nm.pop("images", None)
+                    nm["content"] = blocks
+                    oa_msgs.append(nm)
+                else:
+                    oa_msgs.append(m)
+            oa_body = dict(body_dict)
+            oa_body["messages"] = oa_msgs
             req = urllib.request.Request(
                 f"{base_url}/chat/completions",
-                data=json.dumps(body_dict).encode("utf-8"),
+                data=json.dumps(oa_body).encode("utf-8"),
                 headers=headers,
                 method="POST",
             )
@@ -3303,6 +3425,8 @@ class HermesAgentManager:
             for m in src_msgs:
                 role = str(m.get("role") or "user")
                 item: dict[str, Any] = {"role": role, "content": str(m.get("content") or "")}
+                if m.get("images"):
+                    item["images"] = list(m["images"])
                 if role == "tool" and m.get("name"):
                     item["tool_name"] = str(m.get("name"))
                 if m.get("tool_calls"):
@@ -3327,6 +3451,40 @@ class HermesAgentManager:
                 headers=headers,
                 method="POST",
             )
+            if body_dict.get("stream"):
+                content_parts: list[str] = []
+                think_parts: list[str] = []
+                collected_calls: list[dict[str, Any]] = []
+                with urllib.request.urlopen(req, timeout=req_timeout) as resp:
+                    for raw_line in resp:
+                        if cancel_event is not None and cancel_event.is_set():
+                            break
+                        ln = raw_line.decode("utf-8", errors="ignore").strip()
+                        if not ln:
+                            continue
+                        try:
+                            chunk = json.loads(ln)
+                        except Exception:
+                            continue
+                        msg_obj = chunk.get("message") or {}
+                        delta_c = str(msg_obj.get("content") or "")
+                        delta_t = str(msg_obj.get("thinking") or "")
+                        if delta_c:
+                            content_parts.append(delta_c)
+                            if stream_cb is not None:
+                                try:
+                                    stream_cb("".join(content_parts))
+                                except Exception:
+                                    pass
+                        if delta_t:
+                            think_parts.append(delta_t)
+                        if msg_obj.get("tool_calls"):
+                            collected_calls.extend(msg_obj.get("tool_calls") or [])
+                return _extract_reply_and_tools({
+                    "content": "".join(content_parts),
+                    "thinking": "".join(think_parts),
+                    "tool_calls": collected_calls,
+                })
             with urllib.request.urlopen(req, timeout=req_timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             if "message" in data:
@@ -3364,7 +3522,7 @@ class HermesAgentManager:
             try_payload: dict[str, Any] = {
                 "model": spec["model"],
                 "messages": native_msgs,
-                "stream": False,
+                "stream": bool(stream_cb is not None),
                 "options": stage_opts,
             }
             if include_tools and tools:
@@ -3422,6 +3580,10 @@ class HermesAgentManager:
         session_id: str = "default",
         allow_subagent: bool = True,
         max_turns: int = 12,
+        attachments: list[str] | None = None,
+        stream_cb: Callable[[str], None] | None = None,
+        step_cb: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
         llm_caller: Callable[..., tuple[str, list[dict[str, Any]]]] | None = None,
     ) -> HermesRunResult:
         clean_prompt = (prompt or "").strip()
@@ -3446,7 +3608,8 @@ class HermesAgentManager:
                 error=f"Missing API key ({spec['env_var']}). Add your free/own key in Hermes AI Setup or switch to Local GPU mode.",
             )
 
-        self._append_session_message(session_id, "user", clean_prompt, title_hint=clean_prompt)
+        att_note = f" [Attached {len(attachments)} image(s)]" if attachments else ""
+        self._append_session_message(session_id, "user", clean_prompt + att_note, title_hint=clean_prompt)
 
         history = self.get_session_messages(session_id, limit=24)
         # Compact older history if long so context fits comfortably
@@ -3469,13 +3632,31 @@ class HermesAgentManager:
 
         try:
             for _turn in range(max_turns):
-                content, tool_calls = caller(spec, api_key, messages, tools)
+                if cancel_event is not None and cancel_event.is_set():
+                    final_reply = "Stopped by user."
+                    break
+                if stream_cb is not None and llm_caller is None and caller == self._call_llm:
+                    content, tool_calls = self._call_llm(
+                        spec,
+                        api_key,
+                        messages,
+                        tools,
+                        stream_cb=stream_cb,
+                        cancel_event=cancel_event,
+                    )
+                else:
+                    content, tool_calls = caller(spec, api_key, messages, tools)
+                if cancel_event is not None and cancel_event.is_set():
+                    final_reply = (content.strip() + "\n\n(Stopped by user.)") if content else "Stopped by user."
+                    break
                 if not tool_calls:
                     final_reply = content or "(No text returned)"
                     break
 
                 messages.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
                 for tc in tool_calls:
+                    if cancel_event is not None and cancel_event.is_set():
+                        break
                     fn = tc.get("function") or {}
                     tname = str(fn.get("name") or "")
                     raw_args = fn.get("arguments") or "{}"
@@ -3483,7 +3664,18 @@ class HermesAgentManager:
                         parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
                     except Exception:
                         parsed_args = {}
+                    if step_cb is not None:
+                        try:
+                            step_cb(f"⟳ Running {tname}...")
+                        except Exception:
+                            pass
                     result = self.execute_tool(tname, parsed_args, config, allow_subagent=allow_subagent)
+                    if step_cb is not None:
+                        try:
+                            mark = "✓" if result.get("ok") else "!"
+                            step_cb(f"{mark} {tname}")
+                        except Exception:
+                            pass
                     if tname == "skill_save" and result.get("ok"):
                         skill_created = str(result.get("skill_path", ""))
                     tool_events.append({"tool": tname, "args": parsed_args, "ok": bool(result.get("ok"))})
@@ -3515,6 +3707,8 @@ class HermesAgentManager:
                 final_reply,
                 tool_trace=json.dumps(tool_events),
             )
+            if bool(getattr(config, "hermes_voice_tts_enabled", False)) and final_reply and not final_reply.startswith("Stopped"):
+                self.speak_text_offline(final_reply[:500])
             return HermesRunResult(
                 ok=True,
                 session_id=session_id,
