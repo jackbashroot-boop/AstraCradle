@@ -3844,11 +3844,13 @@ def test_stephen_ai_rename_and_bluetooth_peripherals_page(monkeypatch) -> None:
     from astracradle.core.config import AppConfig
     from astracradle.core.hermes_agent import HERMES_PERSONAS
     from astracradle.core.lan_tv_shield import BluetoothDeviceInfo
+    from astracradle.core.modules import allowed_nav_keys
     from astracradle.core.usb_guard import PeripheralDevice
     from astracradle.theme import get_palette, get_ui_fonts
     import astracradle.ui.pages.peripherals_page as pp_mod
 
-    # 1. Default persona & UI labels reflect Stephen AI
+    # 1. Default persona, sidebar gating & UI labels reflect Stephen AI + Bluetooth & Peripherals
+    assert "peripherals" in allowed_nav_keys(["core_diagnostics"])
     assert HERMES_PERSONAS["astra_standard"]["name"] == "Stephen"
     assert "Stephen AI" in HERMES_PERSONAS["astra_standard"]["badge"]
     app_src = (Path(__file__).resolve().parents[1] / "astracradle" / "ui" / "app.py").read_text(encoding="utf-8")
