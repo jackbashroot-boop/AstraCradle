@@ -3564,6 +3564,29 @@ def test_hermes_live_working_indicator_persists_across_menu_switch(monkeypatch) 
         fake_app._hermes_chat_reloader(thinking="Steps: checking drives done -> analyzing", use_cache=True)
         assert any("Working" in t for t in texts_configured)
 
+        # Also assert re-entrancy guard prevents duplicate GitHub update prompts
+        from astracradle.ui.app import AstraCradleApp
+        fake_upd_app = types.SimpleNamespace(
+            _show_startup_popups=True,
+            config_obj=cfg,
+            _github_check_in_flight=False,
+            _github_prompt_open=True,
+            _github_update_in_progress=False,
+            _last_github_check_ts=0.0,
+            _prompted_github_version="",
+            palette=get_palette("dark"),
+            show_toast=lambda *_a, **_kw: None,
+            tray=types.SimpleNamespace(notify=lambda *_a, **_kw: None),
+        )
+        assert AstraCradleApp._should_run_hourly_github_check(fake_upd_app, now_mono=99999.0) is False
+        assert AstraCradleApp._prompt_github_update_available(
+            fake_upd_app,
+            types.SimpleNamespace(update_available=True, latest_version="2.5.1 (test123)", status_message="x"),
+            {"display_version": "2.5.1 (old0000)"},
+            ask_fn=lambda *_a: True,
+        ) is False
+
+
 
 
 

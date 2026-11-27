@@ -9475,6 +9475,8 @@ class AstraCradleApp(ctk.CTk):
             return False
         if getattr(self, "_github_check_in_flight", False):
             return False
+        if getattr(self, "_github_prompt_open", False) or getattr(self, "_github_update_in_progress", False):
+            return False
         now = time.monotonic() if now_mono is None else float(now_mono)
         interval_s = max(300, int(getattr(self.config_obj, "github_check_interval_min", 60) or 60) * 60)
         return (now - float(getattr(self, "_last_github_check_ts", 0.0))) >= interval_s
@@ -9483,9 +9485,12 @@ class AstraCradleApp(ctk.CTk):
         latest = str(getattr(res, "latest_version", "") or "")
         if not res.update_available or not latest:
             return False
+        if getattr(self, "_github_prompt_open", False) or getattr(self, "_github_update_in_progress", False):
+            return False
         if latest == getattr(self, "_prompted_github_version", ""):
             return False
         self._prompted_github_version = latest
+        self._github_prompt_open = True
         self.show_toast(f"GitHub update available ({latest})!", color=self.palette.accent_brass)
         try:
             self.tray.notify("AstraCradle Update Ready", f"Newer GitHub build {latest} is available.")
@@ -9501,17 +9506,21 @@ class AstraCradleApp(ctk.CTk):
             changelog_url = ModuleAndUpdateManager.get_changelog_url(
                 self.config_obj, repo_dir=Path(__file__).resolve().parents[2]
             )
-        want_upd = bool(
-            asker(
-                f"AstraCradle Update Available ({latest})",
-                f"Your local AstraCradle ({build_info.get('display_version', '')}) is behind GitHub ({latest}).\n\n"
-                f"View full changelog in the repo:\n{changelog_url}\n\n"
-                "Download, install, and restart AstraCradle automatically once finished?\n"
-                "(Your settings, Hermes memories, and library stay untouched.)",
+        try:
+            want_upd = bool(
+                asker(
+                    f"AstraCradle Update Available ({latest})",
+                    f"Your local AstraCradle ({build_info.get('display_version', '')}) is behind GitHub ({latest}).\n\n"
+                    f"View full changelog in the repo:\n{changelog_url}\n\n"
+                    "Download, install, and restart AstraCradle automatically once finished?\n"
+                    "(Your settings, Hermes memories, and library stay untouched.)",
+                )
             )
-        )
+        finally:
+            self._github_prompt_open = False
         if not want_upd:
             return False
+        self._github_update_in_progress = True
 
         def _apply_worker() -> None:
             repo_root = Path(__file__).resolve().parents[2]
@@ -9525,6 +9534,7 @@ class AstraCradleApp(ctk.CTk):
                 self.cfg_mgr.save(self.config_obj)
 
             def _done() -> None:
+                self._github_update_in_progress = False
                 if not self.winfo_exists():
                     return
                 self._refresh_install_memory_label()
