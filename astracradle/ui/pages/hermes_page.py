@@ -44,16 +44,19 @@ def _persona_options() -> tuple[list[str], dict[str, str]]:
 
 
 def _clean_bubble_markdown(raw: str) -> str:
-    """Turns raw Markdown headings/bold markers into crisp plain-text hierarchy for Tk chat bubbles."""
+    """Turns raw Markdown headings, bold markers, horizontal rules, and code fences into crisp plain text."""
     import re as _re
 
     txt = str(raw or "")
+    txt = _re.sub(r"(?m)^```[a-zA-Z0-9_-]*\s*$", "", txt)
+    txt = _re.sub(r"(?m)^\s*[-*_]{3,}\s*$", "", txt)
     txt = _re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", txt)
     txt = _re.sub(r"\*\*(.+?)\*\*", r"\1", txt)
     txt = _re.sub(r"\*{2,}", "", txt)
     txt = _re.sub(r"__(.+?)__", r"\1", txt)
     txt = _re.sub(r"`([^`\n]+)`", r"\1", txt)
-    return txt
+    txt = _re.sub(r"\n{3,}", "\n\n", txt)
+    return txt.strip()
 
 
 def _capture_clipboard_attachments(hm, tk_widget=None) -> tuple[list[str], str]:

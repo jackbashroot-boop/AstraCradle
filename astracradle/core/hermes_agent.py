@@ -4478,8 +4478,9 @@ class HermesAgentManager:
             f"User Notes: {user_txt}\nMemory: {mem}\n"
             "Action & Self-Development Assistant Guidelines: Answer the user's exact request directly—if they ask for improvements, tests, or skills, propose concrete file-specific additions instead of saying no action is needed. "
             "You can create, combine, and improve your own reusable custom tools via `astra_custom_tool_forge` whenever a recurring multi-step workflow would make the user's life easier. "
-            "Ground EVERY file path, module name, metric, and error in real tool output from this turn; NEVER invent fictional modules, packages, or bridges (such as non-existent bridges). "
-            "Respect protected OS processes/files, verify code changes, and answer clearly without raw markdown clutter."
+            "Ground EVERY file path, module name, metric, and error in real tool output from this turn; NEVER invent fictional modules, packages, endpoints, percentages, or bridges (such as non-existent bridges). "
+            "CRITICAL: Tools like `astra_fix_safe`, `astra_process_manage`, `astra_startup_audit`, `astra_services_and_storage`, `astra_dev_self_build`, and `astra_knowledge_library` are internal AI function tools—NEVER tell the user to run `astra_*` commands or flags in bash/terminal. Offer to run them directly or describe the plain UI action. "
+            "Respect protected OS processes/files, verify code changes, and answer clearly without raw markdown clutter or triple-backtick code fences unless showing real shell/Python code."
         )
 
     def _call_llm(
@@ -4849,26 +4850,29 @@ class HermesAgentManager:
                 if cancel_event is not None and cancel_event.is_set():
                     final_reply = (content.strip() + "\n\n(Stopped by user.)") if content else "Stopped by user."
                     break
-                # Grounding safety net: if live LLM didn't emit tool_calls on an explicit AstraCradle inspect/diagnostic prompt,
-                # run the real requested tool server-side and synthesize from genuine output rather than roleplay.
+                # Grounding safety net: if live LLM didn't emit tool_calls on an AstraCradle/system/usage prompt,
+                # run the real inspection tool server-side and synthesize from genuine output rather than hallucinating.
                 if (
                     not tool_calls
                     and _turn == 0
                     and not tool_events
                     and llm_caller is None
                     and tools
-                    and any(k in clean_prompt.lower() for k in ("astra_dev_self_build", "astra_system_status", "astra_deep_scan", "astra_journal_and_crashes"))
                 ):
                     auto_calls: list[dict[str, Any]] = []
                     low_p = clean_prompt.lower()
-                    if "astra_dev_self_build" in low_p:
+                    if "astra_dev_self_build" in low_p or any(k in low_p for k in ("astra", "astracradle", "changes", "codebase", "architecture")):
                         auto_calls.append({"id": "auto_inspect", "function": {"name": "astra_dev_self_build", "arguments": {"action": "inspect"}}})
-                    if "astra_journal_and_crashes" in low_p or "diagnostics" in low_p:
+                        auto_calls.append({"id": "auto_git", "function": {"name": "astra_git_sync", "arguments": {"action": "status"}}})
+                    if "astra_journal_and_crashes" in low_p or "diagnostics" in low_p or "ui log" in low_p:
                         auto_calls.append({"id": "auto_diag", "function": {"name": "astra_journal_and_crashes", "arguments": {"limit": 10}}})
                     if "astra_system_status" in low_p or "astra_deep_scan" in low_p:
                         auto_calls.append({"id": "auto_scan", "function": {"name": "astra_deep_scan", "arguments": {}}})
+                    if any(k in low_p for k in ("learned", "pc usage", "top apps", "remote task")):
+                        auto_calls.append({"id": "auto_usage", "function": {"name": "astra_pc_usage_summary", "arguments": {}}})
                     if auto_calls:
                         tool_calls = auto_calls
+                        content = ""
                 if not tool_calls:
                     final_reply = content or "(No text returned)"
                     break
