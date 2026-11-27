@@ -818,6 +818,19 @@ COMMON_REFERENCE_CARDS: tuple[dict[str, str], ...] = (
             "- Tailscale: `tailscale status`\n"
         ),
     },
+    {
+        "item_id": "ref-lan-tv-astrashield-sinkhole",
+        "title": "AstraShield DNS Sinkhole & Smart TV LAN Discovery",
+        "category": "networking",
+        "tags": "sinkhole astrashield samsung tv smart tv lan network dns 5353 53 youtube dial",
+        "summary": "AstraCradle's built-in sinkhole program is AstraShield (`AstraShieldManager` + `LanTvAdShield`). Use `astra_lan_and_sinkhole` to scan LAN TVs (including Samsung Tizen & YouTube state) and aim TVs at AstraShield DNS.",
+        "body": (
+            "# AstraShield DNS Sinkhole & Smart TV Discovery\n"
+            "- Built-in sinkhole program: **AstraShield DNS Sinkhole** (`AstraShieldManager`), listening on `0.0.0.0:5353` (or `0.0.0.0:53` when elevated/forwarded).\n"
+            "- Built-in LAN scanner: `LanTvAdShield` discovers Smart TVs (Samsung Tizen, LG webOS, Roku, Google TV/Chromecast, Sony, Fire TV) via ARP + SSDP DIAL + Avahi/mDNS and probes active YouTube state (`:8001/api/v2/`, `:8008/apps/YouTube`, `:8080/ws/app/YouTube`).\n"
+            "- To aim a Samsung or Smart TV at the sinkhole: call `astra_lan_and_sinkhole(action='aim_tv_at_sinkhole', brand_filter='samsung')`. Set Primary DNS = PC LAN IP, Secondary (Failsafe) DNS = Router/Gateway IP. Samsung TVs require UDP port 53 (so use elevated port 53 redirect `53 -> 5353` if listening on 5353).\n"
+        ),
+    },
 )
 
 
@@ -1233,6 +1246,26 @@ SOP_TEMPLATE_LIBRARY: tuple[dict[str, Any], ...] = (
             "- Stronger AI Escalation: {{escalation_note}}"
         ),
     },
+    {
+        "template_id": "sop_lan_tv_sinkhole",
+        "title": "LAN Smart TV Discovery & AstraShield DNS Sinkhole Routing",
+        "category": "networking",
+        "keywords": ["samsung", "tv", "smart tv", "youtube", "sinkhole", "astrashield", "lan", "scan my network", "aim", "dns"],
+        "decision_rules": [
+            "When the user asks to scan their LAN/network for devices or Smart TVs (or find which TV is running YouTube), call `astra_lan_and_sinkhole(action='scan_lan')` — NEVER rely only on `astra_remote_tasks` (which only lists paired AstraBeam/Tailscale devices).",
+            "When the user mentions 'the sinkhole program', 'AstraShield', or 'aim the TV at the sinkhole', ALWAYS recognize AstraCradle's built-in AstraShield DNS Sinkhole and run `astra_lan_and_sinkhole(action='aim_tv_at_sinkhole')` or `sinkhole_status`.",
+            "Remind the user clearly if AstraShield is listening on port 5353 vs port 53, because Samsung/Smart TVs require UDP port 53 (or NAT redirect 53 -> 5353) plus Router IP as Failsafe Secondary DNS.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_lan_and_sinkhole", "args": {"action": "scan_lan"}},
+        ],
+        "output_template": (
+            "LAN & AstraShield Sinkhole Summary:\n"
+            "- Discovered Smart TVs & Devices: {{devices}}\n"
+            "- AstraShield DNS Sinkhole: {{sinkhole_status}}\n"
+            "- TV DNS Configuration Steps: {{tv_steps}}"
+        ),
+    },
 )
 
 
@@ -1265,6 +1298,8 @@ class HermesAgentManager:
         thermal_spc=None,
         gpu_pwr=None,
         catalog_scanner=None,
+        adblock_shield=None,
+        lan_tv_shield=None,
     ) -> None:
         self.cfg_mgr = cfg_mgr
         self.journal = journal
@@ -1290,6 +1325,8 @@ class HermesAgentManager:
         self.thermal_spc = thermal_spc
         self.gpu_pwr = gpu_pwr
         self.catalog_scanner = catalog_scanner
+        self.adblock_shield = adblock_shield
+        self.lan_tv_shield = lan_tv_shield
         self._fast_pull_started = False
         self._gpu_fallback_models: set[str] = set()
         self._last_autonomous_cycle_ts: float = 0.0
@@ -4747,6 +4784,25 @@ class HermesAgentManager:
             {
                 "type": "function",
                 "function": {
+                    "name": "astra_lan_and_sinkhole",
+                    "description": "Scan local LAN devices & Smart TVs (Samsung Tizen, LG, Roku, Chromecast, active YouTube detection), inspect AstraShield DNS Sinkhole status, start LAN sinkhole, or aim a Smart TV at AstraShield DNS with failsafe fallback.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["scan_lan", "sinkhole_status", "start_lan_sinkhole", "aim_tv_at_sinkhole", "restore_tv"],
+                            },
+                            "tv_ip": {"type": "string", "description": "Optional specific TV IPv4 address"},
+                            "brand_filter": {"type": "string", "description": "Optional brand/keyword filter such as 'samsung' or 'youtube'"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "astra_self_heal_repair",
                     "description": "Run AstraCradle 14-invariant self-heal & integrity repair to fix config, SQLite, or certificate issues.",
                     "parameters": {"type": "object", "properties": {}, "required": []},
@@ -5701,6 +5757,168 @@ class HermesAgentManager:
                     return {"ok": False, "blocked": True, "error": msg_ap}
                 ok_t, msg_t = aud.toggle_autorun_entry(target_e, enable=False, dry_run=False)
                 return {"ok": ok_t, "entry_id": eid, "message": msg_t}
+
+            if name == "astra_lan_and_sinkhole":
+                act = str(args.get("action") or "scan_lan").strip().lower()
+                from .adblock_shield import AstraShieldManager
+                from .lan_tv_shield import LanTvAdShield
+
+                shield = self.adblock_shield or AstraShieldManager(
+                    self.cfg_mgr, self.rollback_mgr, self.journal, elevation=self.elevation
+                )
+                lan_tv = self.lan_tv_shield or LanTvAdShield(self.journal, state_dir=self.cfg_mgr.base_dir)
+                lan_ip = shield.get_lan_ipv4()
+                router_ip = lan_tv.get_default_gateway_ip()
+                st = shield.status()
+
+                if act == "sinkhole_status":
+                    fs = lan_tv.load_failsafe_state()
+                    return {
+                        "ok": True,
+                        "lan_ip": lan_ip,
+                        "router_failsafe_ip": router_ip,
+                        "hosts_active": st.hosts_active,
+                        "dns_running": st.dns_server_running,
+                        "dns_listen_addr": st.dns_listen_addr,
+                        "blocked_domain_count": st.blocked_domain_count,
+                        "total_queries": st.total_queries,
+                        "blocked_queries": st.blocked_queries,
+                        "top_blocked": st.top_blocked[:8],
+                        "client_stats": shield.get_client_stats(),
+                        "tv_failsafe_state": fs,
+                        "port_53_note": (
+                            "Listening on fallback port 5353 — Smart TVs (including Samsung) require UDP port 53, so use elevation/NAT redirect (53 -> 5353) or run AstraCradle with port 53 forwarding."
+                            if ":5353" in str(st.dns_listen_addr)
+                            else ""
+                        ),
+                    }
+
+                if act == "start_lan_sinkhole":
+                    if perm == "read_only":
+                        return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1)."}
+                    ok_s, msg_s = shield.start_lan_dns_sinkhole(
+                        port=53,
+                        fallback_port=int(getattr(config, "astrashield_dns_port", 5353) or 5353),
+                        upstream=str(getattr(config, "astrashield_doh_upstream", "1.1.1.1") or "1.1.1.1"),
+                        allow_elevation=True,
+                    )
+                    st_after = shield.status()
+                    return {
+                        "ok": ok_s,
+                        "message": msg_s,
+                        "lan_ip": lan_ip,
+                        "router_failsafe_ip": router_ip,
+                        "dns_listen_addr": st_after.dns_listen_addr,
+                        "blocked_domain_count": st_after.blocked_domain_count,
+                    }
+
+                if act == "restore_tv":
+                    if perm == "read_only":
+                        return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1)."}
+                    ok_r, msg_r = lan_tv.restore_tv_settings(
+                        tv_ip=str(args.get("tv_ip") or "") or None,
+                        reason="hermes_user_request",
+                        shield=shield,
+                    )
+                    return {"ok": ok_r, "message": msg_r}
+
+                # scan_lan or aim_tv_at_sinkhole
+                devices = lan_tv.scan_lan_devices(shield=shield, ssdp_timeout=0.7, probe_tv_apps=True)
+                brand_f = str(args.get("brand_filter") or "").strip().lower()
+                tv_ip_arg = str(args.get("tv_ip") or "").strip()
+
+                dev_dicts = [
+                    {
+                        "ip": d.ip,
+                        "mac": d.mac,
+                        "hostname": d.hostname,
+                        "brand": d.brand,
+                        "model_name": d.model_name,
+                        "device_type": d.device_type,
+                        "active_app": d.active_app,
+                        "ssdp_info": d.ssdp_info,
+                        "dns_queries": d.dns_queries,
+                        "ads_blocked": d.ads_blocked,
+                        "protection_status": d.protection_status,
+                    }
+                    for d in devices
+                ]
+
+                if act == "scan_lan":
+                    smart_tvs = [x for x in dev_dicts if x["device_type"] in ("smart_tv", "streaming_box") or (brand_f and brand_f in f"{x['brand']} {x['model_name']} {x['ssdp_info']} {x['active_app']}".lower())]
+                    yt_active = [x for x in dev_dicts if "youtube" in str(x.get("active_app") or "").lower()]
+                    return {
+                        "ok": True,
+                        "lan_ip": lan_ip,
+                        "sinkhole_running": st.dns_server_running,
+                        "sinkhole_addr": st.dns_listen_addr,
+                        "total_devices": len(dev_dicts),
+                        "smart_tvs": smart_tvs,
+                        "youtube_active_devices": yt_active,
+                        "devices": dev_dicts[:35],
+                    }
+
+                if act == "aim_tv_at_sinkhole":
+                    if perm == "read_only":
+                        return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1)."}
+                    target_dev = None
+                    if tv_ip_arg:
+                        target_dev = next((d for d in devices if d.ip == tv_ip_arg), None)
+                    if target_dev is None and brand_f:
+                        target_dev = next(
+                            (d for d in devices if brand_f in f"{d.brand} {d.model_name} {d.hostname} {d.ssdp_info} {d.active_app}".lower()),
+                            None,
+                        )
+                    if target_dev is None:
+                        target_dev = next((d for d in devices if d.device_type in ("smart_tv", "streaming_box")), None)
+
+                    # Ensure LAN AstraShield DNS Sinkhole is running
+                    sinkhole_msg = ""
+                    if not (shield.dns_running and str(shield._listen_addr).startswith("0.0.0.0:")):
+                        _, sinkhole_msg = shield.start_lan_dns_sinkhole(
+                            port=53,
+                            fallback_port=int(getattr(config, "astrashield_dns_port", 5353) or 5353),
+                            upstream=str(getattr(config, "astrashield_doh_upstream", "1.1.1.1") or "1.1.1.1"),
+                            allow_elevation=True,
+                        )
+                    st_now = shield.status()
+                    listen_port = 53
+                    if ":5353" in str(st_now.dns_listen_addr) and getattr(shield, "_nat_redirect_port", None) is None:
+                        listen_port = 5353
+
+                    if target_dev is not None:
+                        ok_tv, msg_tv, plan = lan_tv.connect_and_protect_tv(target_dev, lan_ip=lan_ip, dns_port=listen_port)
+                        return {
+                            "ok": ok_tv,
+                            "message": msg_tv,
+                            "sinkhole_status": sinkhole_msg or f"Listening on {st_now.dns_listen_addr} ({st_now.blocked_domain_count} blocked domains)",
+                            "target_tv": {
+                                "ip": target_dev.ip,
+                                "brand": target_dev.brand,
+                                "model_name": target_dev.model_name,
+                                "active_app": target_dev.active_app,
+                            },
+                            "dns_primary": lan_ip,
+                            "dns_secondary_failsafe": router_ip,
+                            "listening_port": listen_port,
+                            "port_53_forward_needed": (listen_port != 53),
+                            "samsung_tv_steps": [
+                                f"On your {target_dev.brand}: Settings -> General -> Network -> Network Status -> IP Settings -> DNS Setting -> Enter Manually",
+                                f"Set Primary DNS to {lan_ip} (your PC running AstraShield)",
+                                f"Set Secondary (Failsafe) DNS to {router_ip} (or keep router DHCP backup if TV only has 1 DNS field)",
+                            ] + ([f"IMPORTANT: AstraShield is currently on UDP port {listen_port}; Samsung TVs query UDP port 53, so click 'Enable LAN TV Mode' / allow elevated UDP 53 -> {listen_port} redirect."] if listen_port != 53 else []),
+                            "plan": plan,
+                        }
+                    return {
+                        "ok": True,
+                        "message": "No Smart TV auto-matched in ARP/SSDP right now, but AstraShield LAN Sinkhole instructions are ready.",
+                        "sinkhole_status": sinkhole_msg or f"Listening on {st_now.dns_listen_addr}",
+                        "dns_primary": lan_ip,
+                        "dns_secondary_failsafe": router_ip,
+                        "listening_port": listen_port,
+                        "port_53_forward_needed": (listen_port != 53),
+                        "discovered_devices": dev_dicts[:15],
+                    }
 
             if name == "astra_remote_tasks":
                 act = str(args.get("action", "status"))
@@ -7282,8 +7500,8 @@ class HermesAgentManager:
                 "astra_rollback_undo", "astra_dependencies", "astra_pc_usage_summary",
                 "astra_thermals_and_fans", "astra_av_and_peripherals",
             })
-        if any(w in low for w in ("wifi", "wi-fi", "network", "dns", "internet", "ping", "remote", "phone", "iphone", "android", "watch", "tailscale", "adb", "astrabeam", "sunshine")):
-            selected_names.update({"astra_wifi_check", "astra_wifi_optimize", "astra_remote_tasks", "astra_services_and_storage"})
+        if any(w in low for w in ("wifi", "wi-fi", "network", "lan", "subnet", "dns", "internet", "ping", "remote", "phone", "iphone", "android", "watch", "tailscale", "adb", "astrabeam", "sunshine", "tv", "samsung", "lg", "roku", "chromecast", "sinkhole", "astrashield", "adblock", "youtube", "aim", "devices")):
+            selected_names.update({"astra_wifi_check", "astra_wifi_optimize", "astra_lan_and_sinkhole", "astra_remote_tasks", "astra_services_and_storage"})
         if any(w in low for w in ("crash", "journal", "audit", "error", "warning", "fail", "service", "systemd", "port", "firewall", "disk", "smart", "ssd", "nvme", "storage", "diagnostic", "upgrade", "pacman", "apt", "firmware")):
             selected_names.update({"astra_journal_and_crashes", "astra_services_and_storage", "astra_deep_scan", "astra_self_heal_repair", "astra_system_updates"})
         if any(w in low for w in ("screen", "display", "page", "webpage", "web page", "clipboard", "copy", "paste", "ocr", "voice", "speak", "mic", "dictate", "picture", "image", "photo", "screenshot", "video", "clip", "mp4", "mkv", "mov", "webm", "audio", "mp3", "wav", "media", "pdf", "docx", "xlsx", "pptx")):
@@ -8132,7 +8350,7 @@ class HermesAgentManager:
     def _prompt_needs_tools(prompt: str) -> bool:
         """Returns True when the user is asking for live system/file/web/remote action rather than pure chat."""
         low = (prompt or "").strip().lower()
-        if len(low) <= 28 and not any(w in low for w in ("scan", "fix", "check", "wifi", "wi-fi", "gpu", "ram", "cpu", "file", "search", "open", "kill", "run", "test", "install", "update", "remote")):
+        if len(low) <= 28 and not any(w in low for w in ("scan", "fix", "check", "wifi", "wi-fi", "gpu", "ram", "cpu", "file", "search", "open", "kill", "run", "test", "install", "update", "remote", "tv", "dns", "lan", "sinkhole", "network")):
             return False
         action_hints = (
             "scan", "fix", "check", "diagnose", "optimize", "wifi", "wi-fi", "startup",
@@ -8140,7 +8358,8 @@ class HermesAgentManager:
             "temp", "disk", "file", "edit", "write", "read", "code", "patch", "test",
             "self-check", "install", "dependency", "dependencies", "search", "web",
             "browse", "fetch", "skill", "memory", "remember", "cron", "remote",
-            "device", "tailscale", "bluetooth", "astrabeam", "astracradle", "astra",
+            "device", "devices", "tailscale", "bluetooth", "astrabeam", "astracradle", "astra",
+            "tv", "samsung", "lg", "roku", "chromecast", "sinkhole", "astrashield", "adblock", "ad-block", "lan", "subnet", "network", "youtube", "dns", "aim",
             "changes", "improve", "review", "feature", "learned", "usage", "apps",
             "games", "tool", "custom", "status", "audit", "summary", "summarize",
             "library", "topic", "research", "storage", "harvest", "autofix", "subagent", "sub-agent", "escalate",

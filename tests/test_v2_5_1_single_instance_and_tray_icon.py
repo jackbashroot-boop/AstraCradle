@@ -2843,6 +2843,67 @@ def test_hermes_subagents_persistence_and_full_os_autofix_escalation(monkeypatch
         assert af["copied_to_clipboard"] is True
 
 
+def test_hermes_lan_smart_tv_youtube_detection_and_sinkhole_aim(monkeypatch) -> None:
+    import tempfile
+    from pathlib import Path
+    from astracradle.core.adblock_shield import AstraShieldManager
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.lan_tv_shield import LanTvAdShield
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "astra")
+        journal = ForensicJournal(cm)
+        shield = AstraShieldManager(cm, None, journal)
+        lan_tv = LanTvAdShield(journal, state_dir=cm.base_dir)
+        hm = HermesAgentManager(cm, journal, adblock_shield=shield, lan_tv_shield=lan_tv)
+        cfg = AppConfig(hermes_permission_level="safe_user")
+        hm.ensure_hermes_home(cfg)
+
+        # 1. Both real-world user prompts must trigger tools & select astra_lan_and_sinkhole
+        for p_txt in (
+            "scan my network for all devices and find the samsung tv that is currently on youtube right now",
+            "i want to aim  the tv at the sinkhole program",
+        ):
+            assert hm._prompt_needs_tools(p_txt) is True
+            sel_names = {t["function"]["name"] for t in hm._select_tool_schemas(p_txt, hm._tool_schemas())}
+            assert "astra_lan_and_sinkhole" in sel_names
+
+        # 2. Mock LAN ARP + SSDP + Samsung DIAL YouTube active probe & verify scan_lan + aim_tv_at_sinkhole
+        monkeypatch.setattr(lan_tv, "_probe_ssdp", lambda timeout=0.7: {"192.168.0.55": "Samsung Tizen TV DIAL"})
+        monkeypatch.setattr(lan_tv, "_probe_mdns_tvs", lambda: {})
+        monkeypatch.setattr(lan_tv, "_read_arp_table", lambda: {"192.168.0.55": "f4:7b:5e:11:22:33", "192.168.0.1": "aa:bb:cc:dd:ee:ff"})
+        monkeypatch.setattr(
+            lan_tv,
+            "probe_tv_app_state",
+            lambda ip, timeout=0.45: (
+                {"model_name": "Living Room Samsung QN90C", "active_app": "YouTube (running)"}
+                if ip == "192.168.0.55"
+                else {"model_name": "", "active_app": ""}
+            ),
+        )
+        monkeypatch.setattr(shield, "get_lan_ipv4", lambda: "192.168.0.193")
+        monkeypatch.setattr(lan_tv, "get_default_gateway_ip", lambda: "192.168.0.1")
+        monkeypatch.setattr(
+            shield,
+            "start_lan_dns_sinkhole",
+            lambda **kw: (True, "LAN AstraShield DNS listening on 0.0.0.0:5353 (LAN IP 192.168.0.193)"),
+        )
+
+        scan_res = hm.execute_tool("astra_lan_and_sinkhole", {"action": "scan_lan"}, cfg)
+        assert scan_res["ok"] is True
+        assert any(d["ip"] == "192.168.0.55" and "YouTube (running)" in d["active_app"] for d in scan_res["youtube_active_devices"])
+
+        aim_res = hm.execute_tool("astra_lan_and_sinkhole", {"action": "aim_tv_at_sinkhole", "brand_filter": "samsung"}, cfg)
+        assert aim_res["ok"] is True
+        assert aim_res["target_tv"]["ip"] == "192.168.0.55"
+        assert aim_res["dns_primary"] == "192.168.0.193"
+        assert aim_res["dns_secondary_failsafe"] == "192.168.0.1"
+        assert lan_tv.load_failsafe_state()["tv_ip"] == "192.168.0.55"
+
+
+
 
 
 

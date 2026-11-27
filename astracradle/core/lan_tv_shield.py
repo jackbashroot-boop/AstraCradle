@@ -74,6 +74,8 @@ class LanDeviceInfo:
     dns_queries: int = 0
     ads_blocked: int = 0
     protection_status: str = "Ready for TV DNS"
+    active_app: str = ""
+    model_name: str = ""
 
 
 @dataclass
@@ -177,19 +179,21 @@ class LanTvAdShield:
 
     @staticmethod
     def _probe_ssdp(timeout: float = 0.8) -> dict[str, str]:
-        """Sends a passive SSDP M-SEARCH discovery packet on the local LAN."""
+        """Sends passive SSDP M-SEARCH discovery packets (DIAL + ssdp:all) on the local LAN."""
         found: dict[str, str] = {}
-        msg = (
-            "M-SEARCH * HTTP/1.1\r\n"
-            "HOST: 239.255.255.250:1900\r\n"
-            'MAN: "ssdp:discover"\r\n'
-            "MX: 1\r\n"
-            "ST: urn:dial-multiscreen-org:service:dial:1\r\n\r\n"
-        ).encode("ascii")
+        targets = ("urn:dial-multiscreen-org:service:dial:1", "ssdp:all")
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.settimeout(timeout)
-                sock.sendto(msg, ("239.255.255.250", 1900))
+                for st in targets:
+                    msg = (
+                        "M-SEARCH * HTTP/1.1\r\n"
+                        "HOST: 239.255.255.250:1900\r\n"
+                        'MAN: "ssdp:discover"\r\n'
+                        "MX: 1\r\n"
+                        f"ST: {st}\r\n\r\n"
+                    ).encode("ascii")
+                    sock.sendto(msg, ("239.255.255.250", 1900))
                 while True:
                     try:
                         data, addr = sock.recvfrom(2048)
@@ -199,14 +203,56 @@ class LanTvAdShield:
                     txt = data.decode("utf-8", errors="ignore")
                     server_m = re.search(r"(?im)^SERVER:\s*(.+)$", txt)
                     st_m = re.search(r"(?im)^ST:\s*(.+)$", txt)
+                    loc_m = re.search(r"(?im)^LOCATION:\s*(.+)$", txt)
                     summary = " | ".join(
-                        p for p in (server_m.group(1).strip() if server_m else "", st_m.group(1).strip() if st_m else "") if p
+                        p
+                        for p in (
+                            server_m.group(1).strip() if server_m else "",
+                            st_m.group(1).strip() if st_m else "",
+                            loc_m.group(1).strip() if loc_m else "",
+                        )
+                        if p
                     )
-                    if summary:
-                        found[ip] = summary[:140]
+                    if summary and len(summary) > len(found.get(ip, "")):
+                        found[ip] = summary[:180]
         except OSError:
             pass
         return found
+
+    @staticmethod
+    def probe_tv_app_state(ip: str, timeout: float = 0.45) -> dict[str, str]:
+        """Probes Samsung Tizen (:8001) and DIAL YouTube endpoints (:8008 / :8080) to detect model & active YouTube."""
+        import urllib.request
+
+        out: dict[str, str] = {"model_name": "", "active_app": ""}
+        # 1. Samsung Tizen TV REST API (:8001/api/v2/)
+        try:
+            req = urllib.request.Request(f"http://{ip}:8001/api/v2/", headers={"User-Agent": "AstraCradle/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read(8192).decode("utf-8", errors="ignore") or "{}")
+                dev = data.get("device") or {}
+                name = str(dev.get("name") or data.get("name") or "").strip()
+                model = str(dev.get("modelName") or "").strip()
+                out["model_name"] = " ".join(p for p in (name, model) if p)[:100]
+        except Exception:
+            pass
+
+        # 2. DIAL YouTube status check (:8008 Chromecast/GoogleTV/Samsung DIAL or :8080 Samsung legacy)
+        for port, path in ((8008, "/apps/YouTube"), (8080, "/ws/app/YouTube"), (8001, "/api/v2/applications/111299001912")):
+            try:
+                req = urllib.request.Request(f"http://{ip}:{port}{path}", headers={"User-Agent": "AstraCradle/1.0"})
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    body = resp.read(4096).decode("utf-8", errors="ignore")
+                    low = body.lower()
+                    if "<state>running</state>" in low or '"running":true' in low or '"visible":true' in low:
+                        out["active_app"] = "YouTube (running)"
+                        break
+                    if "<state>stopped</state>" in low or "youtube" in low:
+                        if not out["active_app"]:
+                            out["active_app"] = "YouTube (installed/idle)"
+            except Exception:
+                continue
+        return out
 
     @staticmethod
     def _probe_mdns_tvs() -> dict[str, str]:
@@ -240,11 +286,12 @@ class LanTvAdShield:
         self,
         shield: AstraShieldManager | None = None,
         ssdp_timeout: float = 0.6,
+        probe_tv_apps: bool = True,
     ) -> list[LanDeviceInfo]:
-        """Discovers Smart TVs, streaming boxes & LAN devices and merges AstraShield DNS stats."""
-        arp = self._read_arp_table()
+        """Discovers Smart TVs, streaming boxes & LAN devices, probes active TV apps (YouTube), and merges AstraShield stats."""
         ssdp = self._probe_ssdp(timeout=ssdp_timeout) if ssdp_timeout > 0 else {}
         mdns = self._probe_mdns_tvs() if ssdp_timeout > 0 else {}
+        arp = self._read_arp_table()
         client_stats = shield.get_client_stats() if shield is not None else {}
 
         all_ips = sorted(
@@ -269,6 +316,14 @@ class LanTvAdShield:
             finally:
                 socket.setdefaulttimeout(None)
             brand, dtype = self._classify_device(host, mac, ssdp_info)
+            active_app = ""
+            model_name = ""
+            if probe_tv_apps and (dtype in ("smart_tv", "streaming_box") or any(k in ssdp_info.lower() for k in ("samsung", "dial", "tv", "cast"))):
+                app_st = self.probe_tv_app_state(ip)
+                active_app = app_st.get("active_app", "")
+                model_name = app_st.get("model_name", "")
+                if model_name and "samsung" in model_name.lower() and brand == "Network Device":
+                    brand, dtype = "Samsung Tizen TV", "smart_tv"
             st = client_stats.get(ip, {})
             dq = int(st.get("queries", 0))
             db = int(st.get("blocked", 0))
@@ -288,10 +343,12 @@ class LanTvAdShield:
                     dns_queries=dq,
                     ads_blocked=db,
                     protection_status=pstat,
+                    active_app=active_app,
+                    model_name=model_name,
                 )
             )
         order = {"smart_tv": 0, "streaming_box": 1, "console": 2, "network_device": 3}
-        devices.sort(key=lambda d: (order.get(d.device_type, 9), d.ip))
+        devices.sort(key=lambda d: (order.get(d.device_type, 9), 0 if "running" in d.active_app.lower() else 1, d.ip))
         return devices
 
     # ------------------------------------------------------------------

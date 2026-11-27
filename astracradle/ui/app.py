@@ -309,6 +309,8 @@ class AstraCradleApp(ctk.CTk):
             thermal_spc=self.thermal_spc,
             gpu_pwr=self.gpu_pwr,
             catalog_scanner=self.catalog_scanner,
+            adblock_shield=self.adblock_shield,
+            lan_tv_shield=self.lan_tv_shield,
         )
         self.i18n = Translator(self.config_obj.language)
         self._last_duplicate_groups: list[DuplicateGroup] = []
