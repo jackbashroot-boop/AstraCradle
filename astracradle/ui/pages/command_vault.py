@@ -71,8 +71,9 @@ def render_command_vault_page(app: AstraCradleApp) -> None:
     ).pack(side="left", padx=(0, 10))
 
     ctk.CTkLabel(filt_r, text="Search:", font=app.fonts["small"], text_color=p.text_muted).pack(side="left", padx=(0, 6))
-    search_var = tk.StringVar(value=search_q)
-    search_ent = ctk.CTkEntry(filt_r, textvariable=search_var, width=210, placeholder_text="fish, bash, sunshine, adb, tailscale...")
+    search_ent = ctk.CTkEntry(filt_r, width=210, placeholder_text="fish, bash, sunshine, adb, tailscale...")
+    if search_q:
+        search_ent.insert(0, search_q)
     search_ent.pack(side="left", padx=(0, 6))
     ctk.CTkButton(
         filt_r,
@@ -80,7 +81,7 @@ def render_command_vault_page(app: AstraCradleApp) -> None:
         width=68,
         height=28,
         fg_color=p.bg_elevated,
-        command=lambda: app._on_cmd_vault_filter(cat_var.get(), search_var.get()),
+        command=lambda: app._on_cmd_vault_filter(cat_var.get(), search_ent.get()),
     ).pack(side="left")
 
     # Command Dropdown Row
@@ -330,12 +331,10 @@ def render_command_vault_page(app: AstraCradleApp) -> None:
 
     row1 = ctk.CTkFrame(add_card, fg_color="transparent")
     row1.pack(fill="x", padx=14, pady=3)
-    new_title = tk.StringVar()
     new_cat = tk.StringVar(value="Custom")
     new_plat = tk.StringVar(value="All")
-    ctk.CTkEntry(row1, textvariable=new_title, width=260, placeholder_text="Command Title (e.g. Pair My New Tablet)").pack(
-        side="left", padx=(0, 8), fill="x", expand=True
-    )
+    new_title_ent = ctk.CTkEntry(row1, width=260, placeholder_text="Command Title (e.g. Pair My New Tablet)")
+    new_title_ent.pack(side="left", padx=(0, 8), fill="x", expand=True)
     ctk.CTkOptionMenu(
         row1,
         values=categories,
@@ -349,19 +348,18 @@ def render_command_vault_page(app: AstraCradleApp) -> None:
         width=130,
     ).pack(side="left")
 
-    new_desc = tk.StringVar()
-    ctk.CTkEntry(
+    new_desc_ent = ctk.CTkEntry(
         add_card,
-        textvariable=new_desc,
         placeholder_text="Short description / usage note (optional)",
-    ).pack(fill="x", padx=14, pady=3)
+    )
+    new_desc_ent.pack(fill="x", padx=14, pady=3)
 
     script_txt = ctk.CTkTextbox(add_card, height=74, font=app.fonts["mono_small"], fg_color=p.bg_elevated)
     script_txt.pack(fill="x", padx=14, pady=3)
 
     def _save_new() -> None:
         raw_script = script_txt.get("1.0", "end").strip()
-        app._on_add_vault_command(new_title.get(), new_cat.get(), new_plat.get(), raw_script, new_desc.get())
+        app._on_add_vault_command(new_title_ent.get(), new_cat.get(), new_plat.get(), raw_script, new_desc_ent.get())
 
     ctk.CTkButton(
         add_card,

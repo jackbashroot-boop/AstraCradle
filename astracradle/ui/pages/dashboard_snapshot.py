@@ -213,23 +213,22 @@ def build_command_deck_snapshot(app: AstraCradleApp, page: ctk.CTkScrollableFram
 
     sgrid = ctk.CTkFrame(scard, fg_color="transparent")
     sgrid.pack(fill="x", padx=12, pady=(2, 10))
-    sgrid.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
+    sgrid.grid_columnconfigure((0, 1, 2), weight=1, uniform="snap_tile")
 
     tiles = [
-        ("monitoring", "Live Monitoring", "Full sensors & history"),
+        ("playbook", "Fix Problems", "1-click safe fixes"),
         ("wifi", "Wi-Fi & Failover", "Ping & auto-recovery"),
-        ("remote_beam", "Remote & Devices", "Tailscale, iOS/Watch/BT"),
+        ("remote_beam", "Phone & Remote", "Tailscale, iOS/Watch/BT"),
+        ("hermes", "Hermes OS AI", "Local GPU & Free Cloud"),
+        ("hunter", "Speed Up Apps", "Idle apps & AI hunter"),
+        ("modules", "Clean & Protect", "AstraShield & Cleanup"),
+        ("monitoring", "Live Monitoring", "Full sensors & history"),
         ("cmd_vault", "Command Vault", "Bash/Fish, Deps & Help"),
-        ("hunter", "AI Process Hunter", "PID & Web descriptions"),
-        ("modules", "System Modules", "AstraShield & Cleanup"),
-        ("rf_waves", "Bandwidth & RF", "Live RX/TX & Spectrum"),
-        ("hardware", "Hardware & Fans", "Pipelines & Fan Curves"),
-        ("probalance", "ProBalance & DPC", "Latency & Boost"),
         ("safeguards", "Forensic & Heal", "14-Invariant Vault"),
     ]
     app._dash_snapshot_tiles = {}
     for idx, (nav_key, title, sub) in enumerate(tiles):
-        r, c = divmod(idx, 5)
+        r, c = divmod(idx, 3)
         tile = ctk.CTkFrame(sgrid, fg_color=p.bg_elevated, border_width=1, border_color=p.border_subtle, corner_radius=9)
         tile.grid(row=r, column=c, sticky="nsew", padx=3, pady=3)
         ctk.CTkLabel(tile, text=title, font=app.fonts["body_bold"], text_color=p.text_primary).pack(
@@ -275,7 +274,7 @@ def update_command_deck_snapshot_inplace(app: AstraCradleApp, snap, gpu=None) ->
     temps = sensors.get("temperatures") or []
     fans = sensors.get("fans") or []
     freq = sensors.get("cpu_freq") or {}
-    gpu_live = sensors.get("gpu_live") or GpuPowerAndFanController.probe_live_power_and_fan()
+    gpu_live = sensors.get("gpu_live") or {}
 
     cpu_t = app._num_or_none(sensors.get("cpu_temp_c")) or app._num_or_none(snap.temperature_c)
     gpu_t = app._num_or_none(sensors.get("gpu_temp_c")) or app._num_or_none(gpu_live.get("temp_c"))
@@ -354,16 +353,18 @@ def update_command_deck_snapshot_inplace(app: AstraCradleApp, snap, gpu=None) ->
             " | ".join(f"{pt.mountpoint} ({pt.fstype}): {pt.percent:.1f}% used" for pt in snap.partitions[:4]),
         )
 
-    if "network_fo" in rows:
-        fo = app.network_failover.current_snapshot(app.config_obj)
+    # Update Snapshot quick tiles smoothly
+    tiles = getattr(app, "_dash_snapshot_tiles", {})
+    fo_snap = app.network_failover.current_snapshot(app.config_obj) if ("network_fo" in rows or "wifi" in tiles) else None
+    if "network_fo" in rows and fo_snap is not None:
         dns_txt = f"{snap.dns_latency_ms:.0f} ms" if snap.dns_latency_ms is not None else "Online"
         _set_lbl_if_changed(
             rows["network_fo"]["summary"],
-            f"Failover: {fo.state.upper()} ({fo.active_iface}) · DNS {dns_txt}",
+            f"Failover: {fo_snap.state.upper()} ({fo_snap.active_iface}) · DNS {dns_txt}",
         )
         _set_lbl_if_changed(
             rows["network_fo"]["detail_lbl"],
-            f"Primary: {fo.primary_iface} -> Backup: {fo.backup_iface} | Ping every {app.config_obj.failover_ping_interval_sec:.0f}s | Recovery: {app.config_obj.failover_recovery_stable_sec:.0f}s",
+            f"Primary: {fo_snap.primary_iface} -> Backup: {fo_snap.backup_iface} | Ping every {app.config_obj.failover_ping_interval_sec:.0f}s | Recovery: {app.config_obj.failover_recovery_stable_sec:.0f}s",
         )
 
     if "security" in rows:
@@ -390,16 +391,20 @@ def update_command_deck_snapshot_inplace(app: AstraCradleApp, snap, gpu=None) ->
             " | ".join(f"{e.check_name}: {e.status.upper()}" for e in ev[:5]) or "All checks verified.",
         )
 
-    # Update Snapshot quick tiles smoothly
-    tiles = getattr(app, "_dash_snapshot_tiles", {})
-    if "wifi" in tiles:
-        fo = app.network_failover.current_snapshot(app.config_obj)
-        _set_lbl_if_changed(tiles["wifi"], f"{fo.active_iface} ({fo.state})")
+    if "wifi" in tiles and fo_snap is not None:
+        _set_lbl_if_changed(tiles["wifi"], f"{fo_snap.active_iface} ({fo_snap.state})")
     if "remote_beam" in tiles:
         srv = getattr(app, "_astrabeam_server", None)
         _set_lbl_if_changed(tiles["remote_beam"], "Host TLS LIVE" if (srv and srv.running) else "Tailscale / BT Ready")
     if "cmd_vault" in tiles:
-        _set_lbl_if_changed(tiles["cmd_vault"], f"{len(app.command_db.list_commands())} scripts · Fish/Bash")
+        cmd_cnt = getattr(app, "_cached_cmd_count", None)
+        if cmd_cnt is None:
+            try:
+                cmd_cnt = len(app.command_db.list_commands())
+            except Exception:
+                cmd_cnt = 0
+            app._cached_cmd_count = cmd_cnt  # type: ignore[attr-defined]
+        _set_lbl_if_changed(tiles["cmd_vault"], f"{cmd_cnt} scripts · Fish/Bash")
     if "hunter" in tiles:
         _set_lbl_if_changed(tiles["hunter"], f"{snap.process_count} PIDs + Web Lookup")
     if "monitoring" in tiles:

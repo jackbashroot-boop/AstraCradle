@@ -326,8 +326,14 @@ class LinuxAdapter(BaseOSAdapter):
         ]
 
     def integrity_check_manual(self) -> list[str]:
+        if shutil.which("pacman"):
+            pkg_cmd = "sudo pacman -Qk                              # Verify Arch / CachyOS package files"
+        elif shutil.which("dnf"):
+            pkg_cmd = "sudo dnf check                               # Verify Fedora/RHEL package health"
+        else:
+            pkg_cmd = "sudo apt-get check && sudo dpkg --configure -a   # Debian/Ubuntu package health"
         return [
-            "sudo apt-get check && sudo dpkg --configure -a   # Debian/Ubuntu package health",
+            pkg_cmd,
             "sudo journalctl --vacuum-time=14d                # Trim system journal logs safely",
             "sudo fstrim -av                                  # Verify/trim SSD blocks",
         ]
@@ -662,7 +668,13 @@ class WindowsAdapter(BaseOSAdapter):
     def power_profile_info(self) -> dict[str, str]:
         if platform.system() == "Windows" and shutil.which("powercfg"):
             try:
-                r = subprocess.run(["powercfg", "/getactivescheme"], capture_output=True, text=True, timeout=3)
+                r = subprocess.run(
+                    ["powercfg", "/getactivescheme"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
                 if r.returncode == 0:
                     return {"governor": "Windows Power Plan", "mode": r.stdout.strip()}
             except Exception:

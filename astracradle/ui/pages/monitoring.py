@@ -77,10 +77,11 @@ def build_monitoring_page(app: AstraCradleApp, page: ctk.CTkScrollableFrame) -> 
     app.mon_sensors_lbl = ctk.CTkLabel(
         scard,
         text="Collecting full hardware sensor telemetry...",
-        font=app.fonts["mono_small"],
+        font=app.fonts["small"],
         text_color=p.text_secondary,
         justify="left",
         anchor="w",
+        wraplength=app._content_wrap(100),
     )
     app.mon_sensors_lbl.pack(fill="x", padx=16, pady=(2, 12))
 
@@ -94,6 +95,7 @@ def build_monitoring_page(app: AstraCradleApp, page: ctk.CTkScrollableFrame) -> 
         text_color=p.text_primary,
         justify="left",
         anchor="w",
+        wraplength=app._content_wrap(100),
     )
     app.mon_findings_lbl.pack(fill="x", padx=16, pady=(2, 10))
     act_row = ctk.CTkFrame(fcard, fg_color="transparent")
@@ -137,25 +139,29 @@ def update_monitoring_live(app: AstraCradleApp) -> None:
     app.mon_history_chart.set_points(pts, resolution=win)
 
     sensors = app._latest_sensors or {}
-    gpu_live = sensors.get("gpu_live") or GpuPowerAndFanController.probe_live_power_and_fan()
+    gpu_live = sensors.get("gpu_live") or {}
     temps = sensors.get("temperatures") or []
     fans = sensors.get("fans") or []
     freq = sensors.get("cpu_freq") or {}
     bat = sensors.get("battery")
     lines = [
-        f"Host: {snap.hostname} | Uptime: {format_uptime(snap.uptime_seconds)} | CPU: {snap.cpu_percent:.1f}% @ {int(freq.get('current_mhz') or snap.cpu_freq_mhz or 0)} MHz | RAM: {format_bytes(snap.mem_used_bytes)}/{format_bytes(snap.mem_total_bytes)} ({snap.mem_percent:.1f}%)",
-        f"GPU: {gpu_live.get('name', 'Integrated')} | Temp: {gpu_live.get('temp_c') or 'N/A'}°C | Util: {gpu_live.get('util_percent') or 'N/A'}% | Power: {gpu_live.get('power_draw_w') or 'N/A'} W | Fan: {gpu_live.get('fan_percent') or 'Auto'}%",
+        f"System: {snap.hostname}  ·  Uptime: {format_uptime(snap.uptime_seconds)}  ·  CPU: {snap.cpu_percent:.1f}% @ {int(freq.get('current_mhz') or snap.cpu_freq_mhz or 0)} MHz  ·  RAM: {format_bytes(snap.mem_used_bytes)} / {format_bytes(snap.mem_total_bytes)} ({snap.mem_percent:.1f}%)",
+        f"GPU: {gpu_live.get('name', 'Integrated')}  ·  Temp: {gpu_live.get('temp_c') or 'N/A'}°C  ·  Load: {gpu_live.get('util_percent') or 'N/A'}%  ·  Power: {gpu_live.get('power_draw_w') or 'N/A'} W  ·  Fan: {gpu_live.get('fan_percent') or 'Auto'}%",
     ]
     if temps:
-        lines.append("Thermals: " + " | ".join(f"{t.get('chip')}:{t.get('label')}={t.get('current_c')}°C" for t in temps[:12]))
+        lines.append("Temperatures: " + ", ".join(f"{t.get('label')} {t.get('current_c')}°C" for t in temps[:8]))
     if fans:
-        lines.append("Fans: " + " | ".join(f"{f.get('chip')}:{f.get('label')}={f.get('rpm')} RPM" for f in fans[:6]))
+        lines.append("Fans: " + ", ".join(f"{f.get('label')} {f.get('rpm')} RPM" for f in fans[:6]))
     if bat:
         lines.append(f"Battery: {bat.get('percent')}% ({'Plugged In' if bat.get('plugged') else 'On Battery'})")
     if snap.partitions:
-        lines.append(
-            "Disks: " + " | ".join(f"{pt.mountpoint} ({pt.fstype}) {pt.percent:.1f}% ({format_bytes(pt.free_bytes)} free)" for pt in snap.partitions[:5])
-        )
+        seen_mounts = []
+        disk_parts = []
+        for pt in snap.partitions[:6]:
+            if pt.mountpoint not in seen_mounts:
+                seen_mounts.append(pt.mountpoint)
+                disk_parts.append(f"{pt.mountpoint} {pt.percent:.1f}% used ({format_bytes(pt.free_bytes)} free)")
+        lines.append("Storage: " + "  ·  ".join(disk_parts))
     sensor_txt = "\n".join(lines)
     if getattr(app.mon_sensors_lbl, "_cached_txt", None) != sensor_txt:
         app.mon_sensors_lbl._cached_txt = sensor_txt  # type: ignore[attr-defined]
@@ -196,12 +202,12 @@ def refresh_monitoring_peripherals(app: AstraCradleApp) -> None:
     for dev in periphs[:10]:
         row = ctk.CTkFrame(app.mon_periph_frame, fg_color=p.bg_elevated, corner_radius=7)
         row.pack(fill="x", pady=2)
-        badge_col = p.accent_coral if dev.status == "blocked" else p.accent_jade
+        badge_col = p.accent_coral if dev.status == "blocked" else p.text_primary
         ctk.CTkLabel(
             row,
-            text=f"[{dev.bus.upper()} · {dev.status.upper()}] {dev.vendor} {dev.name} — {dev.plain_description}",
-            font=app.fonts["mono_small"],
-            text_color=badge_col if dev.bus == "usb" else p.text_primary,
+            text=f"{dev.vendor} {dev.name} ({dev.bus.upper()} · {dev.status.upper()}) — {dev.plain_description}",
+            font=app.fonts["small"],
+            text_color=badge_col,
         ).pack(side="left", padx=10, pady=5)
         if dev.bus == "usb" and dev.status == "blocked":
             ctk.CTkButton(

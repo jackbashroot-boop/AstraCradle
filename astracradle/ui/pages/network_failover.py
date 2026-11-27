@@ -162,19 +162,21 @@ def render_failover_section(app: AstraCradleApp, parent: ctk.CTkScrollableFrame)
         command=app._on_force_recover_primary,
     ).pack(side="left", padx=4)
 
-    # Row 5: Additional Custom Failover Pair
-    cf_name = tk.StringVar()
-    cf_prim = tk.StringVar(value=snap.primary_iface)
-    cf_back = tk.StringVar(value=snap.backup_iface)
+    # Row 5: Additional Custom Failover Pair (labeled cleanly)
     cf_intv = tk.StringVar(value="5")
     cf_rec = tk.StringVar(value="300")
     r5 = ctk.CTkFrame(card, fg_color="transparent")
-    r5.pack(fill="x", padx=14, pady=(2, 6))
-    ctk.CTkEntry(r5, textvariable=cf_name, width=165, placeholder_text="Custom Pair Name (e.g. Lab Eth->BT)").pack(
-        side="left", padx=(0, 6)
-    )
-    ctk.CTkEntry(r5, textvariable=cf_prim, width=90, placeholder_text="Primary NIC").pack(side="left", padx=(0, 6))
-    ctk.CTkEntry(r5, textvariable=cf_back, width=90, placeholder_text="Backup NIC").pack(side="left", padx=(0, 6))
+    r5.pack(fill="x", padx=14, pady=(4, 6))
+    cf_name_ent = ctk.CTkEntry(r5, width=190, placeholder_text="Custom Pair Name (e.g. Home Eth->WiFi)")
+    cf_name_ent.pack(side="left", padx=(0, 8))
+    ctk.CTkLabel(r5, text="Primary:", font=app.fonts["caption"], text_color=p.text_muted).pack(side="left", padx=(0, 3))
+    cf_prim_ent = ctk.CTkEntry(r5, width=88, placeholder_text="Primary NIC")
+    cf_prim_ent.insert(0, snap.primary_iface)
+    cf_prim_ent.pack(side="left", padx=(0, 8))
+    ctk.CTkLabel(r5, text="Backup:", font=app.fonts["caption"], text_color=p.text_muted).pack(side="left", padx=(0, 3))
+    cf_back_ent = ctk.CTkEntry(r5, width=88, placeholder_text="Backup NIC")
+    cf_back_ent.insert(0, snap.backup_iface)
+    cf_back_ent.pack(side="left", padx=(0, 8))
     ctk.CTkEntry(r5, textvariable=cf_intv, width=48).pack(side="left", padx=(0, 4))
     ctk.CTkLabel(r5, text="s ping", font=app.fonts["caption"], text_color=p.text_muted).pack(side="left", padx=(0, 6))
     ctk.CTkEntry(r5, textvariable=cf_rec, width=54).pack(side="left", padx=(0, 4))
@@ -185,9 +187,9 @@ def render_failover_section(app: AstraCradleApp, parent: ctk.CTkScrollableFrame)
         height=26,
         fg_color=p.bg_elevated,
         command=lambda: app._on_add_custom_failover_pair(
-            cf_name.get(), cf_prim.get(), cf_back.get(), cf_intv.get(), cf_rec.get()
+            cf_name_ent.get(), cf_prim_ent.get(), cf_back_ent.get(), cf_intv.get(), cf_rec.get()
         ),
-    ).pack(side="right")
+    ).pack(side="left")
 
     for cp in getattr(cfg, "failover_custom_profiles", []) or []:
         crow = ctk.CTkFrame(card, fg_color=p.bg_elevated, corner_radius=7)

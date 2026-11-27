@@ -32,7 +32,7 @@ def test_v1_6_boot_splash_hover_gif_icons_drag_inertia_and_10x10_to_4k(monkeypat
         cfg_mgr = ConfigManager(base_dir=fake_home / ".astracradle")
         cfg = cfg_mgr.load()
         assert cfg.boot_star_gather_splash is True
-        assert cfg.floating_orb_on_minimize is True
+        assert cfg.floating_orb_on_minimize is False
         assert cfg.hover_icon_animation is True
         assert cfg.solar_backdrop_enabled is True
 

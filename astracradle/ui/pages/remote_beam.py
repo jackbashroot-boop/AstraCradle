@@ -271,18 +271,30 @@ def render_remote_beam_page(app: AstraCradleApp) -> None:
     if is_live and srv is not None:
         share_host = ts.self_ip or srv.bind_host
         base_u = f"{srv.scheme}://{share_host}:{srv.port}"
+        iphone_u = f"{base_u}/iphone"
         fp_txt = f"  ·  Cert SHA-256: {srv.cert_fingerprint_sha256[:23]}..." if srv.cert_fingerprint_sha256 else ""
+        live_row = ctk.CTkFrame(hcard, fg_color="transparent")
+        live_row.pack(fill="x", padx=14, pady=(2, 10))
         ctk.CTkLabel(
-            hcard,
+            live_row,
             text=(
                 f"HOST LIVE ({srv.scheme.upper()})  ·  PIN: {srv.pin}  ·  Frames: {srv.frames_served}  ·  Inputs: {srv.inputs_handled}{fp_txt}\n"
-                f"iOS/Android PWA: {base_u}/   |   Apple Watch Companion: {base_u}/watch   |   BT Handshake API: {base_u}/api/bt/handshake"
+                f"iPhone 16 Pro Max App: {iphone_u}   |   Desktop Stream: {base_u}/   |   Watch: {base_u}/watch"
             ),
             font=app.fonts["mono_small"],
             text_color=p.accent_jade,
             justify="left",
-            wraplength=app._content_wrap(80),
-        ).pack(anchor="w", padx=14, pady=(2, 10))
+            wraplength=app._content_wrap(200),
+        ).pack(side="left", anchor="w")
+        ctk.CTkButton(
+            live_row,
+            text="Copy iPhone App URL",
+            height=26,
+            fg_color=p.bg_elevated,
+            hover_color=p.accent_cyan,
+            font=app.fonts["small"],
+            command=lambda u=iphone_u: (app.clipboard_clear(), app.clipboard_append(u), app.show_toast(f"Copied iPhone App URL: {u}")),
+        ).pack(side="right", padx=(8, 0))
     else:
         ctk.CTkFrame(hcard, height=6, fg_color="transparent").pack()
 
@@ -389,25 +401,22 @@ def render_remote_beam_page(app: AstraCradleApp) -> None:
     ctk.CTkOptionMenu(dr1, values=preset_names, variable=preset_var, width=250, command=_apply_preset).pack(
         side="left", padx=(0, 8)
     )
-    ctk.CTkEntry(dr1, textvariable=dev_name_var, width=210, placeholder_text="Device / Program Name (e.g. iPhone 18 Pro)").pack(
-        side="left", padx=(0, 8), fill="x", expand=True
-    )
-    ctk.CTkEntry(dr1, textvariable=dev_host_var, width=140, placeholder_text="IP / Tailscale Host").pack(
-        side="left", padx=(0, 6)
-    )
-    ctk.CTkEntry(dr1, textvariable=dev_port_var, width=64, placeholder_text="Port").pack(side="left")
+    dev_name_ent = ctk.CTkEntry(dr1, width=210, placeholder_text="Device / Program Name (e.g. iPhone 18 Pro)")
+    dev_name_ent.pack(side="left", padx=(0, 8), fill="x", expand=True)
+    dev_host_ent = ctk.CTkEntry(dr1, width=140, placeholder_text="IP / Tailscale Host")
+    dev_host_ent.pack(side="left", padx=(0, 6))
+    dev_port_ent = ctk.CTkEntry(dr1, width=64, placeholder_text="Port")
+    dev_port_ent.insert(0, dev_port_var.get())
+    dev_port_ent.pack(side="left")
 
     dr2 = ctk.CTkFrame(dcard, fg_color="transparent")
     dr2.pack(fill="x", padx=14, pady=3)
-    ctk.CTkEntry(dr2, textvariable=dev_mac_var, width=165, placeholder_text="Bluetooth MAC AA:BB:CC:DD:EE:FF").pack(
-        side="left", padx=(0, 8)
-    )
-    ctk.CTkEntry(dr2, textvariable=dev_adb_var, width=130, placeholder_text="ADB Serial (opt)").pack(
-        side="left", padx=(0, 8)
-    )
-    ctk.CTkEntry(dr2, textvariable=dev_cmd_var, width=220, placeholder_text="Custom Program Cmd (e.g. moonlight stream {host})").pack(
-        side="left", padx=(0, 8), fill="x", expand=True
-    )
+    dev_mac_ent = ctk.CTkEntry(dr2, width=165, placeholder_text="Bluetooth MAC AA:BB:CC:DD:EE:FF")
+    dev_mac_ent.pack(side="left", padx=(0, 8))
+    dev_adb_ent = ctk.CTkEntry(dr2, width=130, placeholder_text="ADB Serial (optional)")
+    dev_adb_ent.pack(side="left", padx=(0, 8))
+    dev_cmd_ent = ctk.CTkEntry(dr2, width=220, placeholder_text="Custom Command (e.g. moonlight stream {host})")
+    dev_cmd_ent.pack(side="left", padx=(0, 8), fill="x", expand=True)
     ctk.CTkSwitch(dr2, text="Auto-Connect", variable=dev_auto_var).pack(side="left", padx=(0, 8))
     ctk.CTkButton(
         dr2,
@@ -418,12 +427,12 @@ def render_remote_beam_page(app: AstraCradleApp) -> None:
         font=app.fonts["body_bold"],
         command=lambda: app._on_register_designated_device(
             preset_var.get(),
-            dev_name_var.get(),
-            dev_host_var.get(),
-            dev_mac_var.get(),
-            dev_adb_var.get(),
-            dev_port_var.get(),
-            dev_cmd_var.get(),
+            dev_name_ent.get(),
+            dev_host_ent.get(),
+            dev_mac_ent.get(),
+            dev_adb_ent.get(),
+            dev_port_ent.get(),
+            dev_cmd_ent.get(),
             dev_auto_var.get(),
         ),
     ).pack(side="right")
@@ -480,7 +489,26 @@ def render_remote_beam_page(app: AstraCradleApp) -> None:
         hover_color=p.accent_jade,
         font=app.fonts["small"],
         command=app._on_apply_sunshine_tailscale_conf,
-    ).pack(side="right")
+    ).pack(side="right", padx=(6, 0))
+    if sm.sunshine_installed:
+        ctk.CTkButton(
+            top_s,
+            text="Optimize for iPad / Main Monitor",
+            height=26,
+            fg_color=p.bg_elevated,
+            hover_color=p.accent_cyan,
+            font=app.fonts["small"],
+            command=app._on_optimize_sunshine_ipad,
+        ).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(
+            top_s,
+            text="Start / Restart Sunshine",
+            height=26,
+            fg_color=p.accent_jade if not sm.sunshine_running else p.bg_elevated,
+            text_color="#071510" if not sm.sunshine_running else p.text_primary,
+            font=app.fonts["small"],
+            command=app._on_restart_sunshine_service,
+        ).pack(side="right")
 
     conn_r = ctk.CTkFrame(ccard, fg_color="transparent")
     conn_r.pack(fill="x", padx=14, pady=4)
