@@ -5570,7 +5570,7 @@ class HermesAgentManager:
         sh_bin = shutil.which("sh") or "/bin/sh"
         return "sh", [sh_bin, "-c"]
 
-    def _run_sudo_prompted(self, cmd: str, reason: str, config: AppConfig) -> dict[str, Any]:
+    def _run_sudo_prompted(self, cmd: str, reason: str, config: AppConfig, *, timeout: int = 25) -> dict[str, Any]:
         lvl = self._effective_permission_level(config)
         if lvl != "sudo_with_prompt":
             return {
@@ -5608,8 +5608,8 @@ class HermesAgentManager:
         res = runner.run_privileged(
             argv,
             reason=f"{reason}\n\nCommand: {clean_cmd}",
-            title="Hermes AI — Sudo / Admin Password Required",
-            timeout=25,
+            title="Stephen AI — Sudo / Admin Password Required",
+            timeout=max(10, int(timeout)),
         )
         self.journal.log_event(
             "HermesOS",
@@ -6720,10 +6720,24 @@ class HermesAgentManager:
                         "snapshot_tool": ("timeshift" if shutil.which("timeshift") else ("snapper" if shutil.which("snapper") else "none")),
                     }
                 if perm != "sudo_with_prompt":
-                    return {"ok": False, "blocked": True, "error": "OS package upgrade requires Level 4 (Sudo When Password Typed)."}
-                snap_prefix = "timeshift --create --comments 'Pre-Hermes-Update' && " if shutil.which("timeshift") else ""
+                    return {
+                        "ok": False,
+                        "blocked": True,
+                        "package_manager": pkg_mgr,
+                        "os_updates_count": len(pending_os),
+                        "os_updates": pending_os[:20],
+                        "flatpak_updates": flatpak_updates,
+                        "error": (
+                            f"Found {len(pending_os)} pending OS package(s) ({pkg_mgr}) and {len(flatpak_updates)} Flatpak update(s), "
+                            "but applying OS package upgrades requires Permission Level 4 ('User Control + Sudo Only When You Type Password'). "
+                            "Switch to Level 4 in Stephen AI Safety & Identity and ask again so I can prompt for your sudo password."
+                        ),
+                    }
+                snap_prefix = "timeshift --create --comments 'Pre-Stephen-Update' && " if shutil.which("timeshift") else ""
                 up_cmd = f"{snap_prefix}pacman -Syu --noconfirm" if pkg_mgr == "pacman" else (f"{snap_prefix}apt-get upgrade -y" if pkg_mgr == "apt" else f"{snap_prefix}dnf upgrade -y")
-                return self._run_sudo_prompted(up_cmd, "Upgrade OS packages (with pre-upgrade snapshot if available)", config)
+                if flatpak_updates:
+                    up_cmd = f"{up_cmd} && flatpak update -y"
+                return self._run_sudo_prompted(up_cmd, "Upgrade OS packages (with pre-upgrade snapshot if available)", config, timeout=300)
 
             if name == "astra_av_and_peripherals":
                 act = str(args.get("action") or "inspect").strip().lower()
@@ -7768,8 +7782,8 @@ class HermesAgentManager:
             })
         if any(w in low for w in ("wifi", "wi-fi", "network", "lan", "subnet", "dns", "internet", "ping", "remote", "phone", "iphone", "android", "watch", "tailscale", "adb", "astrabeam", "sunshine", "tv", "samsung", "lg", "roku", "chromecast", "sinkhole", "astrashield", "adblock", "youtube", "aim", "devices")):
             selected_names.update({"astra_wifi_check", "astra_wifi_optimize", "astra_lan_and_sinkhole", "astra_remote_tasks", "astra_services_and_storage"})
-        if any(w in low for w in ("crash", "journal", "audit", "error", "warning", "fail", "service", "systemd", "port", "firewall", "disk", "smart", "ssd", "nvme", "storage", "diagnostic", "upgrade", "pacman", "apt", "firmware")):
-            selected_names.update({"astra_journal_and_crashes", "astra_services_and_storage", "astra_deep_scan", "astra_self_heal_repair", "astra_system_updates"})
+        if any(w in low for w in ("crash", "journal", "audit", "error", "warning", "fail", "service", "systemd", "port", "firewall", "disk", "smart", "ssd", "nvme", "storage", "diagnostic", "update", "updates", "upgrade", "pacman", "apt", "dnf", "flatpak", "firmware")):
+            selected_names.update({"astra_journal_and_crashes", "astra_services_and_storage", "astra_deep_scan", "astra_self_heal_repair", "astra_system_updates", "sudo_exec"})
         if any(w in low for w in ("screen", "display", "page", "webpage", "web page", "clipboard", "copy", "paste", "ocr", "voice", "speak", "mic", "dictate", "picture", "image", "photo", "screenshot", "video", "clip", "mp4", "mkv", "mov", "webm", "audio", "mp3", "wav", "media", "pdf", "docx", "xlsx", "pptx")):
             selected_names.update({"astra_screen_and_clipboard", "astra_voice_io", "astra_inspect_media", "web_fetch"})
         if re.search(r"\b(?:astra|astracradle)\b", low) or any(w in low for w in ("code", "file", "edit", "write", "read", "grep", "search", "changes", "improve", "review", "feature", "build", "test", "update", "patch", "script", "python", "shell", "command", "terminal", "sudo", "git", "github", "push", "pull", "backup", "tool", "macro", "combine", "automate", "workflow", "template", "playbook", "sop")):
@@ -9311,8 +9325,10 @@ class HermesAgentManager:
                         _add_auto("auto_rb", "astra_rollback_undo", {"action": "list"})
                     if any(k in low_p for k in ("smart tv", "samsung", "sinkhole", "astrashield", "scan lan", "local network", "adblock")):
                         _add_auto("auto_lan", "astra_lan_and_sinkhole", {"action": "scan_lan"})
-                    if any(k in low_p for k in ("pending os", "system updates", "firmware update", "flatpak")):
+                    if any(k in low_p for k in ("pending os", "system updates", "firmware update", "flatpak", "check for updates")):
                         _add_auto("auto_upd", "astra_system_updates", {"action": "check"})
+                    elif any(k in low_p for k in ("update my pc", "update pc", "update system", "upgrade my pc", "upgrade system", "install updates", "apply updates")):
+                        _add_auto("auto_upd_apply", "astra_system_updates", {"action": "apply"})
                     if any(k in low_p for k in ("smart health", "failed systemd", "listening ports", "disk usage")):
                         _add_auto("auto_svc", "astra_services_and_storage", {})
                     if any(k in low_p for k in ("bluetooth", "battery percentage", "below 20%")):

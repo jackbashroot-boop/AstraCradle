@@ -15,6 +15,8 @@ All notable updates and fixes to **AstraCradle** (`v2.5.1+`) are documented here
 - Polls automatically every 60s and triggers an **important alert toast + desktop tray notification** whenever any Bluetooth device battery drops below **20%** (with recharge hysteresis at 25%).
 - Displays live and tracked Bluetooth device battery badges in **Clean & Protect → Smart TV, Bluetooth & Network Devices** and `python3 -m astracradle --scan-tv`.
 
+- Fixed `"Update my pc too"` tool selection in Stephen AI (`_select_tool_schemas` now includes `astra_system_updates` + `sudo_exec` for `"update"`/`"updates"`, `astra_system_updates(action='apply')` reports pending updates clearly below Level 4 or prompts for sudo with a 300s timeout at Level 4, and turn-0 grounding covers `"update my pc"`).
+
 ### Stephen AI Rename & Dedicated Bluetooth & Peripherals Category
 - Renamed **Hermes OS AI** across the sidebar, topbar, Command Deck tile, chat assistant persona (`Stephen · Stephen AI`), setup wizard, and settings to **Stephen AI** in honor of the user's late father (keeping all existing internal configs, sessions, and memories seamlessly intact).
 - Added a dedicated **Bluetooth & Peripherals** (`peripherals`) sidebar category & page (`astracradle/ui/pages/peripherals_page.py`) showing **all connected devices**: Bluetooth devices with live battery % & `<20%` low-battery alert switch, all USB/HID/PCIe/input peripherals with BadUSB Trust & Strict Kernel Gate controls, audio outputs/mics, displays, and USB autosuspend nodes.

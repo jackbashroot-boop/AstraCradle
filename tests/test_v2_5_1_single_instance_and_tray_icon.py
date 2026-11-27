@@ -3929,6 +3929,31 @@ def test_stephen_ai_rename_and_bluetooth_peripherals_page(monkeypatch) -> None:
     assert "PipeWire Sink 1" in joined and "HDMI-A-1 connected" in joined
 
 
+def test_update_my_pc_selects_system_updates_and_handles_apply_or_level4() -> None:
+    import tempfile
+    from pathlib import Path
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "astra")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig(hermes_permission_level="standard_user")
+        hm.ensure_hermes_home(cfg)
+
+        selected = hm._select_tool_schemas("Update my pc too", hm._tool_schemas())
+        sel_names = {t["function"]["name"] for t in selected}
+        assert "astra_system_updates" in sel_names
+        assert "sudo_exec" in sel_names
+
+        # Below Level 4, action="apply" still checks pending packages & gives clear Level 4 guidance instead of dead-ending
+        res = hm.execute_tool("astra_system_updates", {"action": "apply"}, cfg)
+        assert res["blocked"] is True
+        assert "Level 4" in res["error"]
+
+
+
 
 
 
