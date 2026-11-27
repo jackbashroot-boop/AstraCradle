@@ -44,12 +44,25 @@ def _persona_options() -> tuple[list[str], dict[str, str]]:
 
 
 def _clean_bubble_markdown(raw: str) -> str:
-    """Turns raw Markdown headings, bold markers, horizontal rules, and code fences into crisp plain text."""
+    """Turns raw Markdown headings, bold markers, tables, horizontal rules, and code fences into crisp plain text."""
     import re as _re
 
     txt = str(raw or "")
     txt = _re.sub(r"(?m)^```[a-zA-Z0-9_-]*\s*$", "", txt)
     txt = _re.sub(r"(?m)^\s*[-*_]{3,}\s*$", "", txt)
+    # Clean Markdown tables: remove |---|---| separator lines and format pipe rows as crisp bullets
+    cleaned_lines: list[str] = []
+    for ln in txt.splitlines():
+        st = ln.strip()
+        if _re.match(r"^\|?(?:\s*:?-{2,}:?\s*\|)+\s*(?::?-{2,}:?\s*\|?)?$", st):
+            continue
+        if st.startswith("|") and st.endswith("|") and st.count("|") >= 2:
+            cells = [c.strip() for c in st.strip("|").split("|") if c.strip()]
+            if cells:
+                cleaned_lines.append("• " + "  —  ".join(cells))
+            continue
+        cleaned_lines.append(ln)
+    txt = "\n".join(cleaned_lines)
     txt = _re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", txt)
     txt = _re.sub(r"\*\*(.+?)\*\*", r"\1", txt)
     txt = _re.sub(r"\*{2,}", "", txt)
