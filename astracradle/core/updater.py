@@ -495,6 +495,15 @@ class ModuleAndUpdateManager:
                 return parsed
         return None
 
+    @classmethod
+    def get_changelog_url(cls, config: AppConfig, repo_dir: Path | None = None) -> str:
+        """Returns the repository CHANGELOG.md URL so users can inspect changes directly."""
+        slug = cls.resolve_github_repo(config, repo_dir=repo_dir)
+        if slug:
+            owner, repo = slug
+            return f"https://github.com/{owner}/{repo}/blob/main/CHANGELOG.md"
+        return f"{cls.DEFAULT_GITHUB_REPO}/blob/main/CHANGELOG.md"
+
     def _query_github_latest(self, owner: str, repo: str, timeout: float = 3.5) -> tuple[str | None, str | None, str]:
         """Queries GitHub Releases (then tags) over HTTPS. Returns (version, download_url, note)."""
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "AstraCradle-Updater/1.0"}
@@ -569,6 +578,7 @@ class ModuleAndUpdateManager:
             slug = self.resolve_github_repo(config, repo_dir=repo_dir)
             if slug:
                 owner, repo = slug
+                changelog_url = f"https://github.com/{owner}/{repo}/blob/main/CHANGELOG.md"
                 gh_ver, gh_url, note = self._query_github_latest(owner, repo)
                 github_note = note
                 if gh_ver and self._parse_ver(gh_ver) > self._parse_ver(__version__):
@@ -578,7 +588,7 @@ class ModuleAndUpdateManager:
                         update_available=True,
                         channel=config.update_channel,
                         release_notes=gh_url or f"https://github.com/{owner}/{repo}",
-                        status_message=f"GitHub update v{gh_ver} available from {owner}/{repo}.",
+                        status_message=f"Update v{gh_ver} is ready on GitHub. Changelog: {changelog_url}",
                     )
 
                 # Check latest GitHub push commit when release tag is same/absent and GitHub was reachable
@@ -606,7 +616,7 @@ class ModuleAndUpdateManager:
                                 channel=config.update_channel,
                                 release_notes=head["zip_url"],
                                 status_message=(
-                                    f"Newer GitHub push ready ({head['short_sha']} · {head['date']}: {head['message']})."
+                                    f"Update ready on GitHub ({head['short_sha']} · {head['date']}). Changelog: {changelog_url}"
                                 ),
                             )
                         if not local_sha:

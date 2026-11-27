@@ -7747,6 +7747,16 @@ class AstraCradleApp(ctk.CTk):
             command=self.on_check_updates,
         )
         self.upd_btn.pack(side="right")
+        ctk.CTkButton(
+            uhdr,
+            text="View Changelog",
+            height=28,
+            corner_radius=7,
+            fg_color=p.bg_elevated,
+            hover_color=p.border_strong,
+            font=self.fonts["small"],
+            command=self.on_open_changelog,
+        ).pack(side="right", padx=(0, 8))
 
         cached_upd_txt = getattr(self, "_last_upd_status_text", None)
         self.upd_status_lbl = ctk.CTkLabel(
@@ -9482,12 +9492,21 @@ class AstraCradleApp(ctk.CTk):
         except Exception:
             pass
         asker = ask_fn or messagebox.askyesno
+        upd_mgr = getattr(self, "updater", None)
+        if upd_mgr is not None:
+            changelog_url = upd_mgr.get_changelog_url(self.config_obj, repo_dir=Path(__file__).resolve().parents[2])
+        else:
+            from ..core.updater import ModuleAndUpdateManager
+
+            changelog_url = ModuleAndUpdateManager.get_changelog_url(
+                self.config_obj, repo_dir=Path(__file__).resolve().parents[2]
+            )
         want_upd = bool(
             asker(
                 f"AstraCradle Update Available ({latest})",
                 f"Your local AstraCradle ({build_info.get('display_version', '')}) is behind GitHub ({latest}).\n\n"
-                f"{res.status_message}\n\n"
-                "Download and install the update from GitHub now?\n"
+                f"View full changelog in the repo:\n{changelog_url}\n\n"
+                "Download, install, and restart AstraCradle automatically once finished?\n"
                 "(Your settings, Hermes memories, and library stay untouched.)",
             )
         )
@@ -9503,6 +9522,7 @@ class AstraCradleApp(ctk.CTk):
                 )
                 if reapplied:
                     msg = f"{msg} ({'; '.join(reapplied)})"
+                self.cfg_mgr.save(self.config_obj)
 
             def _done() -> None:
                 if not self.winfo_exists():
@@ -9519,11 +9539,11 @@ class AstraCradleApp(ctk.CTk):
                 if hasattr(self, "upd_status_lbl") and self.upd_status_lbl.winfo_exists():
                     self.upd_status_lbl.configure(text=msg)
                 self.show_toast(
-                    f"Updated to {latest}! Restarting AstraCradle automatically..." if ok else msg,
+                    f"Update to {latest} complete! Closing & restarting AstraCradle..." if ok else msg,
                     important=True,
                 )
                 if ok and self._show_startup_popups:
-                    self.after(700, self.restart_application)
+                    self.after(350, self.restart_application)
 
             try:
                 self.after(0, _done)
@@ -9579,6 +9599,18 @@ class AstraCradleApp(ctk.CTk):
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def on_open_changelog(self) -> None:
+        import webbrowser
+
+        repo_root = Path(__file__).resolve().parents[2]
+        url = self.updater.get_changelog_url(self.config_obj, repo_dir=repo_root)
+        self._copy_text(url)
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+        self.show_toast(f"Opened & copied Changelog URL: {url}")
+
     def on_check_updates(self) -> None:
         if hasattr(self, "set_update_repo_var"):
             repo_txt = self.set_update_repo_var.get().strip()
@@ -9589,12 +9621,14 @@ class AstraCradleApp(ctk.CTk):
         repo_root = Path(__file__).resolve().parents[2]
         res = self.updater.check_for_updates(self.config_obj, check_remote=True, repo_dir=repo_root)
         build_info = self.updater.get_local_build_info(repo_dir=repo_root)
+        changelog_url = self.updater.get_changelog_url(self.config_obj, repo_dir=repo_root)
         if res.update_available:
             if res.release_notes.startswith("https://"):
                 if not self._show_startup_popups or messagebox.askyesno(
                     f"AstraCradle Update Ready ({res.latest_version})",
-                    f"A newer version is live on GitHub:\n{res.status_message}\n\n"
-                    "Download and install it automatically now? (Your settings & rollback vault stay untouched.)",
+                    f"A newer version ({res.latest_version}) is live on GitHub.\n\n"
+                    f"View full changelog in the repo:\n{changelog_url}\n\n"
+                    "Download, install, and restart automatically once finished? (Your settings & rollback vault stay untouched.)",
                 ):
                     ok, msg = self.updater.pull_from_github_and_update(self.config_obj, repo_dir=repo_root)
                     if ok:
@@ -9603,6 +9637,7 @@ class AstraCradleApp(ctk.CTk):
                         )
                         if reapplied:
                             msg = f"{msg} ({'; '.join(reapplied)})"
+                        self.cfg_mgr.save(self.config_obj)
                         self._refresh_install_memory_label()
                         new_info = self.updater.get_local_build_info(repo_dir=repo_root)
                         if hasattr(self, "settings_ver_lbl") and self.settings_ver_lbl.winfo_exists():
@@ -9614,17 +9649,18 @@ class AstraCradleApp(ctk.CTk):
                             )
                     self.upd_status_lbl.configure(text=msg)
                     self.show_toast(
-                        f"Updated to {res.latest_version}! Restarting AstraCradle automatically..." if ok else msg,
+                        f"Update to {res.latest_version} complete! Closing & restarting AstraCradle..." if ok else msg,
                         important=True,
                     )
                     if ok and self._show_startup_popups:
-                        self.after(700, self.restart_application)
+                        self.after(350, self.restart_application)
                     return
             bundle_cand = Path(res.release_notes) if res.release_notes and Path(res.release_notes).exists() else None
             if bundle_cand is not None:
                 if not self._show_startup_popups or messagebox.askyesno(
                     f"AstraCradle Update Ready (v{res.latest_version})",
                     f"Found update package:\n{bundle_cand}\n\n"
+                    f"Changelog: {changelog_url}\n\n"
                     "Apply this update now (your settings & rollback vault stay intact)?",
                 ):
                     ok, msg = self.updater.install_update_bundle(bundle_cand, self.config_obj)
@@ -9634,14 +9670,15 @@ class AstraCradleApp(ctk.CTk):
                         )
                         if reapplied:
                             msg = f"{msg} ({'; '.join(reapplied)})"
+                        self.cfg_mgr.save(self.config_obj)
                         self._refresh_install_memory_label()
                     self.upd_status_lbl.configure(text=msg)
                     self.show_toast(
-                        "Update installed! Restarting AstraCradle automatically..." if ok else msg,
+                        "Update installed! Closing & restarting AstraCradle..." if ok else msg,
                         important=True,
                     )
                     if ok and self._show_startup_popups:
-                        self.after(700, self.restart_application)
+                        self.after(350, self.restart_application)
                     return
             elif self.config_obj.auto_update_mode == "silent_auto" or messagebox.askyesno(
                 f"AstraCradle Update Ready (v{res.latest_version})",
@@ -10223,7 +10260,8 @@ class AstraCradleApp(ctk.CTk):
         )
 
     def restart_application(self) -> None:
-        """Cleanly saves state, releases single-instance lock, spawns a fresh AstraCradle instance, and exits this window."""
+        """Fully terminates AstraCradle (main window, widget & taskbar/tray app), waits for exit, and relaunches."""
+        import os
         import subprocess
         import sys
 
@@ -10234,6 +10272,14 @@ class AstraCradleApp(ctk.CTk):
                 if tv_st and tv_st.get("active"):
                     self.lan_tv_shield.restore_tv_settings(reason="app_restart", shield=self.adblock_shield)
             self.adblock_shield.stop_dns_sinkhole()
+            for attr_name in ("_desktop_widget", "_floating_orb", "_tray_menu_popup"):
+                w_obj = getattr(self, attr_name, None)
+                if w_obj is not None:
+                    try:
+                        w_obj.destroy()
+                    except Exception:
+                        pass
+                    setattr(self, attr_name, None)
             self.tray.stop()
             self.crash_analyzer.mark_clean_shutdown()
             if hasattr(self, "single_instance"):
@@ -10241,7 +10287,31 @@ class AstraCradleApp(ctk.CTk):
         except Exception:
             pass
         if self._show_startup_popups:
-            subprocess.Popen([sys.executable, "-m", "astracradle"], start_new_session=True, close_fds=True)
+            helper_py = (
+                "import os, signal, subprocess, sys, time\n"
+                "old_pid = int(sys.argv[1])\n"
+                "py_exe = sys.argv[2]\n"
+                "deadline = time.monotonic() + 2.0\n"
+                "while time.monotonic() < deadline:\n"
+                "    try:\n"
+                "        os.kill(old_pid, 0)\n"
+                "    except OSError:\n"
+                "        break\n"
+                "    time.sleep(0.05)\n"
+                "else:\n"
+                "    for sig in (signal.SIGTERM, getattr(signal, 'SIGKILL', signal.SIGTERM)):\n"
+                "        try:\n"
+                "            os.kill(old_pid, sig)\n"
+                "            time.sleep(0.15)\n"
+                "        except OSError:\n"
+                "            break\n"
+                "subprocess.Popen([py_exe, '-m', 'astracradle'], start_new_session=True, close_fds=True)\n"
+            )
+            subprocess.Popen(
+                [sys.executable, "-c", helper_py, str(os.getpid()), sys.executable],
+                start_new_session=True,
+                close_fds=True,
+            )
         try:
             self.destroy()
         except Exception:
@@ -10250,6 +10320,8 @@ class AstraCradleApp(ctk.CTk):
             self.quit()
         except Exception:
             pass
+        if self._show_startup_popups:
+            os._exit(0)
 
     def on_setup_and_restart_astrashield(self) -> None:
         """Configures AstraShield host + DNS sinkhole with auto-start on startup, then restarts AstraCradle."""

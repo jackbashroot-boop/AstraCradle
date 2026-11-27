@@ -329,9 +329,21 @@ class TrayController:
         return False
 
     def stop(self) -> None:
-        if self._icon is not None:
+        icon = self._icon
+        if icon is not None:
             try:
-                self._icon.stop()
+                icon.visible = False
+            except Exception:
+                pass
+            try:
+                icon.stop()
             except Exception:
                 pass
             self._icon = None
+        thr = self._thread
+        if thr is not None and thr.is_alive() and thr is not threading.current_thread():
+            try:
+                thr.join(timeout=0.6)
+            except Exception:
+                pass
+        self._thread = None

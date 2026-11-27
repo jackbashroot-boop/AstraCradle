@@ -3310,8 +3310,12 @@ def test_update_preserves_live_user_settings_and_auto_restarts(monkeypatch) -> N
 
         app_src = (Path(__file__).resolve().parents[1] / "astracradle" / "ui" / "app.py").read_text(encoding="utf-8")
         assert "self.single_instance.release()" in app_src
-        assert "self.after(700, self.restart_application)" in app_src
+        assert "self.after(350, self.restart_application)" in app_src
+        assert "self.tray.stop()" in app_src and "os._exit(0)" in app_src
+        assert "os.kill(old_pid, 0)" in app_src and "View Changelog" in app_src
+        assert "CHANGELOG.md" in upd.get_changelog_url(cfg, repo_dir=repo)
         assert (Path(__file__).resolve().parents[1] / "BUG_REPORTS.txt").exists()
+        assert (Path(__file__).resolve().parents[1] / "CHANGELOG.md").exists()
 
 
 def test_bluetooth_battery_tracking_and_low_battery_important_alert(monkeypatch) -> None:
