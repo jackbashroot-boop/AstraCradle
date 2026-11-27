@@ -3413,6 +3413,159 @@ def test_bluetooth_battery_tracking_and_low_battery_important_alert(monkeypatch)
         assert "important=True" in app_src and "Bluetooth Battery Alerts (<20%)" in app_src
 
 
+def test_hermes_live_working_indicator_persists_across_menu_switch(monkeypatch) -> None:
+    import sys
+    import tempfile
+    import threading
+    import time
+    import types
+    from pathlib import Path
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager, recommend_hermes_models
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.theme import get_palette, get_ui_fonts
+    import astracradle.ui.pages.hermes_page as hp_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "astra")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig()
+        hm.ensure_hermes_home(cfg)
+        hm._append_session_message("default", "user", "Full PC scan request")
+
+        texts_configured: list[str] = []
+        after_callbacks: list[object] = []
+
+        class _FakeWidget:
+            def __init__(self, *a, **kw):
+                self._text = kw.get("text", "")
+                self._parent_canvas = self
+                self._packed = False
+
+            def pack(self, *a, **kw):
+                self._packed = True
+                return self
+
+            def pack_forget(self):
+                self._packed = False
+
+            def grid(self, *a, **kw):
+                return self
+
+            def bind(self, *a, **kw):
+                return None
+
+            def after(self, ms, cb=None, *a):
+                if callable(cb):
+                    after_callbacks.append(cb)
+                return "aid"
+
+            def configure(self, *a, **kw):
+                if "text" in kw:
+                    self._text = str(kw["text"])
+                    texts_configured.append(self._text)
+
+            def winfo_children(self):
+                return []
+
+            def winfo_exists(self):
+                return True
+
+            def winfo_manager(self):
+                return "pack" if self._packed else ""
+
+            def winfo_width(self):
+                return 800
+
+            def winfo_height(self):
+                return 900
+
+            def yview_moveto(self, *_a):
+                return None
+
+            def destroy(self):
+                return None
+
+            def insert(self, *a, **kw):
+                return None
+
+            def get(self, *a, **kw):
+                return ""
+
+            def focus_set(self):
+                return None
+
+            def grid_columnconfigure(self, *a, **kw):
+                return None
+
+            def add(self, name):
+                return _FakeWidget()
+
+            def set(self, name):
+                return None
+
+        fake_ctk = types.SimpleNamespace(
+            CTkFrame=_FakeWidget,
+            CTkScrollableFrame=_FakeWidget,
+            CTkLabel=_FakeWidget,
+            CTkButton=_FakeWidget,
+            CTkOptionMenu=_FakeWidget,
+            CTkEntry=_FakeWidget,
+            CTkSwitch=_FakeWidget,
+            CTkCheckBox=_FakeWidget,
+            CTkSlider=_FakeWidget,
+            CTkTabview=_FakeWidget,
+            CTkTextbox=_FakeWidget,
+            ScalingTracker=types.SimpleNamespace(get_widget_scaling=lambda _w: 1.0),
+        )
+        fake_tk = types.SimpleNamespace(
+            StringVar=lambda value="": types.SimpleNamespace(get=lambda: value, set=lambda _v: None),
+            BooleanVar=lambda value=False: types.SimpleNamespace(get=lambda: value, set=lambda _v: None),
+            messagebox=types.SimpleNamespace(askyesno=lambda *_a, **_kw: True),
+        )
+        monkeypatch.setattr(hp_mod, "ctk", fake_ctk)
+        monkeypatch.setattr(hp_mod, "tk", fake_tk)
+        monkeypatch.setitem(sys.modules, "tkinter", fake_tk)
+
+        ev = threading.Event()
+        fake_app = types.SimpleNamespace(
+            hermes_scroll=_FakeWidget(),
+            palette=get_palette("obsidian"),
+            fonts=get_ui_fonts(1.0),
+            config_obj=cfg,
+            cfg_mgr=cm,
+            hermes_mgr=hm,
+            current_nav="hermes",
+            _hermes_session_id="default",
+            _hermes_fullscreen_chat=True,
+            _hermes_rec_cache=recommend_hermes_models(),
+            _hermes_status_cache=hm.get_status(cfg),
+            _hermes_cancel_event=ev,
+            _hermes_live_session_id="default",
+            _hermes_live_thinking="Steps: scanning drives & files",
+            _hermes_live_started_at=time.monotonic() - 5.0,
+            _show_startup_popups=False,
+            _content_wrap=lambda pad=0: 600,
+            winfo_exists=lambda: True,
+            winfo_height=lambda: 900,
+            after=lambda ms, cb=None, *a: (after_callbacks.append(cb) if callable(cb) else None),
+            show_toast=lambda *_a, **_kw: None,
+        )
+        # Re-render as if returning from another AstraCradle menu while Hermes is still working
+        hp_mod.render_hermes_page(fake_app)  # type: ignore[arg-type]
+        assert any("is working.." in t or "Working.." in t or "is working." in t for t in texts_configured)
+        assert callable(getattr(fake_app, "_hermes_chat_reloader", None))
+
+        # Trigger another tick -> cycles dots cleanly and keeps streaming via _hermes_chat_reloader
+        next_ticks = [cb for cb in after_callbacks if callable(cb)]
+        assert next_ticks
+        for cb in next_ticks[:3]:
+            cb()
+        fake_app._hermes_chat_reloader(thinking="Steps: checking drives done -> analyzing", use_cache=True)
+        assert any("Working" in t for t in texts_configured)
+
+
+
 
 
 

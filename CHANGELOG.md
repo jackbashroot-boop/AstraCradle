@@ -15,8 +15,9 @@ All notable updates and fixes to **AstraCradle** (`v2.5.1+`) are documented here
 - Polls automatically every 60s and triggers an **important alert toast + desktop tray notification** whenever any Bluetooth device battery drops below **20%** (with recharge hysteresis at 25%).
 - Displays live and tracked Bluetooth device battery badges in **Clean & Protect → Smart TV, Bluetooth & Network Devices** and `python3 -m astracradle --scan-tv`.
 
-### Hermes AI Chat Delete & Stability Fixes
+### Hermes AI Chat Delete, Live Working Indicator & Stability Fixes
 - Added **Delete Chat** button next to **+ New Chat** in Hermes AI.
+- Added an animated `Working... (Xs)` indicator (cycling `.` / `..` / `...` + elapsed timer) in both the active chat bubble and a live status bar above the input box, and preserved live streaming/step updates even when switching AstraCradle menus or tabs while Hermes is working.
 - Fixed crash when deleting all chat sessions including `"default"` by deferring widget rebuilds safely after button/dialog callbacks and guarding empty `"default"` deletes.
 - Added `BUG_REPORTS.txt` in the repository root for tracking user/QA bug reports and regression tests.
 

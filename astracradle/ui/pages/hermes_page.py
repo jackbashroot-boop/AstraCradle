@@ -397,13 +397,14 @@ def _render_chat_bubbles(
             corner_radius=11,
         )
         tcard.pack(fill="x", padx=(8, 16), pady=4)
-        ctk.CTkLabel(
+        th_hdr_lbl = ctk.CTkLabel(
             tcard,
             text=f"{persona['name']} · Working...",
             font=hdr_font,
             text_color=p.accent_brass,
             anchor="w",
-        ).pack(anchor="w", fill="x", padx=14, pady=(8, 2))
+        )
+        th_hdr_lbl.pack(anchor="w", fill="x", padx=14, pady=(8, 2))
         th_lbl = ctk.CTkLabel(
             tcard,
             text=thinking_text,
@@ -416,6 +417,8 @@ def _render_chat_bubbles(
         th_lbl.pack(anchor="w", fill="x", padx=14, pady=(0, 10))
         wrappable_labels.append((th_lbl, 155))
         container._hermes_thinking_lbl = th_lbl  # type: ignore[attr-defined]
+        container._hermes_thinking_hdr_lbl = th_hdr_lbl  # type: ignore[attr-defined]
+        container._hermes_thinking_base_name = str(persona["name"])  # type: ignore[attr-defined]
 
     if error_text:
         ecard = ctk.CTkFrame(
@@ -1097,17 +1100,88 @@ def _build_chat_workspace(
     ctk.CTkLabel(row_a, text="Font:", font=f["small_bold"]).pack(side="left", padx=(10, 4))
     ctk.CTkOptionMenu(row_a, values=list(_CHAT_FONT_SIZES.keys()), variable=font_var, width=130, command=_on_font_changed).pack(side="left")
     trait_banner.pack(anchor="w", padx=10, pady=(0, 8))
+
+    is_working_now = (
+        getattr(app, "_hermes_cancel_event", None) is not None
+        and getattr(app, "_hermes_live_session_id", "") == session_id
+    )
     live_think_now = ""
-    if getattr(app, "_hermes_cancel_event", None) is not None and getattr(app, "_hermes_live_session_id", "") == session_id:
-        live_think_now = str(getattr(app, "_hermes_live_thinking", "") or "")
-    _reload_chat(thinking=live_think_now)
+    if is_working_now:
+        live_think_now = str(getattr(app, "_hermes_live_thinking", "") or "") or "Working on your request..."
+    live_err_now = ""
+    if not is_working_now and getattr(app, "_hermes_live_error_session", "") == session_id:
+        live_err_now = str(getattr(app, "_hermes_live_error", "") or "")
+    _reload_chat(thinking=live_think_now, err=live_err_now)
+
+    def _reload_from_live(*, thinking: str = "", err: str = "", use_cache: bool = False) -> None:
+        if not chat_scroll.winfo_exists():
+            return
+        _reload_chat(thinking=thinking, err=err, use_cache=use_cache)
+
+    app._hermes_chat_reloader = _reload_from_live  # type: ignore[attr-defined]
+    app._hermes_chat_session_id = session_id  # type: ignore[attr-defined]
 
     chips = ctk.CTkFrame(container, fg_color="transparent")
     chips.pack(fill="x", padx=6, pady=(4, 4))
 
+    live_status_bar = ctk.CTkFrame(container, fg_color=p.bg_elevated, border_width=1, border_color=p.accent_brass, corner_radius=8)
+    live_status_lbl = ctk.CTkLabel(
+        live_status_bar,
+        text="● Hermes is working...",
+        font=f["small_bold"],
+        text_color=p.accent_brass,
+        anchor="w",
+    )
+    live_status_lbl.pack(side="left", padx=10, pady=4)
+
     page_att_strip = ctk.CTkFrame(container, fg_color="transparent")
     in_row = ctk.CTkFrame(container, fg_color="transparent")
     in_row.pack(fill="x", padx=8, pady=(2, 8))
+
+    _anim_tick = [0]
+
+    def _tick_live_indicator() -> None:
+        import time as _t
+
+        try:
+            if not chat_scroll.winfo_exists():
+                return
+        except Exception:
+            return
+        active = (
+            getattr(app, "_hermes_cancel_event", None) is not None
+            and getattr(app, "_hermes_live_session_id", "") == session_id
+        )
+        if not active:
+            try:
+                if live_status_bar.winfo_exists():
+                    live_status_bar.pack_forget()
+            except Exception:
+                pass
+            return
+        _anim_tick[0] += 1
+        dots = (".", "..", "...")[_anim_tick[0] % 3]
+        started_ts = float(getattr(app, "_hermes_live_started_at", 0.0) or _t.monotonic())
+        elapsed_s = max(0, int(_t.monotonic() - started_ts))
+        p_name = str(getattr(chat_scroll, "_hermes_thinking_base_name", "") or hm.get_active_persona(cfg)["name"])
+        try:
+            if not live_status_bar.winfo_manager():
+                live_status_bar.pack(fill="x", padx=8, pady=(0, 4), before=in_row)
+            live_status_lbl.configure(
+                text=f"● {p_name} is working{dots} ({elapsed_s}s) — safe to browse other menus"
+            )
+            th_hdr = getattr(chat_scroll, "_hermes_thinking_hdr_lbl", None)
+            if th_hdr is not None and th_hdr.winfo_exists():
+                th_hdr.configure(text=f"{p_name} · Working{dots} ({elapsed_s}s)")
+        except Exception:
+            pass
+        try:
+            chat_scroll.after(450, _tick_live_indicator)
+        except Exception:
+            pass
+
+    if is_working_now:
+        _tick_live_indicator()
     sans_fam = f["body"][0] if isinstance(f.get("body"), (tuple, list)) and f["body"] else "DejaVu Sans"
     page_attachments: list[str] = []
 
@@ -1282,19 +1356,23 @@ def _build_chat_workspace(
         att_lbl = f" [Attached: {', '.join(Path(a).name for a in att_now)}]" if att_now else ""
         stream_msgs_cache[0].append({"role": "user", "content": q + att_lbl})
 
+        import time as _t
+
         init_thinking = "Routing & streaming response..."
         app._hermes_live_session_id = session_id
         app._hermes_live_thinking = init_thinking
+        app._hermes_live_started_at = _t.monotonic()
+        app._hermes_live_error = ""
+        app._hermes_live_error_session = ""
         cancel_ev = threading.Event()
         app._hermes_cancel_event = cancel_ev
         _reload_chat(thinking=init_thinking, use_cache=True)
+        _tick_live_indicator()
 
         last_stream_ts = [0.0]
         steps_seen: list[str] = []
 
         def _on_stream(partial: str) -> None:
-            import time as _t
-
             if int(getattr(app, "_hermes_active_req_id", 0) or 0) != req_id:
                 return
             txt = _clean_bubble_markdown(partial)
@@ -1307,8 +1385,11 @@ def _build_chat_workspace(
             app._hermes_live_thinking = txt
 
             def _upd() -> None:
-                if int(getattr(app, "_hermes_active_req_id", 0) or 0) == req_id and chat_scroll.winfo_exists():
-                    _reload_chat(thinking=txt, use_cache=True)
+                if int(getattr(app, "_hermes_active_req_id", 0) or 0) != req_id:
+                    return
+                reloader = getattr(app, "_hermes_chat_reloader", None)
+                if callable(reloader) and getattr(app, "_hermes_chat_session_id", "") == session_id:
+                    reloader(thinking=txt, use_cache=True)
 
             app.after(0, _upd)
 
@@ -1321,8 +1402,11 @@ def _build_chat_workspace(
             app._hermes_live_thinking = step_msg
 
             def _upd_step() -> None:
-                if int(getattr(app, "_hermes_active_req_id", 0) or 0) == req_id and chat_scroll.winfo_exists():
-                    _reload_chat(thinking=step_msg, use_cache=True)
+                if int(getattr(app, "_hermes_active_req_id", 0) or 0) != req_id:
+                    return
+                reloader = getattr(app, "_hermes_chat_reloader", None)
+                if callable(reloader) and getattr(app, "_hermes_chat_session_id", "") == session_id:
+                    reloader(thinking=step_msg, use_cache=True)
 
             app.after(0, _upd_step)
 
@@ -1342,14 +1426,23 @@ def _build_chat_workspace(
                     return
                 app._hermes_cancel_event = None
                 app._hermes_live_thinking = ""
+                app._hermes_live_started_at = 0.0
                 app._hermes_status_cache = hm.get_status(cfg)
                 if res.ok:
-                    render_hermes_page(app)
+                    app._hermes_live_error = ""
+                    app._hermes_live_error_session = ""
+                    if getattr(app, "current_nav", "hermes") == "hermes":
+                        render_hermes_page(app)
+                    else:
+                        app.show_toast("Hermes AI finished replying — open Hermes OS AI to view.", important=True)
                     if res.skill_created:
                         app.show_toast("Hermes auto-learned a new reusable SKILL.md!", important=False)
                 else:
-                    if chat_scroll.winfo_exists():
-                        _reload_chat(err=res.error)
+                    app._hermes_live_error = res.error
+                    app._hermes_live_error_session = session_id
+                    reloader = getattr(app, "_hermes_chat_reloader", None)
+                    if callable(reloader) and getattr(app, "_hermes_chat_session_id", "") == session_id:
+                        reloader(err=res.error, use_cache=False)
                     app.show_toast(f"Hermes error: {res.error}", important=True)
 
             app.after(0, _ui)
