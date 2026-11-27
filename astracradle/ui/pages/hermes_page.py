@@ -571,16 +571,31 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
             return
         if override is None:
             entry.delete(0, "end")
+        prev_cancel = getattr(win, "_active_cancel", None)
+        if prev_cancel is not None:
+            try:
+                prev_cancel.set()
+            except Exception:
+                pass
+        req_id = int(getattr(win, "_active_req_id", 0) or 0) + 1
+        win._active_req_id = req_id  # type: ignore[attr-defined]
         att_now = list(popup_attachments)
         popup_attachments.clear()
         _refresh_attachment_strip(popup_att_strip, popup_attachments, p, f, before_widget=in_row)
-        _reload_transcript(thinking=f"Prompt: \"{q[:140]}\"\nInspecting & streaming response via {spec['model']}...")
+
+        if stream_msgs_cache[0] is None:
+            stream_msgs_cache[0] = hm.get_session_messages(session_id, limit=30)
+        att_lbl = f" [Attached: {', '.join(Path(a).name for a in att_now)}]" if att_now else ""
+        stream_msgs_cache[0].append({"role": "user", "content": q + att_lbl})
+        _reload_transcript(thinking=f"Routing & streaming response...", use_cache=True)
 
         last_stream_ts = [0.0]
 
         def _on_stream(partial: str) -> None:
             import time as _t
 
+            if int(getattr(win, "_active_req_id", 0) or 0) != req_id:
+                return
             txt = _clean_bubble_markdown(partial)
             if not txt.strip():
                 return
@@ -590,7 +605,7 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
             last_stream_ts[0] = now_t
 
             def _upd() -> None:
-                if win.winfo_exists():
+                if int(getattr(win, "_active_req_id", 0) or 0) == req_id and win.winfo_exists():
                     _reload_transcript(thinking=txt, use_cache=True)
 
             app.after(0, _upd)
@@ -600,9 +615,18 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
         steps_seen: list[str] = []
 
         def _on_step(step_txt: str) -> None:
+            if int(getattr(win, "_active_req_id", 0) or 0) != req_id:
+                return
             steps_seen.append(step_txt)
             joined = "  |  ".join(steps_seen[-5:])
-            app.after(0, lambda j=joined: _reload_transcript(thinking=f"Steps: {j}", use_cache=True) if win.winfo_exists() else None)
+            app.after(
+                0,
+                lambda j=joined: (
+                    _reload_transcript(thinking=f"Steps: {j}", use_cache=True)
+                    if (int(getattr(win, "_active_req_id", 0) or 0) == req_id and win.winfo_exists())
+                    else None
+                ),
+            )
 
         def _worker() -> None:
             res = hm.run_prompt(
@@ -616,6 +640,8 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
             )
 
             def _done() -> None:
+                if int(getattr(win, "_active_req_id", 0) or 0) != req_id:
+                    return
                 app._hermes_status_cache = hm.get_status(cfg)
                 if win.winfo_exists():
                     _reload_transcript(err=(res.error if not res.ok else ""))
@@ -762,7 +788,10 @@ def _build_chat_workspace(
 
     ctk.CTkOptionMenu(row_a, values=p_labels, variable=persona_var, width=320, command=_on_persona_changed).pack(side="left")
     trait_banner.pack(anchor="w", padx=10, pady=(0, 8))
-    _reload_chat()
+    live_think_now = ""
+    if getattr(app, "_hermes_cancel_event", None) is not None and getattr(app, "_hermes_live_session_id", "") == session_id:
+        live_think_now = str(getattr(app, "_hermes_live_thinking", "") or "")
+    _reload_chat(thinking=live_think_now)
 
     chips = ctk.CTkFrame(container, fg_color="transparent")
     chips.pack(fill="x", padx=6, pady=(4, 4))
@@ -779,12 +808,11 @@ def _build_chat_workspace(
     prompt_entry.bind("<Control-v>", _paste_page_item)
     prompt_entry.bind("<Control-V>", _paste_page_item)
 
-    active_cancel: list[threading.Event | None] = [None]
-
     def _stop_generation() -> None:
-        if active_cancel[0] is not None:
-            active_cancel[0].set()
-            app.show_toast("Stopping AI generation...")
+        ev = getattr(app, "_hermes_cancel_event", None)
+        if ev is not None:
+            ev.set()
+            app.show_toast("Stopping AI generation...", important=False)
 
     stop_btn = ctk.CTkButton(
         in_row,
@@ -804,20 +832,40 @@ def _build_chat_workspace(
             return
         if override is None:
             prompt_entry.delete(0, "end")
+
+        prev_ev = getattr(app, "_hermes_cancel_event", None)
+        if prev_ev is not None:
+            try:
+                prev_ev.set()
+            except Exception:
+                pass
+        req_id = int(getattr(app, "_hermes_active_req_id", 0) or 0) + 1
+        app._hermes_active_req_id = req_id
+
         att_now = list(page_attachments)
         page_attachments.clear()
         _refresh_attachment_strip(page_att_strip, page_attachments, p, f, before_widget=in_row)
-        spec = hm.resolve_provider_spec(cfg)
-        _reload_chat(thinking=f"Prompt: \"{q[:160]}\"\nInspecting & streaming response via {spec['model']}...")
 
+        if stream_msgs_cache[0] is None:
+            stream_msgs_cache[0] = hm.get_session_messages(session_id, limit=40)
+        att_lbl = f" [Attached: {', '.join(Path(a).name for a in att_now)}]" if att_now else ""
+        stream_msgs_cache[0].append({"role": "user", "content": q + att_lbl})
+
+        init_thinking = "Routing & streaming response..."
+        app._hermes_live_session_id = session_id
+        app._hermes_live_thinking = init_thinking
         cancel_ev = threading.Event()
-        active_cancel[0] = cancel_ev
+        app._hermes_cancel_event = cancel_ev
+        _reload_chat(thinking=init_thinking, use_cache=True)
+
         last_stream_ts = [0.0]
         steps_seen: list[str] = []
 
         def _on_stream(partial: str) -> None:
             import time as _t
 
+            if int(getattr(app, "_hermes_active_req_id", 0) or 0) != req_id:
+                return
             txt = _clean_bubble_markdown(partial)
             if not txt.strip():
                 return
@@ -825,12 +873,27 @@ def _build_chat_workspace(
             if (now_t - last_stream_ts[0]) < 0.14:
                 return
             last_stream_ts[0] = now_t
-            app.after(0, lambda t=txt: _reload_chat(thinking=t, use_cache=True))
+            app._hermes_live_thinking = txt
+
+            def _upd() -> None:
+                if int(getattr(app, "_hermes_active_req_id", 0) or 0) == req_id and chat_scroll.winfo_exists():
+                    _reload_chat(thinking=txt, use_cache=True)
+
+            app.after(0, _upd)
 
         def _on_step(step_txt: str) -> None:
+            if int(getattr(app, "_hermes_active_req_id", 0) or 0) != req_id:
+                return
             steps_seen.append(step_txt)
             joined = "  |  ".join(steps_seen[-5:])
-            app.after(0, lambda j=joined: _reload_chat(thinking=f"Steps: {j}", use_cache=True))
+            step_msg = f"Steps: {joined}"
+            app._hermes_live_thinking = step_msg
+
+            def _upd_step() -> None:
+                if int(getattr(app, "_hermes_active_req_id", 0) or 0) == req_id and chat_scroll.winfo_exists():
+                    _reload_chat(thinking=step_msg, use_cache=True)
+
+            app.after(0, _upd_step)
 
         def _worker() -> None:
             res = hm.run_prompt(
@@ -844,15 +907,19 @@ def _build_chat_workspace(
             )
 
             def _ui() -> None:
-                active_cancel[0] = None
+                if int(getattr(app, "_hermes_active_req_id", 0) or 0) != req_id:
+                    return
+                app._hermes_cancel_event = None
+                app._hermes_live_thinking = ""
                 app._hermes_status_cache = hm.get_status(cfg)
                 if res.ok:
                     render_hermes_page(app)
                     if res.skill_created:
-                        app.show_toast("Hermes auto-learned a new reusable SKILL.md!")
+                        app.show_toast("Hermes auto-learned a new reusable SKILL.md!", important=False)
                 else:
-                    _reload_chat(err=res.error)
-                    app.show_toast(f"Hermes error: {res.error}")
+                    if chat_scroll.winfo_exists():
+                        _reload_chat(err=res.error)
+                    app.show_toast(f"Hermes error: {res.error}", important=True)
 
             app.after(0, _ui)
 
@@ -944,6 +1011,21 @@ def render_hermes_page(app: AstraCradleApp) -> None:
         app._hermes_rec_cache = None
         app._hermes_status_cache = None
         render_hermes_page(app)
+
+    def _copy_ui_log() -> None:
+        ok_c, msg_c = app.copy_ui_events_to_clipboard()
+        app.show_toast(msg_c, important=(not ok_c))
+
+    ctk.CTkButton(
+        top_row,
+        text="Copy UI Log",
+        height=28,
+        corner_radius=7,
+        fg_color=p.bg_elevated,
+        hover_color=p.border_strong,
+        font=f["caption"],
+        command=_copy_ui_log,
+    ).pack(side="right", padx=(6, 0))
 
     ctk.CTkButton(
         top_row,

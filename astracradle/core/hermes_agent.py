@@ -4826,6 +4826,11 @@ class HermesAgentManager:
         final_reply = ""
 
         try:
+            if step_cb is not None:
+                try:
+                    step_cb(f"Model: {spec['model']} ({spec.get('dynamic_tier', 'standard')})")
+                except Exception:
+                    pass
             for _turn in range(max_turns):
                 if cancel_event is not None and cancel_event.is_set():
                     final_reply = "Stopped by user."

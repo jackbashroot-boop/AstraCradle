@@ -1739,9 +1739,116 @@ class AstraCradleApp(ctk.CTk):
         self.switch_nav("dashboard")
         self._refresh_github_version_badge_async()
 
-    def show_toast(self, msg: str, color: str | None = None, undo_entry_id: str | None = None) -> None:
+    def _ui_events_log_path(self) -> Path:
+        try:
+            base = self.cfg_mgr.base_dir
+        except Exception:
+            base = Path.home() / ".astracradle"
+        base.mkdir(parents=True, exist_ok=True)
+        return base / "ui_events.log"
+
+    def record_ui_event(self, msg: str, level: str = "info") -> None:
+        """Logs every UI notice/toast to ~/.astracradle/ui_events.log for AI inspection and export."""
+        clean = " ".join(str(msg or "").split())
+        if not clean:
+            return
+        from datetime import datetime
+
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"[{ts}] [{level.upper()}] {clean}"
+        if not hasattr(self, "_ui_event_log"):
+            self._ui_event_log: list[str] = []
+        self._ui_event_log.append(line)
+        if len(self._ui_event_log) > 250:
+            self._ui_event_log = self._ui_event_log[-250:]
+        try:
+            lp = self._ui_events_log_path()
+            with lp.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            if lp.stat().st_size > 512 * 1024:
+                lines = lp.read_text(encoding="utf-8", errors="ignore").splitlines()[-1500:]
+                lp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    def get_recent_ui_events(self, limit: int = 80) -> str:
+        try:
+            lp = self._ui_events_log_path()
+            if lp.exists():
+                lines = lp.read_text(encoding="utf-8", errors="ignore").splitlines()
+                return "\n".join(lines[-max(1, limit):])
+        except Exception:
+            pass
+        return "\n".join(getattr(self, "_ui_event_log", [])[-max(1, limit):])
+
+    def copy_ui_events_to_clipboard(self) -> tuple[bool, str]:
+        txt = self.get_recent_ui_events(limit=120).strip()
+        if not txt:
+            return False, "No UI events logged yet."
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(txt)
+            self.update()
+            return True, f"Copied {len(txt.splitlines())} UI log line(s) to clipboard."
+        except Exception as exc:
+            return False, f"Clipboard unavailable: {exc}"
+
+    def _is_important_toast(self, msg: str, color: str | None, undo_entry_id: str | None) -> bool:
+        if undo_entry_id:
+            return True
+        p = self.palette
+        if color and color == getattr(p, "accent_coral", None):
+            return True
+        low = (msg or "").lower()
+        important_markers = (
+            "error",
+            "failed",
+            "failure",
+            "blocked",
+            "crash",
+            "warning",
+            "fault",
+            "missing",
+            "security",
+            "critical",
+            "alert",
+            "declined",
+            "threat",
+            "quarantine",
+            "rollback",
+            "self-heal",
+            "recovery bundle",
+            "setup complete",
+            "auto-learned",
+            "unavailable",
+        )
+        return any(tok in low for tok in important_markers)
+
+    def show_toast(
+        self,
+        msg: str,
+        color: str | None = None,
+        undo_entry_id: str | None = None,
+        *,
+        important: bool | None = None,
+    ) -> None:
         self._toast_seq = getattr(self, "_toast_seq", 0) + 1
         p = self.palette
+        lvl = "error" if (color and color == getattr(p, "accent_coral", None)) else (
+            "warning" if (color and color == getattr(p, "accent_brass", None)) else "info"
+        )
+        self.record_ui_event(msg, level=lvl)
+
+        should_popup = bool(important) if important is not None else self._is_important_toast(msg, color, undo_entry_id)
+        try:
+            if hasattr(self, "topbar_status"):
+                short_m = msg.strip() if len(msg.strip()) <= 68 else msg.strip()[:65] + "..."
+                self.topbar_status.configure(text=short_m, text_color=color or p.accent_cyan)
+        except Exception:
+            pass
+        if not should_popup:
+            return
+
         self.toast_label.configure(
             text=f"  {msg}  ",
             text_color=color or p.accent_cyan,
@@ -1762,8 +1869,8 @@ class AstraCradleApp(ctk.CTk):
                 pass
         self._toast_after_id = self.after(5500, lambda: self.toast_frame.place_forget())
 
-    def begin_task_progress(self, task_id: str, in_progress_msg: str, toast: bool = True) -> None:
-        """Shows immediate in-progress feedback in topbar + toast whenever a button/background task starts."""
+    def begin_task_progress(self, task_id: str, in_progress_msg: str, toast: bool = False) -> None:
+        """Shows immediate in-progress feedback in topbar and logs it silently without popup spam."""
         if not hasattr(self, "_active_tasks"):
             self._active_tasks = {}
         self._active_tasks[str(task_id)] = str(in_progress_msg)
@@ -1777,8 +1884,7 @@ class AstraCradleApp(ctk.CTk):
                 self.topbar_status.configure(text=f"⏳ {in_progress_msg}", text_color=p.accent_brass)
         except Exception:
             pass
-        if toast:
-            self.show_toast(f"In progress: {in_progress_msg}", color=p.accent_brass)
+        self.show_toast(f"In progress: {in_progress_msg}", color=p.accent_brass, important=bool(toast))
         try:
             self.update_idletasks()
         except Exception:
@@ -1867,7 +1973,7 @@ class AstraCradleApp(ctk.CTk):
         def _post_click_check() -> None:
             if not self.winfo_exists():
                 return
-            # If the button's handler didn't start an async task or emit a custom toast, show a crisp completion toast
+            # If the button's handler didn't start an async task or emit a custom toast, log quietly and update topbar only
             if getattr(self, "_toast_seq", 0) == seq_before and not getattr(self, "_active_tasks", None):
                 try:
                     if hasattr(self, "topbar_pulse"):
@@ -1876,7 +1982,7 @@ class AstraCradleApp(ctk.CTk):
                         self.topbar_status.configure(text=f"✓ {lbl} complete", text_color=p.accent_jade)
                 except Exception:
                     pass
-                self.show_toast(f"✓ {lbl} complete.", color=p.accent_jade)
+                self.show_toast(f"✓ {lbl} complete.", color=p.accent_jade, important=False)
 
         try:
             self.after(35, _post_click_check)
