@@ -1958,8 +1958,898 @@ def test_hermes_ollama_llama_server_segfault_auto_recovery(monkeypatch) -> None:
         assert "num_gpu" not in seen_options[1]
         assert seen_options[2].get("num_gpu") == 0
         assert "Recovered cleanly!" in txt
-        assert "ROCR_VISIBLE_DEVICES=0" in txt
+        assert "ROCR_VISIBLE_DEVICES=0" not in txt
+        assert "Auto-recovered via safe CPU/RAM fallback" not in txt
+        assert spec["model"] in hm._gpu_fallback_models
+        diags = hm.get_recent_diagnostics(limit=5)
+        assert any(d.get("event") == "ollama_gpu_runner_fallback" and "ROCR_VISIBLE_DEVICES=0" in (d.get("remediation") or "") for d in diags)
         assert calls == []
+
+
+def test_hermes_dynamic_model_routing_sidebar_order_deps_and_font_clip_fix() -> None:
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.ui.pages import hermes_page
+
+    # 1. Sidebar nav puts Hermes OS AI directly below Home Overview (dashboard)
+    app_txt = (Path(__file__).resolve().parents[1] / "astracradle" / "ui" / "app.py").read_text(encoding="utf-8")
+    dash_idx = app_txt.index('("dashboard",')
+    hermes_idx = app_txt.index('("hermes",')
+    playbook_idx = app_txt.index('("playbook",')
+    assert dash_idx < hermes_idx < playbook_idx
+
+    # 2. Bubble labels use anchor="w" + empty tool trace hidden + font size options exist
+    hp_txt = (Path(__file__).resolve().parents[1] / "astracradle" / "ui" / "pages" / "hermes_page.py").read_text(encoding="utf-8")
+    assert 'anchor="w"' in hp_txt
+    assert "_hermes_wrap_bound" in hp_txt
+    assert hermes_page._format_tool_trace("[]") == ""
+    assert len(hermes_page._CHAT_FONT_SIZES) >= 4
+    assert AppConfig().hermes_chat_font_size >= 13
+
+    # 3. Dynamic model routing scales fast -> balanced -> heavy intelligently
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        cfg = AppConfig(
+            hermes_local_only=True,
+            hermes_mode="local_gpu",
+            hermes_provider="ollama",
+            hermes_model="qwen3.6:35b",
+            hermes_dynamic_model_routing=True,
+            hermes_autonomous_guardian=True,
+        )
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        hm.ensure_hermes_home(cfg)
+        installed = ["qwen3.6:35b", "qwen3:14b", "qwen3:8b"]
+
+        r_fast = hm.select_dynamic_ollama_model("Can you see this?", cfg, installed_models=installed)
+        assert r_fast["tier"] == "fast"
+        assert r_fast["model"] == "qwen3:8b"
+        assert r_fast["think"] is False
+        assert hm._prompt_needs_tools("Can you see this?") is False
+
+        r_bal = hm.select_dynamic_ollama_model("Check my Wi-Fi channels and startup apps", cfg, installed_models=installed)
+        assert r_bal["tier"] == "balanced"
+        assert r_bal["model"] == "qwen3:14b"
+        assert r_bal["think"] is False
+
+        r_heavy = hm.select_dynamic_ollama_model(
+            "Debug the Python traceback and edit astracradle's code to fix the bug",
+            cfg,
+            installed_models=installed,
+        )
+        assert r_heavy["tier"] == "heavy"
+        assert r_heavy["model"] == "qwen3.6:35b"
+        assert r_heavy["think"] is True
+
+        # 4. Dependency checker tool returns structured status
+        dep_chk = hm.execute_tool("astra_dependencies", {"action": "check"}, cfg)
+        assert dep_chk["ok"] is True
+        assert "missing_python" in dep_chk and "missing_companion" in dep_chk
+
+        # 5. Autonomous passive guardian runs & persists status cleanly
+        g_res = hm.run_autonomous_passive_cycle(cfg, is_gaming=True, min_interval_sec=0.0)
+        assert g_res["ran"] is True
+        assert g_res["is_gaming"] is True
+        assert hm.autonomous_status_path.exists()
+        g_throttled = hm.run_autonomous_passive_cycle(cfg, min_interval_sec=90.0)
+        assert g_throttled["ran"] is False and g_throttled["reason"] == "throttled"
+
+
+def test_hermes_streaming_tool_subsets_fts_approval_vision_and_tools(monkeypatch) -> None:
+    import io
+    from PIL import Image
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.rollback import RollbackManager
+
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td) / "cfg"
+        cm = ConfigManager(base_dir=base)
+        journal = ForensicJournal(cm)
+        rb = RollbackManager(cm)
+        cfg = AppConfig(
+            hermes_local_only=True,
+            hermes_mode="local_gpu",
+            hermes_provider="ollama",
+            hermes_model="qwen3:8b",
+            hermes_permission_level="standard_user",
+            hermes_require_approval=True,
+        )
+
+        # 1. Approval gate blocks denied edits and allows approved Python edits with post_verify
+        approvals = iter([False, True])
+        hm = HermesAgentManager(cm, journal, rollback_mgr=rb, approval_prompt_cb=lambda _t, _d: next(approvals))
+        hm.ensure_hermes_home(cfg)
+
+        py_target = Path(td) / "sample_mod.py"
+        py_target.write_text("x = 1\n", encoding="utf-8")
+
+        denied = hm.execute_tool("file_edit", {"path": str(py_target), "old_text": "x = 1", "new_text": "x = 2"}, cfg)
+        assert denied["ok"] is False and denied.get("blocked") is True
+        assert py_target.read_text(encoding="utf-8") == "x = 1\n"
+
+        approved = hm.execute_tool("file_edit", {"path": str(py_target), "old_text": "x = 1", "new_text": "x = 2"}, cfg)
+        assert approved["ok"] is True
+        assert approved["post_verify"]["syntax_ok"] is True
+        assert len(rb.load_entries()) >= 1
+
+        # 2. Persistent GPU fallback model survives manager restart
+        hm._save_gpu_fallback_model("qwen3.6:35b", "cpu_safe")
+        hm2 = HermesAgentManager(cm, journal)
+        assert "qwen3.6:35b" in hm2._gpu_fallback_models
+
+        # 3. Intent-matched tool subsets stay lean
+        all_t = hm._tool_schemas()
+        wifi_t = {t["function"]["name"] for t in hm._select_tool_schemas("optimize my wifi network", all_t)}
+        assert "astra_wifi_optimize" in wifi_t and "file_edit" not in wifi_t
+        code_t = {t["function"]["name"] for t in hm._select_tool_schemas("edit astracradle python code", all_t)}
+        assert "file_edit" in code_t and "astra_dev_self_build" in code_t
+
+        # 4. FTS5 memory search + journal/crashes + services/storage tools work
+        hm.append_memory("User prefers ROCR_VISIBLE_DEVICES=0 for Radeon discrete GPU", target="MEMORY.md")
+        ms = hm.execute_tool("memory_search", {"query": "ROCR_VISIBLE_DEVICES"}, cfg)
+        assert ms["ok"] is True and ms["count"] >= 1
+
+        jc = hm.execute_tool("astra_journal_and_crashes", {"limit": 10}, cfg)
+        assert jc["ok"] is True and "audit_findings" in jc
+
+        ss = hm.execute_tool("astra_services_and_storage", {}, cfg)
+        assert ss["ok"] is True and "disks" in ss
+
+        # 5. Vision image attachment base64 encoding
+        img_p = Path(td) / "shot.png"
+        Image.new("RGB", (8, 8), (10, 20, 30)).save(img_p)
+        b64s = hm._encode_image_attachments([str(img_p)])
+        assert len(b64s) == 1 and len(b64s[0]) > 10
+
+        # 6. Native Ollama streaming NDJSON emits progressive callbacks
+        ndjson = (
+            json.dumps({"message": {"content": "Hello "}, "done": False}) + "\n"
+            + json.dumps({"message": {"content": "world!"}, "done": True}) + "\n"
+        ).encode("utf-8")
+
+        class _StreamResp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr("astracradle.core.hermes_agent.urllib.request.urlopen", lambda _req, timeout=0: _StreamResp(ndjson))
+        seen_chunks: list[str] = []
+        spec = hm.resolve_provider_spec(cfg)
+        txt, calls = hm._call_llm(spec, "", [{"role": "user", "content": "hi"}], [], stream_cb=seen_chunks.append)
+        assert txt == "Hello world!"
+        assert calls == []
+        assert len(seen_chunks) >= 2 and seen_chunks[-1] == "Hello world!"
+
+
+def test_hermes_all_10_upgrades_screen_clipboard_voice_git_and_speed() -> None:
+    import threading
+    from astracradle.core.advanced_controls import GpuPowerAndFanController
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.thermal_spc import ThermalSpcMonitor
+    from astracradle.ui.pages import hermes_page
+
+    # 1. Markdown cleanup strips ### and ** cleanly for Tk bubbles
+    cleaned = hermes_page._clean_bubble_markdown("### **Overall System Usage**\n- **CPU**: `26%`")
+    assert "###" not in cleaned and "**" not in cleaned and "`" not in cleaned
+    assert "Overall System Usage" in cleaned
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        journal = ForensicJournal(cm)
+        cfg = AppConfig(
+            hermes_local_only=True,
+            hermes_mode="local_gpu",
+            hermes_provider="ollama",
+            hermes_model="qwen3.6:35b",
+            hermes_dynamic_model_routing=True,
+        )
+        hm = HermesAgentManager(
+            cm,
+            journal,
+            thermal_spc=ThermalSpcMonitor(cm, journal),
+            gpu_pwr=GpuPowerAndFanController(cm, journal),
+        )
+        hm.ensure_hermes_home(cfg)
+
+        # 2. Avoids heavy CPU fallback when fast GPU model works
+        hm._save_gpu_fallback_model("qwen3.6:35b", "cpu_safe")
+        r_bal = hm.select_dynamic_ollama_model(
+            "Optimize my Wi-Fi channels",
+            cfg,
+            installed_models=["qwen3.6:35b", "qwen3:8b"],
+        )
+        assert r_bal["model"] == "qwen3:8b"
+        assert r_bal["think"] is False
+
+        # 3. Tool schemas include all 6 new tools & intent subsetting maps screen/git/updates/av/thermals/voice
+        all_t = hm._tool_schemas()
+        all_names = {t["function"]["name"] for t in all_t}
+        for req_tool in (
+            "astra_screen_and_clipboard",
+            "astra_git_sync",
+            "astra_system_updates",
+            "astra_av_and_peripherals",
+            "astra_thermals_and_fans",
+            "astra_voice_io",
+        ):
+            assert req_tool in all_names
+
+        scr_set = {t["function"]["name"] for t in hm._select_tool_schemas("read the screen web page and copy it", all_t)}
+        assert "astra_screen_and_clipboard" in scr_set
+
+        # 4. Screen/clipboard, AV, Thermals/Fans, Voice status & Per-game profile tools execute cleanly
+        scr_res = hm.execute_tool("astra_screen_and_clipboard", {"action": "read_display"}, cfg)
+        assert "captured" in scr_res
+
+        av_res = hm.execute_tool("astra_av_and_peripherals", {"action": "inspect"}, cfg)
+        assert av_res["ok"] is True
+
+        th_res = hm.execute_tool("astra_thermals_and_fans", {"action": "inspect"}, cfg)
+        assert th_res["ok"] is True and "applied_curve_id" in th_res
+
+        vc_res = hm.execute_tool("astra_voice_io", {"action": "status"}, cfg)
+        assert vc_res["ok"] is True and "tts_backends" in vc_res
+
+        upd_res = hm.execute_tool("astra_system_updates", {"action": "check"}, cfg)
+        assert upd_res["ok"] is True
+
+        g_prof = hm.set_game_profile("Cyberpunk2077", power_preference="performance", silence_bg_apps=True)
+        assert g_prof["profile"]["power_preference"] == "performance"
+
+        # 5. Stop-generation cancel_event stops run_prompt cleanly
+        ev = threading.Event()
+        ev.set()
+        stopped = hm.run_prompt("Hello", cfg, cancel_event=ev, llm_caller=lambda *_a: ("Never", []))
+        assert stopped.ok is True and "Stopped" in stopped.reply
+
+        # 6. Zero-flicker streaming fast-path updates thinking label in-place without destroying bubbles
+        class _DummyLbl:
+            def __init__(self, text: str = "") -> None:
+                self.text = text
+                self.configure_calls = 0
+
+            def winfo_exists(self) -> bool:
+                return True
+
+            def configure(self, **kw) -> None:
+                if "text" in kw:
+                    self.text = kw["text"]
+                self.configure_calls += 1
+
+        class _DummyScroll:
+            def __init__(self, sig, lbl) -> None:
+                self._hermes_render_sig = sig
+                self._hermes_thinking_lbl = lbl
+                self.destroyed = False
+
+            def winfo_children(self):
+                return [self]
+
+            def destroy(self) -> None:
+                self.destroyed = True
+
+        msgs_demo = [{"ts": "2026-11-16T12:00:00", "role": "user", "content": "hi"}]
+        persona_demo = hm.get_active_persona(cfg)
+        sig_demo = (
+            len(msgs_demo),
+            tuple((str(m.get("ts") or ""), str(m.get("role") or ""), len(str(m.get("content") or ""))) for m in msgs_demo),
+            str(persona_demo.get("name") or ""),
+            13,
+            "",
+        )
+        dlbl = _DummyLbl("Initial")
+        dscroll = _DummyScroll(sig_demo, dlbl)
+        hermes_page._render_chat_bubbles(
+            dscroll,  # type: ignore[arg-type]
+            msgs_demo,
+            persona_demo,
+            None,
+            {"body": ("DejaVu Sans", 12)},
+            chat_font_pt=13,
+            thinking_text="Streaming chunk 123",
+        )
+        assert not dscroll.destroyed
+        assert dlbl.text == "Streaming chunk 123" and dlbl.configure_calls == 1
+
+        # 7. Vision routing keeps multimodal model when images are attached & reads non-image files cleanly
+        r_vis = hm.select_dynamic_ollama_model(
+            "Can you see what is wrong here?",
+            cfg,
+            installed_models=["qwen3:8b", "qwen3.6:35b"],
+            has_images=True,
+        )
+        assert r_vis["model"] == "qwen3.6:35b" and r_vis.get("vision_routed") is True
+
+        sample_log = Path(td) / "bot_trace.log"
+        sample_log.write_text("ERROR: stream jitter detected\nPID=4242", encoding="utf-8")
+        sample_img = Path(td) / "shot.png"
+        sample_img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        enc_imgs, att_ctx, att_names = hm.prepare_attachments([str(sample_img), str(sample_log)])
+        assert len(enc_imgs) == 1
+        assert "bot_trace.log" in att_names and "shot.png" in att_names
+        assert "stream jitter detected" in att_ctx
+
+        # 8. Dangling streaming ** markers are stripped & clipboard file paths attach cleanly
+        assert "**" not in hermes_page._clean_bubble_markdown("3. **PID or")
+
+        class _DummyClipTk:
+            def clipboard_get(self) -> str:
+                return f"file://{sample_log}"
+
+        pasted_files, pasted_msg = hermes_page._capture_clipboard_attachments(hm, _DummyClipTk())
+        assert str(sample_log) in pasted_files and pasted_msg
+
+        # 9. astra_dev_self_build(inspect) & list_dir("") return real AstraCradle modules (never hallucinate bridges)
+        insp = hm.execute_tool("astra_dev_self_build", {"action": "inspect"}, cfg)
+        assert insp["ok"] is True
+        core_files = {m["file"] for m in insp["core_modules"]}
+        assert "astracradle/core/hermes_agent.py" in core_files
+        ld = hm.execute_tool("list_dir", {"path": ""}, cfg)
+        assert ld["ok"] is True and any(e["name"] == "astracradle" for e in ld["entries"])
+        assert "NEVER invent fictional modules" in hm._build_system_prompt(cfg)
+
+
+def test_hermes_full_skill_suite_knowledge_library_1gb_200gb_and_prune() -> None:
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import BUILTIN_FULL_SKILL_SUITE, HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        cfg = AppConfig(hermes_library_max_gb=200)
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        hm.ensure_hermes_home(cfg)
+
+        # 1. Full 18+ built-in skill suite + common reference items seeded
+        skills = {s["slug"] for s in hm.list_skills()}
+        assert len(BUILTIN_FULL_SKILL_SUITE) >= 18
+        for slug, _d, _b in BUILTIN_FULL_SKILL_SUITE:
+            assert slug in skills
+
+        # 2. Configurable 1 GB - 200 GB cap (clamped)
+        assert hm.get_library_max_bytes(AppConfig(hermes_library_max_gb=0)) == 1 * (1024**3)
+        assert hm.get_library_max_bytes(AppConfig(hermes_library_max_gb=200)) == 200 * (1024**3)
+        assert hm.get_library_max_bytes(AppConfig(hermes_library_max_gb=999)) == 200 * (1024**3)
+
+        # 3. Search built-in common reference cards + store new item + flag incorrect + auto-prune
+        st = hm.execute_tool("astra_knowledge_library", {"action": "stats"}, cfg)
+        assert st["ok"] is True and st["skills_count"] >= 18 and st["max_gb"] == 200
+
+        hits = hm.search_library("ROCR_VISIBLE_DEVICES ollama", limit=3)
+        assert len(hits) >= 1 and any("ROCm" in h["title"] or "Ollama" in h["title"] for h in hits)
+
+        stored = hm.store_library_item(
+            title="Bad Outdated Tip",
+            body="Deprecated command that no longer works.",
+            category="web_doc",
+            source_type="web",
+            source_url="https://example.invalid/old-tip",
+            config=cfg,
+        )
+        assert stored["ok"] is True
+        hm.execute_tool("astra_knowledge_library", {"action": "mark_incorrect", "item_id": stored["item_id"], "reason": "Superseded"}, cfg)
+        pruned = hm.execute_tool("astra_knowledge_library", {"action": "prune"}, cfg)
+        assert pruned["ok"] is True and pruned["breakdown"]["incorrect"] >= 1
+
+        # 4. Heavy model in _gpu_fallback_models routes to working GPU model (keeps tools + fast GPU)
+        hm._save_gpu_fallback_model("qwen3.6:35b", "cpu_notools")
+        r_gpu = hm.select_dynamic_ollama_model(
+            "Inspect AstraCradle's codebase and propose improvements",
+            AppConfig(hermes_local_only=True, hermes_mode="local_gpu", hermes_provider="ollama", hermes_model="qwen3.6:35b"),
+            installed_models=["qwen3.6:35b", "qwen3:8b"],
+            has_images=False,
+        )
+        assert r_gpu["model"] == "qwen3:8b"
+
+
+def test_hermes_custom_tool_forge_create_combine_improve_and_run():
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        cfg = AppConfig(hermes_permission_level="standard_user", hermes_require_approval=False)
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        hm.ensure_hermes_home(cfg)
+
+        # 1. Create a composite tool combining two built-in tools and run it directly by name
+        c1 = hm.execute_tool(
+            "astra_custom_tool_forge",
+            {
+                "action": "create_composite",
+                "name": "health_check",
+                "description": "Checks system status and thermal baseline together",
+                "steps": [
+                    {"tool": "astra_system_status", "args": {}},
+                    {"tool": "astra_thermals_and_fans", "args": {"action": "inspect"}},
+                ],
+            },
+            cfg,
+        )
+        assert c1["ok"] is True and c1["tool"]["name"] == "custom_health_check"
+        schema_names = {t["function"]["name"] for t in hm._tool_schemas()}
+        assert "astra_custom_tool_forge" in schema_names and "custom_health_check" in schema_names
+
+        run1 = hm.execute_tool("custom_health_check", {}, cfg)
+        assert run1["ok"] is True and run1["steps_executed"] == 2
+
+        # 2. Combine custom_health_check + astra_services_and_storage into a bigger composite tool
+        c2 = hm.execute_tool(
+            "astra_custom_tool_forge",
+            {
+                "action": "combine",
+                "name": "full_sweep",
+                "description": "Combined health + services sweep",
+                "source_tools": ["custom_health_check", "astra_services_and_storage"],
+            },
+            cfg,
+        )
+        assert c2["ok"] is True and len(c2["tool"]["steps"]) == 3
+
+        # 3. Improve custom_health_check (archives v1 snapshot and bumps to v2)
+        imp = hm.execute_tool(
+            "astra_custom_tool_forge",
+            {
+                "action": "improve",
+                "name": "custom_health_check",
+                "description": "Improved v2 health + services check",
+                "improvement_note": "Added services audit",
+                "steps": [
+                    {"tool": "astra_system_status", "args": {}},
+                    {"tool": "astra_services_and_storage", "args": {"action": "inspect"}},
+                ],
+            },
+            cfg,
+        )
+        assert imp["ok"] is True and imp["tool"]["version"] == 2
+        assert (hm.custom_tools_versions_dir / "custom_health_check.v1.json").exists()
+
+        # 4. Python custom tool: blocked in safe_user, safety-checked in standard_user, runs in isolated subprocess
+        blocked = hm.execute_tool(
+            "astra_custom_tool_forge",
+            {
+                "action": "create_python",
+                "name": "calc_score",
+                "description": "Computes score",
+                "code": "def run(args):\n    return {'ok': True, 'score': int(args.get('x', 2)) * 10}\n",
+            },
+            AppConfig(hermes_permission_level="safe_user"),
+        )
+        assert blocked["ok"] is False and blocked.get("blocked") is True
+
+        py_ok = hm.execute_tool(
+            "astra_custom_tool_forge",
+            {
+                "action": "create_python",
+                "name": "calc_score",
+                "description": "Computes multiplied score",
+                "code": "def run(args):\n    return {'ok': True, 'score': int(args.get('x', 3)) * 10}\n",
+            },
+            cfg,
+        )
+        assert py_ok["ok"] is True and py_ok["tool"]["kind"] == "python"
+        py_run = hm.execute_tool("custom_calc_score", {"x": 7}, cfg)
+        assert py_run["ok"] is True and py_run["score"] == 70
+
+        # 5. Toggle & delete
+        hm.execute_tool("astra_custom_tool_forge", {"action": "toggle", "name": "custom_calc_score", "enabled": False}, cfg)
+        disabled_run = hm.execute_tool("custom_calc_score", {"x": 1}, cfg)
+        assert disabled_run["ok"] is False and "disabled" in disabled_run["error"].lower()
+        hm.execute_tool("astra_custom_tool_forge", {"action": "delete", "name": "custom_calc_score"}, cfg)
+        assert all(t["name"] != "custom_calc_score" for t in hm.list_custom_tools())
+
+
+def test_ui_toast_event_log_filtering_and_ai_readback():
+    import types
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.theme import get_palette
+    from astracradle.ui.app import AstraCradleApp
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig()
+        hm.ensure_hermes_home(cfg)
+
+        pal = get_palette("dark")
+        placed = []
+        fake_app = types.SimpleNamespace(
+            cfg_mgr=cm,
+            palette=pal,
+            toast_label=types.SimpleNamespace(configure=lambda **_kw: None),
+            toast_undo_btn=types.SimpleNamespace(configure=lambda **_kw: None, pack=lambda *_a, **_kw: None, pack_forget=lambda: None),
+            toast_frame=types.SimpleNamespace(place=lambda *_a, **_kw: placed.append("shown"), place_forget=lambda: None),
+            topbar_status=types.SimpleNamespace(configure=lambda **_kw: None),
+            _toast_after_id=None,
+            _animate_toast_in=lambda _s: None,
+            after=lambda _ms, _fn: "after-1",
+            after_cancel=lambda _i: None,
+        )
+        fake_app._ui_events_log_path = lambda: AstraCradleApp._ui_events_log_path(fake_app)
+        fake_app.record_ui_event = lambda m, level="info": AstraCradleApp.record_ui_event(fake_app, m, level=level)
+        fake_app.get_recent_ui_events = lambda limit=80: AstraCradleApp.get_recent_ui_events(fake_app, limit=limit)
+        fake_app._is_important_toast = lambda m, c, u: AstraCradleApp._is_important_toast(fake_app, m, c, u)
+
+        # Routine button completion notice -> logged silently, NO popup overlay
+        AstraCradleApp.show_toast(fake_app, "✓ Exit Full-Screen complete.", color=pal.accent_jade)
+        assert placed == []
+
+        # Important / error / undo notice -> logged AND popped up
+        AstraCradleApp.show_toast(fake_app, "Hermes error: connection refused", color=pal.accent_coral)
+        assert len(placed) == 1
+
+        # Both notices are recorded in ui_events.log and readable by Hermes AI via astra_journal_and_crashes
+        diag = hm.execute_tool("astra_journal_and_crashes", {"limit": 10}, cfg)
+        assert diag["ok"] is True
+        joined = "\n".join(diag.get("recent_ui_events") or [])
+        assert "Exit Full-Screen complete." in joined
+        assert "Hermes error: connection refused" in joined
+
+
+def test_hermes_astra_prompt_grounding_and_markdown_fence_cleanup():
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.ui.pages import hermes_page
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig()
+        hm.ensure_hermes_home(cfg)
+
+        q = "What do you think of astra and the changes I have so far?"
+        assert hm._prompt_needs_tools(q) is True
+        sel_names = {t["function"]["name"] for t in hm._select_tool_schemas(q, hm._tool_schemas())}
+        assert "astra_dev_self_build" in sel_names and "astra_git_sync" in sel_names
+        assert "NEVER tell the user to run `astra_*` commands" in hm._build_system_prompt(cfg)
+
+    cleaned = hermes_page._clean_bubble_markdown(
+        "### **Next Steps:**\n---\n```bash\nastra_fix_safe --dry_run=false\n```\n"
+        "| Issue | Severity | Recommendation |\n"
+        "|------|----------|----------------|\n"
+        "| Cache | Low | Clean up |\n"
+    )
+    assert "```" not in cleaned
+    assert "---" not in cleaned
+    assert "|" not in cleaned
+    assert "Cache  —  Low  —  Clean up" in cleaned
+    assert "Next Steps:" in cleaned
+
+
+def test_hermes_sop_template_library_compose_instantiate_and_fast_learning():
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager, SOP_TEMPLATE_LIBRARY
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig(hermes_permission_level="standard_user", hermes_require_approval=False)
+        hm.ensure_hermes_home(cfg)
+
+        # 1. All 20 built-in SOP templates seeded & searchable
+        assert len(SOP_TEMPLATE_LIBRARY) >= 20
+        lst = hm.execute_tool("astra_sop_templates", {"action": "list"}, cfg)
+        assert lst["ok"] is True and lst["count"] >= 20
+
+        # 2. Match SOP templates + verify 'astra_process_lookup' does not falsely pull dev/git tools
+        q = "Worth doing #3 startup and skip #2 unless astra_process_lookup confirms ollama isn't Hermes"
+        m = hm.execute_tool("astra_sop_templates", {"action": "match", "query": q, "limit": 2}, cfg)
+        matched_ids = [x["template_id"] for x in m["matches"]]
+        assert "sop_idle_ai_ram_safety" in matched_ids
+        sel = {t["function"]["name"] for t in hm._select_tool_schemas(q, hm._tool_schemas())}
+        assert "astra_process_lookup" in sel and "astra_startup_audit" in sel
+        assert "astra_dev_self_build" not in sel
+
+        # 3. Compose 2 SOP templates + instantiate into a runnable custom_sop tool
+        comp = hm.execute_tool(
+            "astra_sop_templates",
+            {"action": "compose", "template_ids": ["sop_pc_health_triage", "sop_journal_crash_postmortem"]},
+            cfg,
+        )
+        assert comp["ok"] is True and len(comp["composed"]["tool_pipeline"]) >= 3
+
+        inst = hm.execute_tool(
+            "astra_sop_templates",
+            {
+                "action": "instantiate_tool",
+                "template_ids": ["sop_pc_health_triage", "sop_journal_crash_postmortem"],
+                "tool_name": "custom_sop_health_and_journal",
+            },
+            cfg,
+        )
+        assert inst["ok"] is True and inst["tool"]["name"] == "custom_sop_health_and_journal"
+        run_sop = hm.execute_tool("custom_sop_health_and_journal", {}, cfg)
+        assert run_sop["ok"] is True and run_sop["steps_executed"] >= 3
+
+        # 4. Fast 2-step SOP auto-learning inside run_prompt()
+        turns = {"n": 0}
+
+        def _fake_llm(_spec, _key, _msgs, _tools):
+            turns["n"] += 1
+            if turns["n"] == 1:
+                return "", [
+                    {"id": "c1", "function": {"name": "astra_system_status", "arguments": {}}},
+                    {"id": "c2", "function": {"name": "astra_startup_audit", "arguments": {}}},
+                ]
+            return "Verified system status and startup audit.", []
+
+        res = hm.run_prompt(
+            "Check system status and startup entries cleanly",
+            cfg,
+            session_id="sop_learn_sess",
+            llm_caller=_fake_llm,
+        )
+        assert res.ok is True
+        learned_sops = [s for s in hm.list_sop_templates() if s.get("source") == "learned"]
+        assert len(learned_sops) >= 1
+
+
+def test_hermes_verify_work_audit_web_crosscheck_and_rebase_sop():
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig(hermes_allow_web_search=False)
+        hm.ensure_hermes_home(cfg)
+
+        # 1. SOP matches detached HEAD / unmerged rebase cleanly
+        m = hm.match_sop_templates("git status shows detached HEAD and unmerged files during rebase", limit=2)
+        assert any(s["template_id"] == "sop_git_rebase_conflict_recovery" for s in m)
+
+        # 2. audit_draft catches fake bash flags & missing paths
+        bad = hm.execute_tool(
+            "astra_verify_work",
+            {
+                "action": "audit_draft",
+                "draft_text": "Run `astra_fix_safe --dry_run=false` and edit `astracradle/fake_router_v2.py`.",
+            },
+            cfg,
+        )
+        assert bad["verified"] is False and len(bad["warnings"]) >= 2
+
+        # 3. verify_with_web returns local library hits + guidance cleanly even offline
+        vw = hm.execute_tool(
+            "astra_verify_work",
+            {"action": "verify_with_web", "query": "ROCR_VISIBLE_DEVICES ollama"},
+            cfg,
+        )
+        assert vw["ok"] is True and len(vw["local_library_hits"]) >= 1
+
+        # 4. export_for_arena builds complete verification packet
+        pkt = hm.execute_tool("astra_verify_work", {"action": "export_for_arena"}, cfg)
+        assert pkt["ok"] is True and "AstraCradle Hermes Verification Packet" in pkt["packet"]
+
+
+def test_hermes_library_topic_harvester_chunking_remaining_storage_and_removal():
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig(hermes_library_max_gb=5, hermes_allow_web_search=True)
+        hm.ensure_hermes_home(cfg)
+
+        # 1. Default topics exist and stats show exact remaining space
+        topics0 = hm.execute_tool("astra_knowledge_library", {"action": "list_topics"}, cfg)
+        assert topics0["ok"] is True and topics0["count"] >= 3
+        st0 = hm.execute_tool("astra_knowledge_library", {"action": "stats"}, cfg)
+        assert st0["max_gb"] == 5 and st0["remaining_gb"] > 4.9 and st0["topics_count"] >= 3
+
+        # 2. Add custom programming topic & harvest mocked official Python doc page (multi-chunk)
+        add_r = hm.add_library_topic("Python 3.14 asyncio TaskGroup", category="programming", harvest_now=False, config=cfg)
+        assert add_r["ok"] is True
+        tid = add_r["topic"]["topic_id"]
+
+        long_doc = "\n\n".join(
+            [f"Section {i}: Python 3.14 asyncio.TaskGroup example\n" + ("async def main(): pass\n" * 60) for i in range(1, 5)]
+        )
+        hv = hm.harvest_library_topic(
+            tid,
+            cfg,
+            searcher=lambda _q, _n: [
+                {"title": "Python asyncio docs", "url": "https://docs.python.org/3/library/asyncio-task.html", "snippet": "TaskGroup docs"},
+            ],
+            fetcher=lambda _u: long_doc,
+        )
+        assert hv["ok"] is True and hv["pages_fetched"] == 1 and hv["stored_chunks"] >= 2
+
+        # 3. Searchable in FTS5 & visible in list_items
+        hits = hm.search_library("TaskGroup asyncio", limit=3)
+        assert len(hits) >= 1 and "docs.python.org" in hits[0]["source_url"]
+        items = hm.execute_tool("astra_knowledge_library", {"action": "list_items", "query": "TaskGroup"}, cfg)
+        assert items["ok"] is True and items["count"] >= 2
+
+        # 4. Delete one individual item, then remove the whole topic & verify cleanup
+        del_one = hm.execute_tool("astra_knowledge_library", {"action": "delete_item", "item_id": items["items"][0]["item_id"]}, cfg)
+        assert del_one["ok"] is True
+        rem = hm.execute_tool("astra_knowledge_library", {"action": "remove_topic", "topic_id": tid, "remove_items": True}, cfg)
+        assert rem["ok"] is True and rem["removed_items"] >= 1
+        assert all(t["topic_id"] != tid for t in hm.list_library_topics())
+
+
+def test_hermes_internal_first_deep_memory_and_multimodal_media_inspection(monkeypatch) -> None:
+    import shutil
+    import tempfile
+    import zipfile
+    from pathlib import Path
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "astra")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig(hermes_library_max_gb=5, hermes_allow_web_search=True)
+        hm.ensure_hermes_home(cfg)
+
+        # 1. Seed internal library + memory and verify manifest + deep_internal_recall
+        hm.add_library_topic("Rust Tokio Async Patterns", category="programming", harvest_now=False, config=cfg)
+        hm.store_library_item(
+            title="Rust Tokio Select Pattern",
+            body="tokio::select! lets async branches race cleanly without busy polling or wasted CPU cycles.",
+            category="programming",
+            source_url="https://tokio.rs/tokio/tutorial/select",
+            tags="tokio select async rust",
+            config=cfg,
+        )
+        manifest = hm.build_internal_memory_manifest()
+        assert any("Rust Tokio Async Patterns" in t for t in manifest["topics"])
+        assert "KnownTopics=" in hm._build_system_prompt(cfg)
+
+        recall = hm.execute_tool("astra_knowledge_library", {"action": "deep_recall", "query": "tokio select async"}, cfg)
+        assert recall["ok"] is True and recall["has_strong_match"] is True
+        assert any("Tokio Select" in h["title"] for h in recall["library_hits"])
+
+        # 2. web_search checks internal knowledge FIRST when strong match exists, unless force_web=True
+        web_called = {"count": 0}
+
+        def _fake_web(_q: str, max_results: int = 5):
+            web_called["count"] += 1
+            return [{"title": "Live Web Tokio", "url": "https://docs.rs/tokio", "snippet": "Live result"}]
+
+        monkeypatch.setattr(hm, "_web_search_impl", _fake_web)
+        cached_ws = hm.execute_tool("web_search", {"query": "tokio select async"}, cfg)
+        assert cached_ws["ok"] is True and cached_ws["source"] == "internal_first_cache"
+        assert web_called["count"] == 0
+
+        forced_ws = hm.execute_tool("web_search", {"query": "tokio select async", "force_web": True}, cfg)
+        assert forced_ws["ok"] is True and forced_ws["source"] == "live_web"
+        assert web_called["count"] == 1
+
+        # 3. Multimodal inspection: PNG picture, fake MP4 video (via ffprobe/ffmpeg), and real .docx Office XML
+        pic_p = Path(td) / "sample_pic.png"
+        # Minimal valid 1x1 RGBA PNG
+        import base64
+        pic_p.write_bytes(
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+            )
+        )
+        imgs, ctx, names = hm.prepare_attachments([str(pic_p)])
+        assert len(imgs) == 1 and "sample_pic.png" in names
+
+        insp_pic = hm.execute_tool("astra_inspect_media", {"path": str(pic_p)}, cfg)
+        assert insp_pic["ok"] is True and insp_pic["media_kind"] == "image" and str(pic_p) in insp_pic["image_paths"]
+
+        docx_p = Path(td) / "report.docx"
+        with zipfile.ZipFile(docx_p, "w") as zf:
+            zf.writestr(
+                "word/document.xml",
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>AstraCradle Quarterly Diagnostics OK</w:t></w:r></w:p></w:body></w:document>',
+            )
+        insp_doc = hm.execute_tool("astra_inspect_media", {"path": str(docx_p)}, cfg)
+        assert insp_doc["ok"] is True and insp_doc["media_kind"] == "office"
+        assert "AstraCradle Quarterly Diagnostics OK" in insp_doc["summary"]
+
+        # Video inspection if ffmpeg/ffprobe are present, otherwise graceful metadata fallback
+        vid_p = Path(td) / "clip.mp4"
+        if shutil.which("ffmpeg"):
+            import subprocess
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=blue:s=64x64:d=0.5", str(vid_p)],
+                capture_output=True,
+                timeout=15,
+            )
+        else:
+            vid_p.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        insp_vid = hm.execute_tool("astra_inspect_media", {"path": str(vid_p)}, cfg)
+        assert insp_vid["ok"] is True and insp_vid["media_kind"] == "video"
+        if shutil.which("ffmpeg") and vid_p.stat().st_size > 100:
+            assert len(insp_vid["image_paths"]) >= 1
+
+
+def test_hermes_subagents_persistence_and_full_os_autofix_escalation(monkeypatch) -> None:
+    import json
+    import tempfile
+    from pathlib import Path
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "astra")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig(hermes_allow_web_search=True, hermes_permission_level="safe_user")
+        hm.ensure_hermes_home(cfg)
+
+        # 1. Verify persistence of MEMORY.md, pc_usage_profile.json, and subagents across re-init / upgrade
+        hm.append_memory("User prefers CachyOS scx_lavd scheduler and 1GB VRAM reserve.", target="MEMORY.md")
+        hm.pc_usage_path.write_text(json.dumps({"samples": 42, "apps": {"wow.exe": {"hits": 19, "category": "game"}}}), encoding="utf-8")
+        cr = hm.execute_tool(
+            "delegate_subagent",
+            {
+                "action": "create",
+                "name": "Kernel Auditor",
+                "role_instructions": "Audit Linux systemd and kernel logs cleanly.",
+                "task": "Check systemd failed units",
+            },
+            cfg,
+        )
+        assert cr["ok"] is True and cr["subagent"]["name"] == "Kernel Auditor"
+
+        # Simulate restart/upgrade calling ensure_hermes_home() again
+        hm2 = HermesAgentManager(cm, ForensicJournal(cm))
+        hm2.ensure_hermes_home(cfg)
+        assert "scx_lavd" in hm2.memory_path.read_text(encoding="utf-8")
+        assert hm2.get_pc_usage_profile()["samples"] == 42
+        lst = hm2.execute_tool("delegate_subagent", {"action": "list"}, cfg)
+        assert lst["ok"] is True and lst["count"] == 1 and lst["subagents"][0]["name"] == "Kernel Auditor"
+
+        # Run subagent with mocked LLM caller & verify run counter + deletion
+        run_sa = hm2.run_subagent(
+            "Check status",
+            cfg,
+            subagent_id_or_name="Kernel Auditor",
+            llm_caller=lambda _m, _t, _s, _k: ("Subagent audit: 0 failed units.", []),
+        )
+        assert run_sa["ok"] is True and "0 failed units" in run_sa["summary"]
+        assert hm2.list_subagents()[0]["runs"] == 1
+        del_sa = hm2.execute_tool("delegate_subagent", {"action": "delete", "name": "Kernel Auditor"}, cfg)
+        assert del_sa["ok"] is True and len(hm2.list_subagents()) == 0
+
+        # 2. Verify Full OS Auto-Fix: standard checks + web cross-check + stronger AI escalation + packet
+        monkeypatch.setattr(hm2, "clipboard_write", lambda _t: (True, "copied"))
+        af = hm2.run_full_os_autofix(
+            cfg,
+            apply_safe_fixes=False,
+            web_crosscheck=True,
+            escalate_stronger_ai=True,
+            copy_escalation_packet=True,
+            searcher=lambda q, _n: [{"title": f"OS Doc for {q}", "url": "https://wiki.archlinux.org", "snippet": "Verified OS tweak"}],
+            escalate_llm_caller=lambda _m, _t, _s, _k: ("Stronger AI review: OS checks healthy, no unsafe mutations required.", []),
+        )
+        assert af["ok"] is True
+        assert af["os_profile"]["system"]
+        assert len(af["checks"]) >= 1
+        assert "Stronger AI review" in af["escalation_summary"]
+        assert "AstraCradle Full OS Auto-Fix Escalation" in af["escalation_packet"]
+        assert af["copied_to_clipboard"] is True
+
+
+
+
+
+
+
+
+
 
 
 

@@ -465,6 +465,14 @@ class AppConfig:
     hermes_gpu_limit_mode: str = "game_adaptive"  # 100 | 75 | 50 | 25 | game_adaptive
     hermes_vram_reserve_mb: int = 1024  # Keep ~1 GB VRAM below max usage for games & desktop
     hermes_allow_web_search: bool = True
+    hermes_dynamic_model_routing: bool = True
+    hermes_fast_model: str = ""
+    hermes_chat_font_size: int = 13
+    hermes_autonomous_guardian: bool = True
+    hermes_voice_tts_enabled: bool = False
+    hermes_library_max_gb: int = 10  # Configurable skill/knowledge library cap (1 GB to 200 GB)
+    hermes_library_auto_prune: bool = True
+    hermes_library_auto_prefetch: bool = True
     hermes_persona: str = "astra_standard"
     hermes_cron_enabled: bool = False
     hermes_gateway_auto_start: bool = False
@@ -619,6 +627,14 @@ class AppConfig:
             "hermes_gpu_limit_mode",
             "hermes_vram_reserve_mb",
             "hermes_allow_web_search",
+            "hermes_dynamic_model_routing",
+            "hermes_fast_model",
+            "hermes_chat_font_size",
+            "hermes_autonomous_guardian",
+            "hermes_voice_tts_enabled",
+            "hermes_library_max_gb",
+            "hermes_library_auto_prune",
+            "hermes_library_auto_prefetch",
             "hermes_persona",
             "hermes_cron_enabled",
             "hermes_gateway_auto_start",

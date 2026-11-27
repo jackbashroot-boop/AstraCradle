@@ -597,7 +597,17 @@ BUILTIN_FULL_SKILL_SUITE: tuple[tuple[str, str, str], ...] = (
         "1. Call `astra_system_status` first to get live CPU, RAM, disk, and GPU metrics.\n"
         "2. Call `astra_deep_scan` when the user asks why their computer is slow, hot, or cluttered.\n"
         "3. Only call `astra_fix_safe` with `dry_run=false` when the user asks to apply safe cleanup; otherwise preview with `dry_run=true`.\n"
-        "4. Call `astra_process_lookup` to explain unfamiliar PIDs or processes in plain English.\n",
+        "4. Call `astra_process_lookup` to explain unfamiliar PIDs or processes in plain English.\n"
+        "5. Consult `astra_sop_templates` before multi-step troubleshooting so outputs follow proven decision guardrails and templates.\n",
+    ),
+    (
+        "sop-standard-operating-book",
+        "Use and evolve the Standard Operating Book & Composable Template Library for fast, consistent PC diagnostics, fixes, and reviews.",
+        "# Standard Operating Book (SOP Template Library)\n"
+        "- For recurring tasks (health triage, idle AI RAM checks, startup audit, disk hygiene, crash/journal review, Wi-Fi/audio fixes, code reviews), pull the matching template via `astra_sop_templates(action='match')`.\n"
+        "- Follow every `decision_rules` guardrail (e.g. never kill `ollama` / `llama-server` serving Hermes without checking PIDs via `astra_process_lookup`).\n"
+        "- Plug real tool data into the template's `output_template` placeholders rather than inventing structures or metrics.\n"
+        "- Combine templates with `compose` or turn them into reusable one-click tools with `instantiate_tool`.\n",
     ),
     (
         "root-cause-debugging",
@@ -811,6 +821,421 @@ COMMON_REFERENCE_CARDS: tuple[dict[str, str], ...] = (
 )
 
 
+SOP_TEMPLATE_LIBRARY: tuple[dict[str, Any], ...] = (
+    {
+        "template_id": "sop_pc_health_triage",
+        "title": "PC Health Triage & Actionable Recommendations",
+        "category": "diagnostics",
+        "keywords": ["scan", "health", "slow", "triage", "diagnose", "score", "findings", "recommendations", "cleanup"],
+        "decision_rules": [
+            "Run `astra_deep_scan` first to obtain real findings; never estimate or invent MB/count numbers.",
+            "Distinguish reversible safe actions (`astra_fix_safe`) from manual process/startup decisions.",
+            "NEVER recommend killing `ollama` or `llama-server` as 'harmless' if it is actively serving Hermes AI.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_deep_scan", "args": {}},
+            {"tool": "astra_system_status", "args": {}},
+        ],
+        "output_template": (
+            "Health Summary (Score: {{score}}/100)\n"
+            "Verified Findings:\n- {{finding_1}}\n- {{finding_2}}\n"
+            "Safe Next Actions (Ranked):\n1. {{safe_action_1}}\n2. {{manual_review_2}}"
+        ),
+    },
+    {
+        "template_id": "sop_idle_ai_ram_safety",
+        "title": "Idle AI Chatbot & RAM Process Verification",
+        "category": "safety",
+        "keywords": ["idle", "ai", "chatbot", "ollama", "llama", "5.8", "ram", "process", "astra_process_lookup", "kill"],
+        "decision_rules": [
+            "ALWAYS run `astra_process_lookup` (query='ollama' or process name) before advising process termination.",
+            "Check whether the process is the active Ollama / llama-server powering Hermes OS AI; if so, warn that stopping it unloads the active model.",
+            "If system RAM usage is low (<75%) and the user wants local AI active, recommend keeping it running.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_process_lookup", "args": {"query": "ollama"}},
+            {"tool": "astra_system_status", "args": {}},
+        ],
+        "output_template": (
+            "AI Process Verification:\n"
+            "- Active Processes: {{pid_and_name}} ({{rss_mb}} MB)\n"
+            "- Hermes Dependency Check: {{is_hermes_runtime}}\n"
+            "- Recommendation: {{keep_or_stop_reason}}"
+        ),
+    },
+    {
+        "template_id": "sop_startup_audit_trim",
+        "title": "Startup & Login Entry Audit",
+        "category": "performance",
+        "keywords": ["startup", "login", "boot", "autorun", "autostart", "entries", "#3"],
+        "decision_rules": [
+            "Run `astra_startup_audit` before suggesting disabling any startup item.",
+            "Preserve essential audio (`pipewire`, `wireplumber`), GPU, network (`tailscale`, `nm-applet`), and desktop portal entries.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_startup_audit", "args": {}},
+        ],
+        "output_template": (
+            "Startup & Login Audit ({{total_entries}} entries):\n"
+            "- Essential (Keep): {{essential_list}}\n"
+            "- Optional / Safe to Review: {{optional_list}}"
+        ),
+    },
+    {
+        "template_id": "sop_disk_quarantine_hygiene",
+        "title": "Cache, Quarantine Vault & Storage Hygiene",
+        "category": "maintenance",
+        "keywords": ["cache", "temp", "quarantine", "disk", "storage", "space", "2 gb", "hygiene", "clean"],
+        "decision_rules": [
+            "Verify disk and vault usage via `astra_services_and_storage` + `astra_deep_scan` before cleaning.",
+            "Run `astra_fix_safe` with `dry_run=true` first unless user explicitly requested immediate cleanup.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_services_and_storage", "args": {}},
+            {"tool": "astra_fix_safe", "args": {"dry_run": True}},
+        ],
+        "output_template": (
+            "Storage & Quarantine Status:\n"
+            "- Mounts: {{disk_summary}}\n"
+            "- Reclaimable Safe Cache: {{reclaimable_mb}} MB (Dry-Run verified)\n"
+            "- Recommendation: {{storage_action}}"
+        ),
+    },
+    {
+        "template_id": "sop_journal_crash_postmortem",
+        "title": "Journal Errors, Crash Post-Mortems & UI Log Triage",
+        "category": "diagnostics",
+        "keywords": ["journal", "crash", "error", "exception", "post_mortem", "discontinuity", "ui log", "audit", "#4"],
+        "decision_rules": [
+            "Always call `astra_journal_and_crashes` to inspect audit findings, post-mortems, and `recent_ui_events`.",
+            "Separate old historical warnings from active repeating failures.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_journal_and_crashes", "args": {"limit": 20}},
+        ],
+        "output_template": (
+            "Journal & Crash Triage:\n"
+            "- Audit Status: {{audit_summary}}\n"
+            "- Recent Errors / Crashes: {{error_patterns}}\n"
+            "- UI Events Noted: {{ui_events_note}}\n"
+            "- Next Fix: {{remediation}}"
+        ),
+    },
+    {
+        "template_id": "sop_gpu_thermal_game_tuning",
+        "title": "GPU Thermals, Fan Curve & Game-Mode Tuning",
+        "category": "performance",
+        "keywords": ["gpu", "vram", "thermal", "temp", "fan", "curve", "game", "rocm", "fps"],
+        "decision_rules": [
+            "Inspect `astra_thermals_and_fans` before proposing or applying any fan curve.",
+            "Respect ~1 GB VRAM game-mode headroom so games never stutter.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_thermals_and_fans", "args": {"action": "inspect"}},
+            {"tool": "astra_system_status", "args": {}},
+        ],
+        "output_template": (
+            "GPU & Thermal Baseline:\n"
+            "- GPU Temp / Load / VRAM: {{gpu_metrics}}\n"
+            "- Active Fan Profile: {{applied_profile}}\n"
+            "- Tuning Advice: {{gpu_recommendation}}"
+        ),
+    },
+    {
+        "template_id": "sop_wifi_latency_recovery",
+        "title": "Wi-Fi Signal, Channel & DNS Latency Recovery",
+        "category": "network",
+        "keywords": ["wifi", "wi-fi", "network", "dns", "ping", "latency", "packet", "drop", "internet"],
+        "decision_rules": [
+            "Always inspect live radio/DNS telemetry via `astra_wifi_check` before calling `astra_wifi_optimize`.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_wifi_check", "args": {}},
+        ],
+        "output_template": (
+            "Network & Wi-Fi Check:\n"
+            "- Interface / Signal / Channel: {{wifi_signal}}\n"
+            "- DNS & Latency: {{latency_ms}}\n"
+            "- Action: {{wifi_next_step}}"
+        ),
+    },
+    {
+        "template_id": "sop_audio_usb_stutter_fix",
+        "title": "PipeWire Audio & USB Autosuspend Stutter Fix",
+        "category": "performance",
+        "keywords": ["audio", "pipewire", "sound", "mic", "usb", "stutter", "mouse", "headset", "crackling"],
+        "decision_rules": [
+            "Inspect `astra_av_and_peripherals` first to list devices stuck on `power/control=auto`.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_av_and_peripherals", "args": {"action": "inspect"}},
+        ],
+        "output_template": (
+            "Audio & USB Peripherals:\n"
+            "- Audio Stack: {{audio_summary}}\n"
+            "- USB Autosuspend Devices: {{usb_auto_list}}\n"
+            "- Fix: {{av_action}}"
+        ),
+    },
+    {
+        "template_id": "sop_remote_astrabeam_pair",
+        "title": "Remote Continuity, Tailscale & AstraBeam Setup",
+        "category": "remote",
+        "keywords": ["remote", "astrabeam", "tailscale", "phone", "iphone", "android", "watch", "sunshine", "pair"],
+        "decision_rules": [
+            "Verify active remote services and paired devices via `astra_remote_tasks` + `astra_services_and_storage`.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_remote_tasks", "args": {}},
+            {"tool": "astra_services_and_storage", "args": {}},
+        ],
+        "output_template": (
+            "Remote Continuity Status:\n"
+            "- Tailscale / AstraBeam: {{remote_services}}\n"
+            "- Paired Devices & Tasks: {{devices_and_tasks}}"
+        ),
+    },
+    {
+        "template_id": "sop_systemd_failed_units",
+        "title": "Systemd Failed Units & Port Audit",
+        "category": "diagnostics",
+        "keywords": ["systemd", "service", "unit", "failed", "port", "listening", "daemon"],
+        "decision_rules": [
+            "Inspect failed units and open ports via `astra_services_and_storage` before restarting any service.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_services_and_storage", "args": {}},
+        ],
+        "output_template": (
+            "Services & Ports Audit:\n"
+            "- Failed Systemd Units: {{failed_units}}\n"
+            "- Listening Ports: {{ports_summary}}"
+        ),
+    },
+    {
+        "template_id": "sop_code_change_review",
+        "title": "AstraCradle Codebase & Git Change Review",
+        "category": "development",
+        "keywords": ["codebase", "astracradle", "git", "commit", "changes", "review", "diff", "refactor", "test"],
+        "decision_rules": [
+            "ALWAYS run `astra_dev_self_build(action='inspect')` and `astra_git_sync(action='status')` before commenting on AstraCradle modules or recent changes.",
+            "Cite ONLY real file paths and symbols verified via tool output.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_dev_self_build", "args": {"action": "inspect"}},
+            {"tool": "astra_git_sync", "args": {"action": "status"}},
+        ],
+        "output_template": (
+            "AstraCradle Code & Git Review:\n"
+            "- Repo / Branch Status: {{git_status}}\n"
+            "- Inspected Modules: {{real_modules}}\n"
+            "- Concrete Observations & Improvements: {{proposals}}"
+        ),
+    },
+    {
+        "template_id": "sop_self_heal_repair_cycle",
+        "title": "14-Invariant Self-Heal & Integrity Recovery",
+        "category": "safety",
+        "keywords": ["self-heal", "invariant", "corrupt", "repair", "integrity", "backup", "restore"],
+        "decision_rules": [
+            "Run `astra_self_heal_repair` to verify all 14 AstraCradle workspace/config/TLS/journal invariants cleanly.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_self_heal_repair", "args": {}},
+        ],
+        "output_template": (
+            "Self-Heal Verification:\n"
+            "- Invariants Passed: {{passed_count}}/{{total_count}}\n"
+            "- Warnings / Repairs: {{repair_notes}}"
+        ),
+    },
+    {
+        "template_id": "sop_custom_tool_synthesis",
+        "title": "Forge, Combine & Improve Custom Tools",
+        "category": "custom_tools",
+        "keywords": ["custom tool", "forge", "combine", "workflow", "macro", "automate", "template", "playbook"],
+        "decision_rules": [
+            "List existing tools with `astra_custom_tool_forge(action='list')` before creating duplicates.",
+            "Prefer `create_composite` or `combine` for safe multi-tool workflows; archive versions via `improve`.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_custom_tool_forge", "args": {"action": "list"}},
+        ],
+        "output_template": (
+            "Custom Tool Forge Action:\n"
+            "- Tool Name & Version: {{tool_name}} (v{{version}})\n"
+            "- Combined Steps: {{steps_list}}\n"
+            "- Verification Run: {{run_status}}"
+        ),
+    },
+    {
+        "template_id": "sop_software_update_guard",
+        "title": "OS, Flatpak & Firmware Update Audit",
+        "category": "maintenance",
+        "keywords": ["update", "upgrade", "pacman", "apt", "dnf", "flatpak", "firmware", "fwupdmgr"],
+        "decision_rules": [
+            "Always run `astra_system_updates(action='check')` first; never run full system upgrade without explicit user request.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_system_updates", "args": {"action": "check"}},
+        ],
+        "output_template": (
+            "Pending Updates Check:\n"
+            "- OS / Flatpak / Firmware: {{pending_updates}}\n"
+            "- Recommended Timing: {{update_advice}}"
+        ),
+    },
+    {
+        "template_id": "sop_security_integrity_audit",
+        "title": "Security, BadUSB & Quarantine Audit",
+        "category": "safety",
+        "keywords": ["security", "badusb", "integrity", "malware", "threat", "firewall", "hardening"],
+        "decision_rules": [
+            "Combine `astra_journal_and_crashes`, `astra_services_and_storage`, and `astra_startup_audit` for evidence-backed security review.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_journal_and_crashes", "args": {"limit": 15}},
+            {"tool": "astra_services_and_storage", "args": {}},
+        ],
+        "output_template": (
+            "Security & Integrity Summary:\n"
+            "- Audit Findings: {{audit_findings}}\n"
+            "- Open Ports / Services: {{ports_and_services}}\n"
+            "- Hardening Next Steps: {{hardening_steps}}"
+        ),
+    },
+    {
+        "template_id": "sop_memory_pressure_relief",
+        "title": "High RAM / Swap Pressure & ProBalance Relief",
+        "category": "performance",
+        "keywords": ["ram", "memory", "swap", "oom", "probalance", "lag", "freeze", "stutter"],
+        "decision_rules": [
+            "Check live memory % and top RAM consumers via `astra_system_status` + `astra_process_lookup` before adjusting ProBalance.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_system_status", "args": {}},
+            {"tool": "astra_probalance_and_profile", "args": {"action": "status"}},
+        ],
+        "output_template": (
+            "Memory & ProBalance Status:\n"
+            "- RAM / Swap Usage: {{ram_pct}}%\n"
+            "- Top Memory Consumers: {{top_procs}}\n"
+            "- Relief Action: {{relief_step}}"
+        ),
+    },
+    {
+        "template_id": "sop_backup_rollback_safety",
+        "title": "Pre-Change Snapshot & Rollback Verification",
+        "category": "safety",
+        "keywords": ["rollback", "undo", "revert", "restore", "snapshot", "backup"],
+        "decision_rules": [
+            "Verify available rollback entries via `astra_rollback_undo` before reverting.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_rollback_undo", "args": {"action": "list"}},
+        ],
+        "output_template": (
+            "Rollback Ledger Status:\n"
+            "- Available Snapshots: {{rollback_list}}\n"
+            "- Action Taken: {{rollback_outcome}}"
+        ),
+    },
+    {
+        "template_id": "sop_ui_event_log_eval",
+        "title": "UI Toast & Event Log Evaluation",
+        "category": "diagnostics",
+        "keywords": ["ui_events", "toast", "popup", "ui log", "interface", "freeze", "glitch"],
+        "decision_rules": [
+            "Read `recent_ui_events` from `astra_journal_and_crashes` to inspect silent UI actions and error popups.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_journal_and_crashes", "args": {"limit": 15}},
+        ],
+        "output_template": (
+            "UI Event Log Evaluation:\n"
+            "- Log Path: {{ui_events_log_path}}\n"
+            "- Notable Warnings / Errors: {{ui_errors}}\n"
+            "- Routine Events: {{ui_routine_count}}"
+        ),
+    },
+    {
+        "template_id": "sop_ollama_rocm_recovery",
+        "title": "Ollama ROCm / GPU Runner & Fast-Model Recovery",
+        "category": "performance",
+        "keywords": ["rocm", "llama-server", "500", "segfault", "ollama", "igpu", "model", "slow response"],
+        "decision_rules": [
+            "Search the Knowledge Library for `ROCR_VISIBLE_DEVICES` and inspect `get_recent_diagnostics` via `astra_journal_and_crashes`.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_knowledge_library", "args": {"action": "search", "query": "ROCR_VISIBLE_DEVICES ollama"}},
+            {"tool": "astra_journal_and_crashes", "args": {"limit": 10}},
+        ],
+        "output_template": (
+            "Ollama / GPU Runner Status:\n"
+            "- Diagnostics: {{runner_diags}}\n"
+            "- Recommended Fix: {{rocm_fix}}"
+        ),
+    },
+    {
+        "template_id": "sop_web_research_library",
+        "title": "Verified Web Research & Knowledge Library Caching",
+        "category": "custom_tools",
+        "keywords": ["research", "web", "docs", "latest", "online", "verify", "library", "source"],
+        "decision_rules": [
+            "Search local FTS5 Knowledge Library first; if stale or missing, use `web_search` + `web_fetch` and cache verified findings cleanly.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_knowledge_library", "args": {"action": "search", "query": "{{query}}"}},
+        ],
+        "output_template": (
+            "Verified Research Summary:\n"
+            "- Sources Checked: {{sources}}\n"
+            "- Key Verified Facts: {{facts}}"
+        ),
+    },
+    {
+        "template_id": "sop_git_rebase_conflict_recovery",
+        "title": "Git Detached HEAD, Rebase & Unmerged Conflict Recovery",
+        "category": "development",
+        "keywords": ["detached head", "rebase", "unmerged", "conflict", "aa ", "uu ", "git status", "push rejected"],
+        "decision_rules": [
+            "NEVER tell the user to run `git add .` + `git commit` while `rebase_in_progress=True` or `unmerged_files` is non-empty — that creates an orphaned detached commit or commits conflict markers!",
+            "Use `git rebase --abort` to return cleanly to `main`, OR resolve conflicts with `git checkout --theirs .`, verify `python3 -m compileall -q astracradle`, then `git add -A && git rebase --continue`.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_git_sync", "args": {"action": "status"}},
+            {"tool": "astra_verify_work", "args": {"action": "audit_draft"}},
+        ],
+        "output_template": (
+            "Git Recovery Status:\n"
+            "- Branch / Rebase State: {{git_state}}\n"
+            "- Unmerged Conflicts: {{unmerged_count}}\n"
+            "- Safe Recovery Commands:\n{{safe_recovery_steps}}"
+        ),
+    },
+    {
+        "template_id": "sop_full_os_autofix",
+        "title": "Full OS Auto-Fix (Standard OS Checks + Web Cross-Check + Stronger AI Escalation)",
+        "category": "diagnostics",
+        "keywords": ["full os autofix", "fix the pc fully", "full pc fix", "os common fixes", "escalate stronger ai", "autofix"],
+        "decision_rules": [
+            "Detect exact OS/distro, kernel, desktop, and custom hardware/scheduler features first.",
+            "Run the standard OS checks & safe fixes (failed units, package/lock health, audio/network, stale temp/quarantine, idle AI RAM safety), then cross-check anomalies via web search and escalate to a stronger AI model if configured or copy an Arena escalation packet.",
+        ],
+        "tool_pipeline": [
+            {"tool": "astra_full_os_autofix", "args": {"apply_safe_fixes": True, "web_crosscheck": True, "escalate_stronger_ai": True}},
+        ],
+        "output_template": (
+            "Full OS Auto-Fix Report ({{os_label}}):\n"
+            "- Standard Checks Run: {{checks_summary}}\n"
+            "- Safe Fixes Applied: {{fixes_applied}}\n"
+            "- Custom Features & Web Cross-Check: {{web_notes}}\n"
+            "- Stronger AI Escalation: {{escalation_note}}"
+        ),
+    },
+)
+
+
 class HermesAgentManager:
     """Manages ~/.astracradle/hermes layout, automated setup, native Hermes agent execution, skills, memory & cron."""
 
@@ -834,6 +1259,12 @@ class HermesAgentManager:
         playbook_builder=None,
         ram_standby_mgr=None,
         net_dns_inspector=None,
+        dep_lib=None,
+        crash_analyzer=None,
+        approval_prompt_cb=None,
+        thermal_spc=None,
+        gpu_pwr=None,
+        catalog_scanner=None,
     ) -> None:
         self.cfg_mgr = cfg_mgr
         self.journal = journal
@@ -853,6 +1284,17 @@ class HermesAgentManager:
         self.playbook_builder = playbook_builder
         self.ram_standby_mgr = ram_standby_mgr
         self.net_dns_inspector = net_dns_inspector
+        self.dep_lib = dep_lib
+        self.crash_analyzer = crash_analyzer
+        self.approval_prompt_cb = approval_prompt_cb
+        self.thermal_spc = thermal_spc
+        self.gpu_pwr = gpu_pwr
+        self.catalog_scanner = catalog_scanner
+        self._fast_pull_started = False
+        self._gpu_fallback_models: set[str] = set()
+        self._last_autonomous_cycle_ts: float = 0.0
+        self._autonomous_lock = threading.Lock()
+        self._active_game_profile_key: str = ""
 
         self.hermes_home = cfg_mgr.base_dir / "hermes"
         self.env_path = self.hermes_home / ".env"
@@ -864,8 +1306,24 @@ class HermesAgentManager:
         self.sessions_db_path = self.hermes_home / "sessions.db"
         self.memory_index_path = self.hermes_home / "memory_index.db"
         self.cron_path = self.hermes_home / "cron_jobs.json"
+        self.subagents_path = self.hermes_home / "subagents.json"
         self.learned_games_path = self.hermes_home / "learned_games.json"
         self.pc_usage_path = self.hermes_home / "pc_usage_profile.json"
+        self.diagnostics_log_path = self.hermes_home / "diagnostics.jsonl"
+        self.autonomous_status_path = self.hermes_home / "autonomous_guardian.json"
+        self.runtime_health_path = self.hermes_home / "runtime_model_health.json"
+        self.startup_baseline_path = self.hermes_home / "startup_baseline.json"
+        self.captures_dir = self.hermes_home / "captures"
+        self.library_dir = self.hermes_home / "library"
+        self.library_items_dir = self.library_dir / "items"
+        self.library_db_path = self.library_dir / "library_index.db"
+        self.library_topics_path = self.library_dir / "topics.json"
+        self._last_library_prefetch_ts: float = 0.0
+        self.custom_tools_dir = self.hermes_home / "custom_tools"
+        self.custom_tools_registry_path = self.custom_tools_dir / "registry.json"
+        self.custom_tools_scripts_dir = self.custom_tools_dir / "scripts"
+        self.custom_tools_versions_dir = self.custom_tools_dir / "versions"
+        self.sop_templates_path = self.hermes_home / "sop_templates.json"
 
         self._gateway_proc: subprocess.Popen | None = None
         self._ollama_proc: subprocess.Popen | None = None
@@ -903,6 +1361,8 @@ class HermesAgentManager:
             )
         if not self.cron_path.exists():
             self.cron_path.write_text("[]\n", encoding="utf-8")
+        if not self.subagents_path.exists():
+            self.subagents_path.write_text("[]\n", encoding="utf-8")
         if not self.learned_games_path.exists():
             self.learned_games_path.write_text("{}\n", encoding="utf-8")
         if not self.pc_usage_path.exists():
@@ -1015,6 +1475,29 @@ class HermesAgentManager:
                     tags=card["tags"],
                     summary=card["summary"],
                     item_id=card["item_id"],
+                    pinned=True,
+                    quality_score=1.0,
+                    config=config,
+                )
+                refs_added += 1
+        for sop in SOP_TEMPLATE_LIBRARY:
+            iid = f"sop-{sop['template_id']}"
+            if iid not in existing:
+                body_txt = (
+                    f"# {sop['title']}\n"
+                    f"Category: {sop['category']}\n\n"
+                    "## Decision Rules\n" + "\n".join(f"- {r}" for r in sop["decision_rules"]) + "\n\n"
+                    "## Tool Pipeline\n" + "\n".join(f"- `{s['tool']}` ({json.dumps(s.get('args') or {})})" for s in sop["tool_pipeline"]) + "\n\n"
+                    f"## Output Template\n{sop['output_template']}\n"
+                )
+                self.store_library_item(
+                    title=f"SOP: {sop['title']}",
+                    body=body_txt,
+                    category="sop_template",
+                    source_type="builtin",
+                    tags=" ".join(sop["keywords"]) + f" sop template {sop['category']}",
+                    summary=f"SOP ({sop['category']}): " + "; ".join(sop["decision_rules"][:2]),
+                    item_id=iid,
                     pinned=True,
                     quality_score=1.0,
                     config=config,
@@ -1268,49 +1751,373 @@ class HermesAgentManager:
             "max_gb": round(max_bytes / (1024**3), 2),
         }
 
-    def prefetch_library_topics(self, config: AppConfig, topics: list[str] | None = None) -> dict[str, Any]:
-        """Downloads and caches verified web reference summaries into the Knowledge Library."""
-        if not bool(getattr(config, "hermes_allow_web_search", True)):
-            return {"ok": False, "reason": "Web search disabled"}
+    _AUTHORITATIVE_DOC_DOMAINS: tuple[str, ...] = (
+        "docs.python.org",
+        "peps.python.org",
+        "docs.pytest.org",
+        "fastapi.tiangolo.com",
+        "doc.rust-lang.org",
+        "fishshell.com",
+        "developer.mozilla.org",
+        "typescriptlang.org",
+        "wiki.archlinux.org",
+        "docs.kernel.org",
+        "ollama.com",
+        "rocm.docs.amd.com",
+        "git-scm.com",
+        "realpython.com",
+        "github.com",
+        "pytorch.org",
+    )
+
+    @staticmethod
+    def _extract_version_tags(text: str) -> str:
+        found = re.findall(r"\b(?:python\s*3\.\d+|rust\s*1\.\d+|rocm\s*\d+(?:\.\d+)?|202[4-9])\b", (text or "").lower())
+        norm = [re.sub(r"\s+", "", f) for f in found]
+        seen: list[str] = []
+        for t in norm:
+            if t not in seen:
+                seen.append(t)
+        return " ".join(seen[:6])
+
+    @staticmethod
+    def _chunk_documentation_text(text: str, *, max_chunk_chars: int = 3600, max_chunks: int = 5) -> list[str]:
+        """Splits fetched doc/code pages along paragraph/section boundaries without cutting mid-line or code block."""
+        lines = [ln.rstrip() for ln in (text or "").splitlines()]
+        chunks: list[str] = []
+        buf: list[str] = []
+        buf_len = 0
+        for ln in lines:
+            if buf_len + len(ln) + 1 > max_chunk_chars and buf:
+                chunk = "\n".join(buf).strip()
+                if chunk:
+                    chunks.append(chunk)
+                    if len(chunks) >= max_chunks:
+                        break
+                buf = [ln]
+                buf_len = len(ln) + 1
+            else:
+                buf.append(ln)
+                buf_len += len(ln) + 1
+        if buf and len(chunks) < max_chunks:
+            tail = "\n".join(buf).strip()
+            if tail:
+                chunks.append(tail)
+        return chunks
+
+    @staticmethod
+    def _topic_slug(topic: str) -> str:
+        s = re.sub(r"[^a-z0-9]+", "_", (topic or "").strip().lower()).strip("_")
+        return f"topic_{s[:40]}" if s else "topic_general"
+
+    def _load_library_topics_raw(self) -> dict[str, dict[str, Any]]:
         self._init_library_db()
-        target_topics = topics or [
-            "Linux systemd pipewire troubleshooting best practices",
-            "Ollama ROCm AMD GPU optimization guide",
-            "Python pytest subprocess security best practices",
-        ]
-        stored = 0
-        for q in target_topics[:3]:
+        if not self.library_topics_path.exists():
+            defaults = {}
+            now_iso = utc_now_iso()
+            for cat, top in (
+                ("programming", "Python 3.14 & pytest best practices"),
+                ("linux", "Linux systemd & PipeWire troubleshooting"),
+                ("ai_gpu", "Ollama ROCm AMD GPU optimization"),
+            ):
+                tid = self._topic_slug(top)
+                defaults[tid] = {
+                    "topic_id": tid,
+                    "topic": top,
+                    "category": cat,
+                    "added_at": now_iso,
+                    "last_harvested_at": "",
+                    "pages_fetched": 0,
+                }
+            self.library_topics_path.write_text(json.dumps(defaults, indent=2) + "\n", encoding="utf-8")
+            return defaults
+        try:
+            raw = json.loads(self.library_topics_path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_library_topics_raw(self, data: dict[str, dict[str, Any]]) -> None:
+        self._init_library_db()
+        self.library_topics_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    def list_library_topics(self) -> list[dict[str, Any]]:
+        raw = self._load_library_topics_raw()
+        self._init_library_db()
+        counts: dict[str, tuple[int, int]] = {}
+        with sqlite3.connect(self.library_db_path) as conn:
+            for tid in raw.keys():
+                row = conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(byte_size), 0) FROM library_items WHERE tags LIKE ?",
+                    (f"%{tid}%",),
+                ).fetchone()
+                counts[tid] = (int(row[0] or 0), int(row[1] or 0))
+        out: list[dict[str, Any]] = []
+        for tid in sorted(raw.keys()):
+            rec = dict(raw[tid] or {})
+            cnt, bsz = counts.get(tid, (0, 0))
+            rec["topic_id"] = tid
+            rec["items_count"] = cnt
+            rec["bytes_total"] = bsz
+            rec["kb_total"] = round(bsz / 1024.0, 1)
+            out.append(rec)
+        return out
+
+    def add_library_topic(
+        self,
+        topic: str,
+        *,
+        category: str = "programming",
+        harvest_now: bool = False,
+        config: AppConfig | None = None,
+    ) -> dict[str, Any]:
+        clean = " ".join((topic or "").split()).strip()
+        if not clean:
+            return {"ok": False, "error": "Topic cannot be empty."}
+        tid = self._topic_slug(clean)
+        with self._lock:
+            data = self._load_library_topics_raw()
+            prev = dict(data.get(tid) or {})
+            rec = {
+                "topic_id": tid,
+                "topic": clean[:140],
+                "category": (category or "programming").strip().lower()[:40],
+                "added_at": prev.get("added_at") or utc_now_iso(),
+                "last_harvested_at": prev.get("last_harvested_at") or "",
+                "pages_fetched": int(prev.get("pages_fetched", 0) or 0),
+            }
+            data[tid] = rec
+            self._save_library_topics_raw(data)
+        harvest_res = None
+        if harvest_now and config is not None:
+            harvest_res = self.harvest_library_topic(tid, config)
+        return {"ok": True, "topic": rec, **({"harvest": harvest_res} if harvest_res is not None else {})}
+
+    def remove_library_topic(self, topic_or_id: str, *, remove_items: bool = True) -> dict[str, Any]:
+        key_raw = (topic_or_id or "").strip()
+        if not key_raw:
+            return {"ok": False, "error": "Specify topic or topic_id to remove."}
+        with self._lock:
+            data = self._load_library_topics_raw()
+            tid = key_raw if key_raw in data else self._topic_slug(key_raw)
+            if tid not in data:
+                # Try case-insensitive match by topic text
+                match_id = next((k for k, v in data.items() if str(v.get("topic") or "").lower() == key_raw.lower()), "")
+                tid = match_id
+            if not tid or tid not in data:
+                return {"ok": False, "error": f"Topic '{key_raw}' not found."}
+            removed_rec = data.pop(tid)
+            self._save_library_topics_raw(data)
+
+        removed_items = 0
+        if remove_items:
+            self._init_library_db()
+            with sqlite3.connect(self.library_db_path) as conn:
+                rows = conn.execute(
+                    "SELECT item_id, file_path FROM library_items WHERE pinned = 0 AND tags LIKE ?",
+                    (f"%{tid}%",),
+                ).fetchall()
+                for iid, fpath in rows:
+                    try:
+                        Path(str(fpath)).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    conn.execute("DELETE FROM library_items WHERE item_id = ?", (iid,))
+                    conn.execute("DELETE FROM library_fts WHERE item_id = ?", (iid,))
+                    removed_items += 1
+                conn.commit()
+        return {"ok": True, "removed_topic": removed_rec.get("topic"), "topic_id": tid, "removed_items": removed_items}
+
+    def list_library_items(self, *, query: str = "", category: str = "", limit: int = 80) -> list[dict[str, Any]]:
+        self._init_library_db()
+        ql = (query or "").strip().lower()
+        cl = (category or "").strip().lower()
+        with sqlite3.connect(self.library_db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT item_id, title, category, source_type, source_url, tags, summary,
+                       byte_size, hits, quality_score, pinned, incorrect, updated_at
+                FROM library_items
+                ORDER BY pinned DESC, hits DESC, updated_at DESC
+                LIMIT ?
+                """,
+                (max(10, min(300, int(limit) * 3 if ql or cl else int(limit))),),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            iid, title, cat, stype, surl, tags, summ, bsz, hits, qsc, pinned, inc, upd = r
+            if cl and str(cat or "").lower() != cl:
+                continue
+            if ql and ql not in f"{title} {cat} {tags} {summ} {surl}".lower():
+                continue
+            out.append(
+                {
+                    "item_id": iid,
+                    "title": title,
+                    "category": cat,
+                    "source_type": stype,
+                    "source_url": surl,
+                    "tags": tags,
+                    "summary": summ,
+                    "byte_size": int(bsz or 0),
+                    "kb": round(int(bsz or 0) / 1024.0, 1),
+                    "hits": int(hits or 0),
+                    "quality_score": float(qsc or 0.0),
+                    "pinned": bool(pinned),
+                    "incorrect": bool(inc),
+                    "updated_at": str(upd or "")[:19],
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
+
+    def delete_library_item(self, item_id: str) -> dict[str, Any]:
+        self._init_library_db()
+        iid = (item_id or "").strip()
+        if not iid:
+            return {"ok": False, "error": "Specify item_id to delete."}
+        with sqlite3.connect(self.library_db_path) as conn:
+            row = conn.execute("SELECT file_path, title FROM library_items WHERE item_id = ?", (iid,)).fetchone()
+            if not row:
+                return {"ok": False, "error": f"Library item '{iid}' not found."}
+            fpath, title = row
             try:
-                hits = self._web_search_impl(q, max_results=3)
-                if not hits:
-                    continue
-                md_lines = [f"Query: {q}\n"]
-                top_url = ""
-                for h in hits:
-                    u = str(h.get("url") or "")
-                    if not top_url and u:
-                        top_url = u
-                    md_lines.append(f"- {h.get('title', 'Result')}: {h.get('snippet', '')} ({u})")
+                Path(str(fpath)).unlink(missing_ok=True)
+            except Exception:
+                pass
+            conn.execute("DELETE FROM library_items WHERE item_id = ?", (iid,))
+            conn.execute("DELETE FROM library_fts WHERE item_id = ?", (iid,))
+            conn.commit()
+        return {"ok": True, "deleted_id": iid, "title": title}
+
+    def harvest_library_topic(
+        self,
+        topic_or_id: str,
+        config: AppConfig,
+        *,
+        max_pages: int = 3,
+        searcher: Callable[[str, int], list[dict[str, str]]] | None = None,
+        fetcher: Callable[[str], str] | None = None,
+    ) -> dict[str, Any]:
+        """Researches a topic online, prioritizes official docs, fetches full pages, chunks code/docs cleanly, and indexes into FTS5."""
+        if searcher is None and not bool(getattr(config, "hermes_allow_web_search", True)):
+            return {"ok": False, "reason": "Web search is disabled in Hermes settings."}
+
+        data = self._load_library_topics_raw()
+        tid = topic_or_id if topic_or_id in data else self._topic_slug(topic_or_id)
+        if tid not in data:
+            self.add_library_topic(topic_or_id, config=config)
+            data = self._load_library_topics_raw()
+            tid = self._topic_slug(topic_or_id)
+        rec = dict(data[tid])
+        query = str(rec.get("topic") or topic_or_id)
+        category = str(rec.get("category") or "programming")
+
+        search_fn = searcher or self._web_search_impl
+        hits = search_fn(query, 6) or []
+        if not hits:
+            return {"ok": False, "topic": query, "stored_chunks": 0, "reason": "No web results returned."}
+
+        # Rank official documentation domains first
+        def _domain_rank(item: dict[str, str]) -> int:
+            u = str(item.get("url") or "").lower()
+            for idx_d, dom in enumerate(self._AUTHORITATIVE_DOC_DOMAINS):
+                if dom in u:
+                    return idx_d
+            return 999
+
+        ranked_hits = sorted(hits, key=_domain_rank)
+        stored_chunks = 0
+        pages_fetched = 0
+
+        def _default_fetch(u: str) -> str:
+            req = urllib.request.Request(
+                u,
+                headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AstraCradle-Hermes/2.5.1"},
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                raw = resp.read(240_000).decode("utf-8", errors="ignore")
+            return self._strip_html_to_text(raw) if "<html" in raw.lower() or "<body" in raw.lower() else raw
+
+        fetch_fn = fetcher or _default_fetch
+        for h in ranked_hits[:max(1, min(5, int(max_pages)))]:
+            url = str(h.get("url") or "").strip()
+            title = str(h.get("title") or query).strip()
+            snip = str(h.get("snippet") or "").strip()
+            page_txt = ""
+            if url.startswith(("http://", "https://")):
+                try:
+                    page_txt = (fetch_fn(url) or "").strip()
+                except Exception:
+                    page_txt = ""
+            if len(page_txt) < 120:
+                page_txt = f"{title}\n\n{snip}\nSource: {url}".strip()
+            else:
+                pages_fetched += 1
+
+            ver_tags = self._extract_version_tags(f"{query} {title} {page_txt[:2000]}")
+            chunks = self._chunk_documentation_text(page_txt, max_chunk_chars=3600, max_chunks=4)
+            is_auth = _domain_rank(h) < 999
+            qscore = 0.96 if is_auth else 0.85
+            for c_idx, ch in enumerate(chunks):
+                suffix = f" (Part {c_idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
+                cid = f"{tid}-{abs(hash((url or title, c_idx))) % 10**10}"
                 res = self.store_library_item(
-                    title=f"Web Reference: {q[:90]}",
-                    body="\n".join(md_lines),
-                    category="web_prefetch",
+                    title=f"{title[:130]}{suffix}",
+                    body=ch,
+                    category=category,
                     source_type="web",
-                    source_url=top_url,
-                    tags=q,
-                    summary=str(hits[0].get("snippet") or q)[:280],
+                    source_url=url,
+                    tags=f"{tid} {query} {ver_tags}".strip(),
+                    summary=(snip or ch.splitlines()[0])[:280],
+                    item_id=cid,
+                    quality_score=qscore,
                     config=config,
                 )
                 if res.get("ok"):
-                    stored += 1
+                    stored_chunks += 1
+
+        with self._lock:
+            d2 = self._load_library_topics_raw()
+            if tid in d2:
+                d2[tid]["last_harvested_at"] = utc_now_iso()
+                d2[tid]["pages_fetched"] = int(d2[tid].get("pages_fetched", 0) or 0) + pages_fetched
+                self._save_library_topics_raw(d2)
+
+        return {
+            "ok": stored_chunks > 0,
+            "topic_id": tid,
+            "topic": query,
+            "pages_fetched": pages_fetched,
+            "stored_chunks": stored_chunks,
+        }
+
+    def prefetch_library_topics(self, config: AppConfig, topics: list[str] | None = None) -> dict[str, Any]:
+        """Harvests all subscribed topics (or explicit topic list) with full-page doc chunking into the Knowledge Library."""
+        if not bool(getattr(config, "hermes_allow_web_search", True)):
+            return {"ok": False, "reason": "Web search disabled"}
+        self._init_library_db()
+        if topics:
+            targets = [t for t in topics if str(t).strip()]
+        else:
+            targets = [t["topic_id"] for t in self.list_library_topics()]
+        stored_total = 0
+        pages_total = 0
+        for tgt in targets[:8]:
+            try:
+                hr = self.harvest_library_topic(tgt, config, max_pages=2)
+                stored_total += int(hr.get("stored_chunks", 0) or 0)
+                pages_total += int(hr.get("pages_fetched", 0) or 0)
             except Exception:
                 continue
-        return {"ok": True, "stored": stored}
+        return {"ok": True, "stored": stored_total, "pages_fetched": pages_total, "topics_processed": len(targets[:8])}
 
     def get_library_stats(self, config: AppConfig | None = None) -> dict[str, Any]:
         self._init_library_db()
         max_bytes = self.get_library_max_bytes(config)
         max_gb = int(round(max_bytes / (1024**3)))
+        cats: dict[str, dict[str, int]] = {}
         with sqlite3.connect(self.library_db_path) as conn:
             row = conn.execute(
                 """
@@ -1321,19 +2128,91 @@ class HermesAgentManager:
                 FROM library_items
                 """
             ).fetchone()
+            for crow in conn.execute(
+                "SELECT category, COUNT(*), COALESCE(SUM(byte_size), 0) FROM library_items GROUP BY category"
+            ).fetchall():
+                cats[str(crow[0] or "general")] = {"count": int(crow[1] or 0), "bytes": int(crow[2] or 0)}
         total_items, builtin_items, web_items, total_bytes = (int(row[0] or 0), int(row[1] or 0), int(row[2] or 0), int(row[3] or 0))
+        rem_bytes = max(0, max_bytes - total_bytes)
         skills_cnt = len(self.list_skills())
+        topics_cnt = len(self._load_library_topics_raw())
         return {
             "ok": True,
             "total_items": total_items,
             "builtin_items": builtin_items,
             "web_items": web_items,
             "skills_count": skills_cnt,
+            "topics_count": topics_cnt,
             "total_bytes": total_bytes,
             "total_mb": round(total_bytes / (1024 * 1024), 2),
+            "remaining_bytes": rem_bytes,
+            "remaining_mb": round(rem_bytes / (1024 * 1024), 2),
+            "remaining_gb": round(rem_bytes / (1024**3), 3),
+            "max_bytes": max_bytes,
             "max_gb": max_gb,
             "usage_pct": round((total_bytes / max(1, max_bytes)) * 100.0, 4),
+            "categories": cats,
             "library_dir": str(self.library_dir),
+        }
+
+    def build_internal_memory_manifest(self) -> dict[str, Any]:
+        """Builds a compact map of all topics, categories, skills, SOPs, and custom tools Hermes already holds internally."""
+        topics = [str(t.get("topic") or "") for t in self.list_library_topics() if t.get("topic")]
+        skills = [s["slug"] for s in self.list_skills()]
+        sops = [s["template_id"] for s in self.list_sop_templates()]
+        custom_tools = [c["name"] for c in self.list_custom_tools(include_disabled=False)]
+        self._init_library_db()
+        cats: list[str] = []
+        item_titles: list[str] = []
+        try:
+            with sqlite3.connect(self.library_db_path) as conn:
+                cats = [str(r[0]) for r in conn.execute("SELECT DISTINCT category FROM library_items").fetchall() if r[0]]
+                item_titles = [
+                    str(r[0])
+                    for r in conn.execute("SELECT title FROM library_items ORDER BY pinned DESC, hits DESC, updated_at DESC LIMIT 20").fetchall()
+                    if r[0]
+                ]
+        except Exception:
+            pass
+        return {
+            "topics": topics,
+            "categories": cats,
+            "sample_titles": item_titles,
+            "skills_count": len(skills),
+            "sops_count": len(sops),
+            "custom_tools": custom_tools,
+        }
+
+    def deep_internal_recall(self, query: str, *, limit: int = 4) -> dict[str, Any]:
+        """Searches ALL internal files (Knowledge Library FTS5, MEMORY.md, USER.md, Skills, Sessions, SOPs) BEFORE web search."""
+        q = (query or "").strip()
+        if not q:
+            return {"ok": True, "has_strong_match": False, "library_hits": [], "memory_hits": [], "sop_hits": []}
+        lib_hits = self.search_library(q, limit=max(1, limit))
+        mem_hits = self.search_memory_fts(q, limit=max(1, limit))
+        sop_hits = self.match_sop_templates(q, limit=2)
+        q_tokens = [w for w in re.findall(r"[a-z0-9_]+", q.lower()) if len(w) >= 3]
+        needed_overlap = min(2, max(1, len(q_tokens)))
+        strong_lib = False
+        for h in lib_hits:
+            blob = f"{h.get('title', '')} {h.get('summary', '')} {h.get('tags', '')}".lower()
+            overlap = sum(1 for tok in q_tokens if tok in blob)
+            if overlap >= needed_overlap and (float(h.get("quality_score", 0.0) or 0.0) >= 0.8 or len(lib_hits) >= 2):
+                strong_lib = True
+                break
+        strong_mem = False
+        if len(mem_hits) >= 2:
+            combined_mem = " ".join(f"{m.get('ref', '')} {m.get('snippet', '')}" for m in mem_hits).lower()
+            if sum(1 for tok in q_tokens if tok in combined_mem) >= needed_overlap:
+                strong_mem = True
+        strong = strong_lib or strong_mem
+        return {
+            "ok": True,
+            "query": q,
+            "has_strong_match": strong,
+            "library_hits": lib_hits,
+            "memory_hits": mem_hits,
+            "sop_hits": [{"template_id": s["template_id"], "title": s["title"]} for s in sop_hits],
         }
 
     # ------------------------------------------------------------------
@@ -1783,6 +2662,566 @@ class HermesAgentManager:
                 reg2[tname]["last_run_at"] = utc_now_iso()
                 self._save_custom_tools_registry(reg2)
         return payload_out
+
+    # ------------------------------------------------------------------
+    # Standard Operating Book & Composable Template Library
+    # ------------------------------------------------------------------
+    def _load_learned_sop_templates(self) -> dict[str, dict[str, Any]]:
+        if not self.sop_templates_path.exists():
+            return {}
+        try:
+            raw = json.loads(self.sop_templates_path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_learned_sop_templates(self, data: dict[str, dict[str, Any]]) -> None:
+        self.hermes_home.mkdir(parents=True, exist_ok=True)
+        self.sop_templates_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    def list_sop_templates(self, category: str = "") -> list[dict[str, Any]]:
+        by_id: dict[str, dict[str, Any]] = {}
+        for sop in SOP_TEMPLATE_LIBRARY:
+            rec = dict(sop)
+            rec["source"] = "builtin"
+            by_id[rec["template_id"]] = rec
+        for tid, rec in self._load_learned_sop_templates().items():
+            if isinstance(rec, dict):
+                merged = dict(rec)
+                merged["template_id"] = tid
+                merged.setdefault("source", "learned")
+                by_id[tid] = merged
+        items = list(by_id.values())
+        if category.strip():
+            cat_l = category.strip().lower()
+            items = [i for i in items if str(i.get("category") or "").lower() == cat_l]
+        return items
+
+    def get_sop_template(self, template_id: str) -> dict[str, Any] | None:
+        tid = (template_id or "").strip().lower()
+        for item in self.list_sop_templates():
+            if str(item.get("template_id") or "").lower() == tid:
+                return item
+        return None
+
+    def match_sop_templates(self, query: str, limit: int = 3) -> list[dict[str, Any]]:
+        """Instant keyword + FTS5 scoring across built-in and learned Standard Operating Book templates."""
+        low = (query or "").strip().lower()
+        if not low:
+            return self.list_sop_templates()[:max(1, limit)]
+        tokens = set(re.findall(r"[a-z0-9_#+-]+", low))
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for sop in self.list_sop_templates():
+            score = 0.0
+            kws = [str(k).lower() for k in (sop.get("keywords") or [])]
+            for kw in kws:
+                if kw in low:
+                    score += 3.0 if " " in kw or "_" in kw or kw.startswith("#") else 2.0
+            title_words = set(re.findall(r"[a-z0-9_]+", str(sop.get("title") or "").lower()))
+            score += 1.0 * len(tokens & title_words)
+            if sop.get("source") == "learned":
+                score += 0.3 * min(5, int(sop.get("successes", 0) or 0))
+            if score > 0:
+                scored.append((score, sop))
+        scored.sort(key=lambda kv: kv[0], reverse=True)
+        return [s for _sc, s in scored[:max(1, limit)]]
+
+    def compose_sop_templates(self, template_ids: list[str], title: str = "") -> dict[str, Any]:
+        """Combines 2+ SOP templates into a single unified operating playbook + deduplicated tool pipeline."""
+        chosen: list[dict[str, Any]] = []
+        for raw_id in (template_ids or []):
+            t = self.get_sop_template(str(raw_id))
+            if t is not None:
+                chosen.append(t)
+        if not chosen:
+            return {"ok": False, "error": "No matching SOP template IDs found."}
+
+        seen_rules: set[str] = set()
+        rules: list[str] = []
+        seen_steps: set[str] = set()
+        pipeline: list[dict[str, Any]] = []
+        template_blocks: list[str] = []
+        for c in chosen:
+            for r in (c.get("decision_rules") or []):
+                if r not in seen_rules:
+                    seen_rules.add(r)
+                    rules.append(r)
+            for st in (c.get("tool_pipeline") or []):
+                sig = f"{st.get('tool')}::{json.dumps(st.get('args') or {}, sort_keys=True)}"
+                if sig not in seen_steps:
+                    seen_steps.add(sig)
+                    pipeline.append(dict(st))
+            template_blocks.append(f"[{c['title']}]\n{c.get('output_template', '')}")
+
+        comp_id = "sop_composed_" + "_".join(c["template_id"].replace("sop_", "")[:10] for c in chosen[:3])
+        return {
+            "ok": True,
+            "composed": {
+                "template_id": comp_id[:52],
+                "title": title.strip() or (" + ".join(c["title"] for c in chosen[:3])),
+                "source_templates": [c["template_id"] for c in chosen],
+                "decision_rules": rules,
+                "tool_pipeline": pipeline,
+                "output_template": "\n\n".join(template_blocks),
+            },
+        }
+
+    def instantiate_sop_as_custom_tool(
+        self,
+        template_ids: list[str],
+        tool_name: str = "",
+        config: AppConfig | None = None,
+    ) -> dict[str, Any]:
+        """Materializes one or more SOP templates into an immediately runnable `custom_sop_*` tool."""
+        comp_res = self.compose_sop_templates(template_ids)
+        if not comp_res.get("ok"):
+            return comp_res
+        comp = comp_res["composed"]
+        tname = tool_name.strip() or comp["template_id"]
+        steps = [
+            {"tool": st["tool"], "args": dict(st.get("args") or {}), "continue_on_error": True}
+            for st in comp["tool_pipeline"]
+        ]
+        return self.create_composite_custom_tool(
+            name=tname,
+            description=f"SOP Playbook Tool: {comp['title']}"[:240],
+            steps=steps,
+            auto_learned=False,
+            config=config,
+        )
+
+    def save_learned_sop_template(
+        self,
+        *,
+        template_id: str,
+        title: str,
+        category: str,
+        keywords: list[str],
+        decision_rules: list[str],
+        tool_pipeline: list[dict[str, Any]],
+        output_template: str,
+        config: AppConfig | None = None,
+    ) -> dict[str, Any]:
+        slug = re.sub(r"[^a-z0-9_]+", "_", (template_id or title or "learned_sop").strip().lower()).strip("_")
+        if not slug.startswith("sop_"):
+            slug = f"sop_{slug}"
+        slug = slug[:52]
+        with self._lock:
+            data = self._load_learned_sop_templates()
+            prev = dict(data.get(slug) or {})
+            rec = {
+                "template_id": slug,
+                "title": (title or slug).strip()[:140],
+                "category": (category or "learned").strip().lower(),
+                "keywords": [str(k).strip().lower() for k in (keywords or []) if str(k).strip()][:12],
+                "decision_rules": [str(r).strip() for r in (decision_rules or []) if str(r).strip()][:8],
+                "tool_pipeline": [
+                    {"tool": str(s.get("tool")), "args": dict(s.get("args") or {})}
+                    for s in (tool_pipeline or [])
+                    if isinstance(s, dict) and s.get("tool")
+                ][:8],
+                "output_template": (output_template or "").strip()[:1400],
+                "source": "learned",
+                "uses": int(prev.get("uses", 0) or 0) + 1,
+                "successes": int(prev.get("successes", 0) or 0) + 1,
+                "updated_at": utc_now_iso(),
+            }
+            data[slug] = rec
+            self._save_learned_sop_templates(data)
+        try:
+            self.store_library_item(
+                title=f"Learned SOP: {rec['title']}",
+                body=(
+                    f"# {rec['title']}\n"
+                    "## Decision Rules\n" + "\n".join(f"- {r}" for r in rec["decision_rules"]) + "\n\n"
+                    f"## Output Template\n{rec['output_template']}\n"
+                ),
+                category="sop_template",
+                source_type="learned",
+                tags=" ".join(rec["keywords"]) + f" sop template {rec['category']}",
+                summary="; ".join(rec["decision_rules"][:2]) or rec["title"],
+                item_id=f"sop-{slug}",
+                config=config,
+            )
+        except Exception:
+            pass
+        return {"ok": True, "template": rec}
+
+    def verify_work(
+        self,
+        *,
+        action: str = "audit_draft",
+        query: str = "",
+        draft_text: str = "",
+        session_id: str = "default",
+        config: AppConfig | None = None,
+    ) -> dict[str, Any]:
+        """Self-checks Hermes outputs: audits git/file/CLI claims, cross-checks claims via web search, or exports an Arena verification packet."""
+        act = (action or "audit_draft").strip().lower()
+        repo = self.get_local_source_root()
+
+        if act == "verify_with_web":
+            q = (query or draft_text or "").strip()
+            if not q:
+                return {"ok": False, "error": "Provide a `query` or claim to verify against web search and the local library."}
+            lib_hits = self.search_library(q, limit=3)
+            web_hits: list[dict[str, str]] = []
+            web_err = ""
+            if config is None or bool(getattr(config, "hermes_allow_web_search", True)):
+                try:
+                    web_hits = self.web_search(q, max_results=4)
+                except Exception as exc:
+                    web_err = str(exc)
+            else:
+                web_err = "Web search is disabled in Hermes settings."
+            return {
+                "ok": bool(lib_hits or web_hits),
+                "query": q,
+                "local_library_hits": lib_hits,
+                "web_search_hits": web_hits,
+                "web_note": web_err,
+                "verification_guidance": (
+                    "Compare your draft against web_search_hits & local_library_hits. "
+                    "If a local library item contradicts verified documentation, flag it via `astra_knowledge_library(action='mark_incorrect')`."
+                ),
+            }
+
+        if act == "export_for_arena":
+            msgs = self.get_session_messages(session_id, limit=6)
+            last_user = next((m["content"] for m in reversed(msgs) if m.get("role") == "user"), "")
+            last_ai = next((m["content"] for m in reversed(msgs) if m.get("role") == "assistant"), draft_text)
+            git_note = ""
+            try:
+                if (repo / ".git").exists():
+                    pr = subprocess.run(["git", "status", "-sb"], cwd=str(repo), capture_output=True, text=True, timeout=6, creationflags=_WIN_NO_WINDOW)
+                    git_note = (pr.stdout or "")[:800].strip()
+            except Exception:
+                pass
+            ui_tail = ""
+            try:
+                lp = self.cfg_mgr.base_dir / "ui_events.log"
+                if lp.exists():
+                    ui_tail = "\n".join(lp.read_text(encoding="utf-8", errors="ignore").splitlines()[-15:])
+            except Exception:
+                pass
+            packet = (
+                "=== AstraCradle Hermes Verification Packet ===\n"
+                f"Prompt: {last_user[:500]}\n\n"
+                f"Hermes Reply:\n{last_ai[:2200]}\n\n"
+                f"Local Git Status ({repo}):\n{git_note or 'n/a'}\n\n"
+                f"Recent UI Events:\n{ui_tail or 'none'}\n"
+                "Please double-check Hermes's reasoning, commands, and safety."
+            )
+            ok_c, msg_c = self.clipboard_write(packet)
+            return {"ok": True, "copied_to_clipboard": ok_c, "clipboard_note": msg_c, "packet": packet}
+
+        # Default: audit_draft
+        warnings: list[str] = []
+        txt_l = (draft_text or "").lower()
+        if (repo / ".git").exists():
+            rebase_active = (repo / ".git" / "REBASE_HEAD").exists() or (repo / ".git" / "rebase-merge").exists() or (repo / ".git" / "rebase-apply").exists()
+            try:
+                pr = subprocess.run(["git", "status", "-sb"], cwd=str(repo), capture_output=True, text=True, timeout=6, creationflags=_WIN_NO_WINDOW)
+                st_out = pr.stdout or ""
+                unmerged = [ln[3:].strip() for ln in st_out.splitlines() if len(ln) >= 3 and ln[:2] in ("UU", "AA", "DD", "AU", "UA", "DU", "UD")]
+            except Exception:
+                st_out, unmerged = "", []
+            if (rebase_active or unmerged) and ("git commit" in txt_l or "git add ." in txt_l):
+                warnings.append(
+                    "DANGER: Repo has an active rebase or unmerged conflict files! Do NOT advise `git add .` / `git commit` on detached HEAD—advise `git rebase --abort` OR `git checkout --theirs .` + `compileall` + `git rebase --continue`."
+                )
+
+        if re.search(r"\bastra_[a-z_]+\s+--[a-z_]+", txt_l):
+            warnings.append("Draft suggests fake bash CLI flags for an internal `astra_*` AI function tool.")
+
+        for m_py in re.findall(r"\b(astracradle/[A-Za-z0-9_./-]+\.py)\b", draft_text or ""):
+            if not (repo / m_py).exists():
+                warnings.append(f"Cited file path does not exist locally: {m_py}")
+
+        return {
+            "ok": len(warnings) == 0,
+            "verified": len(warnings) == 0,
+            "warnings": warnings,
+            "repo": str(repo),
+        }
+
+    # ------------------------------------------------------------------
+    # Full OS Auto-Fix (Standard OS Checks + Web Cross-Check + Stronger AI Escalation)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _detect_os_profile() -> dict[str, str]:
+        sys_name = platform.system()
+        distro = sys_name
+        distro_id = sys_name.lower()
+        if sys_name == "Linux":
+            os_rel = Path("/etc/os-release")
+            if os_rel.exists():
+                kv: dict[str, str] = {}
+                for ln in os_rel.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if "=" in ln and not ln.strip().startswith("#"):
+                        k, v = ln.split("=", 1)
+                        kv[k.strip()] = v.strip().strip('"')
+                distro = kv.get("PRETTY_NAME") or kv.get("NAME") or "Linux"
+                distro_id = (kv.get("ID") or "linux").lower()
+        elif sys_name == "Windows":
+            distro = f"Windows {platform.release()} ({platform.version()})"
+        elif sys_name == "Darwin":
+            distro = f"macOS {platform.mac_ver()[0] or platform.release()}"
+        return {
+            "system": sys_name,
+            "distro": distro,
+            "distro_id": distro_id,
+            "kernel": platform.release(),
+            "arch": platform.machine(),
+            "desktop": os.environ.get("XDG_CURRENT_DESKTOP", ""),
+            "session_type": os.environ.get("XDG_SESSION_TYPE", ""),
+        }
+
+    def run_full_os_autofix(
+        self,
+        config: AppConfig,
+        *,
+        apply_safe_fixes: bool = True,
+        web_crosscheck: bool = True,
+        escalate_stronger_ai: bool = True,
+        copy_escalation_packet: bool = True,
+        searcher: Callable[[str, int], list[dict[str, str]]] | None = None,
+        escalate_llm_caller: Callable[..., tuple[str, list[dict[str, Any]]]] | None = None,
+    ) -> dict[str, Any]:
+        """Runs a standard OS-specific diagnostic & safe fix suite, detects custom features,
+        cross-checks anomalies via internal memory + live web search, and escalates to a stronger AI model."""
+        self.ensure_hermes_home(config)
+        os_prof = self._detect_os_profile()
+        sys_name = os_prof["system"]
+        perm = self._effective_permission_level(config)
+
+        checks: list[dict[str, Any]] = []
+        anomalies: list[str] = []
+        custom_features: list[str] = []
+        fixes_applied: list[str] = []
+
+        def _add_check(cid: str, label: str, ok: bool, detail: str, *, anomaly: str = "") -> None:
+            checks.append({"id": cid, "label": label, "ok": ok, "detail": detail[:280]})
+            if not ok and anomaly:
+                anomalies.append(anomaly)
+
+        # 1. Standard OS-specific health checks
+        if sys_name == "Linux":
+            # a) Systemd failed units
+            if shutil.which("systemctl"):
+                try:
+                    pr = subprocess.run(
+                        ["systemctl", "--failed", "--no-legend", "--plain"],
+                        capture_output=True, text=True, timeout=6, creationflags=_WIN_NO_WINDOW,
+                    )
+                    failed_lines = [ln.strip() for ln in (pr.stdout or "").splitlines() if ln.strip()]
+                    if failed_lines:
+                        _add_check("systemd_failed", "Systemd Failed Units", False, "; ".join(failed_lines[:5]),
+                                   anomaly=f"{os_prof['distro']} systemd failed units: {', '.join(ln.split()[0] for ln in failed_lines[:3])}")
+                    else:
+                        _add_check("systemd_failed", "Systemd Failed Units", True, "0 failed system units")
+                except Exception as exc:
+                    _add_check("systemd_failed", "Systemd Failed Units", True, f"Skipped ({exc})")
+
+            # b) PipeWire / Audio session health
+            if shutil.which("systemctl"):
+                try:
+                    pw = subprocess.run(
+                        ["systemctl", "--user", "is-active", "pipewire", "wireplumber"],
+                        capture_output=True, text=True, timeout=5, creationflags=_WIN_NO_WINDOW,
+                    )
+                    states = [ln.strip() for ln in (pw.stdout or "").splitlines() if ln.strip()]
+                    pw_ok = pw.returncode == 0 or ("active" in states)
+                    _add_check("audio_pipewire", "PipeWire / WirePlumber Audio", pw_ok, ", ".join(states) or "inactive",
+                               anomaly="" if pw_ok else f"{os_prof['distro']} PipeWire audio service inactive")
+                except Exception:
+                    pass
+
+            # c) Package manager health & stale lockfiles (read-only audit)
+            if shutil.which("pacman"):
+                lock_p = Path("/var/lib/pacman/db.lck")
+                if lock_p.exists():
+                    _add_check("pkg_db", "Pacman Package DB", False, "db.lck lockfile present",
+                               anomaly=f"{os_prof['distro']} pacman db.lck stale lockfile")
+                else:
+                    _add_check("pkg_db", "Pacman Package DB", True, "No pacman lockfile; DB unlocked")
+            elif shutil.which("dpkg"):
+                try:
+                    dp = subprocess.run(["dpkg", "--audit"], capture_output=True, text=True, timeout=8, creationflags=_WIN_NO_WINDOW)
+                    dp_out = (dp.stdout or "").strip()
+                    _add_check("pkg_db", "DPKG Package Audit", not dp_out, dp_out or "Clean package state",
+                               anomaly="" if not dp_out else f"{os_prof['distro']} dpkg audit issues")
+                except Exception:
+                    pass
+
+            # d) Journal size & custom kernel/scheduler/GPU features
+            if shutil.which("journalctl"):
+                try:
+                    jr = subprocess.run(["journalctl", "--disk-usage"], capture_output=True, text=True, timeout=6, creationflags=_WIN_NO_WINDOW)
+                    jtxt = (jr.stdout or "").strip()
+                    _add_check("journal_disk", "Systemd Journal Disk Usage", True, jtxt or "OK")
+                except Exception:
+                    pass
+
+            # Detect custom CachyOS / Linux kernel schedulers (scx_*), ROCm/NVIDIA, Wayland, Wine/Proton
+            try:
+                ps_out = subprocess.run(["ps", "-eo", "comm"], capture_output=True, text=True, timeout=5).stdout or ""
+                procs_low = ps_out.lower()
+                for feat in ("scx_lavd", "scx_bpfland", "scx_rusty", "llama-server", "ollama", "pipewire", "gamescope"):
+                    if feat in procs_low:
+                        custom_features.append(feat)
+                if os_prof["session_type"]:
+                    custom_features.append(f"session:{os_prof['session_type']}")
+                if "cachyos" in os_prof["distro_id"] or "cachyos" in os_prof["kernel"].lower():
+                    custom_features.append("cachyos-kernel")
+            except Exception:
+                pass
+
+        elif sys_name == "Windows":
+            _add_check("win_platform", "Windows OS Health", True, os_prof["distro"])
+            custom_features.append("windows-nt")
+        else:
+            _add_check("mac_platform", "macOS Health", True, os_prof["distro"])
+            custom_features.append("darwin")
+
+        # 2. Cross-platform diagnostics scan + safe cache/quarantine/RAM fixes
+        if self.diagnostics is not None:
+            try:
+                snap = self.diagnostics.scan()
+                items = list(getattr(snap, "items", []) or [])
+                crit = [it for it in items if str(getattr(it, "severity", "")).lower() in ("warning", "critical", "high")]
+                _add_check(
+                    "astra_diag_scan",
+                    "AstraCradle Diagnostics Scan",
+                    len(crit) == 0,
+                    f"{len(items)} item(s) scanned, {len(crit)} warning/critical",
+                    anomaly=(f"{os_prof['distro']} diagnostics warning: {getattr(crit[0], 'title', '')}" if crit else ""),
+                )
+            except Exception as exc:
+                _add_check("astra_diag_scan", "AstraCradle Diagnostics Scan", False, str(exc))
+
+        if self.ram_standby_mgr is not None:
+            try:
+                ram_r = self.ram_standby_mgr.detect_pressure_or_idle_llms()
+                llm_list = list(ram_r.get("idle_llms") or [])
+                if llm_list:
+                    custom_features.append("local-llm-runtime")
+                    _add_check("ram_llm_guard", "RAM & Local LLM Headroom", True, f"Detected {len(llm_list)} active/idle LLM process(es); game-safe protections honored")
+            except Exception:
+                pass
+
+        if apply_safe_fixes and perm != "read_only" and self.safe_fixer is not None:
+            try:
+                fix_rep = self.safe_fixer.run_safe_fixes(dry_run=False)
+                for act in list(getattr(fix_rep, "actions", []) or []):
+                    fixes_applied.append(f"{getattr(act, 'title', 'Safe Fix')}: {getattr(act, 'detail', 'applied')}")
+                if not fixes_applied:
+                    fixes_applied.append("Safe cache/quarantine sweep ran cleanly (no stale junk needed removal)")
+            except Exception as exc:
+                fixes_applied.append(f"Safe fixer error: {exc}")
+        elif not apply_safe_fixes or perm == "read_only":
+            fixes_applied.append("Dry-run/Read-Only: skipped mutating safe fixes")
+
+        # 3. Internal-first + Web Search Cross-Check for anomalies & custom OS features
+        web_findings: list[dict[str, Any]] = []
+        internal_findings: list[dict[str, Any]] = []
+        queries: list[str] = []
+        for anom in anomalies[:2]:
+            queries.append(anom)
+        if not queries and custom_features:
+            queries.append(f"{os_prof['distro']} {' '.join(custom_features[:3])} optimization troubleshooting")
+        elif custom_features:
+            queries.append(f"{os_prof['distro']} {custom_features[0]} best practices")
+
+        for q in queries[:3]:
+            recall = self.deep_internal_recall(q, limit=2)
+            if recall.get("library_hits"):
+                internal_findings.extend(
+                    {"query": q, "title": h["title"], "source_url": h.get("source_url", ""), "summary": h.get("summary", "")[:220]}
+                    for h in recall["library_hits"][:2]
+                )
+            if web_crosscheck and bool(getattr(config, "hermes_allow_web_search", True)):
+                try:
+                    search_fn = searcher or self._web_search_impl
+                    whits = search_fn(q, 3) or []
+                    for h in whits[:3]:
+                        web_findings.append({
+                            "query": q,
+                            "title": str(h.get("title") or ""),
+                            "url": str(h.get("url") or ""),
+                            "snippet": str(h.get("snippet") or "")[:220],
+                        })
+                except Exception:
+                    pass
+
+        # 4. Stronger AI Escalation (in-app cloud/heavy model if available + Arena clipboard packet)
+        escalation_summary = ""
+        escalated_model = ""
+        escalation_prompt = (
+            f"AstraCradle Full OS Auto-Fix Escalation ({os_prof['distro']}, kernel {os_prof['kernel']}, arch {os_prof['arch']})\n"
+            f"Desktop/Session: {os_prof['desktop']} / {os_prof['session_type']}\n"
+            f"Custom Features Detected: {', '.join(custom_features) or 'standard'}\n"
+            f"Standard Checks:\n" + "\n".join(f"- [{'OK' if c['ok'] else 'WARN'}] {c['label']}: {c['detail']}" for c in checks) + "\n"
+            f"Safe Fixes Already Applied:\n" + "\n".join(f"- {fx}" for fx in fixes_applied) + "\n"
+            f"Anomalies Needing Review: {', '.join(anomalies) or 'None critical'}\n"
+            f"Web Cross-Check Notes:\n" + ("\n".join(f"- {w['title']} ({w['url']}): {w['snippet']}" for w in web_findings[:4]) or "- None") + "\n\n"
+            "Please review these OS findings, custom features, and web references and give exact safe next commands or tweaks if anything else is needed."
+        )
+
+        if escalate_stronger_ai:
+            spec = self.resolve_provider_spec(config)
+            env_map = self.load_env()
+            api_key = env_map.get(spec["env_var"]) or os.environ.get(spec["env_var"], "")
+            target_spec = dict(spec)
+            can_escalate_in_app = False
+            if escalate_llm_caller is not None:
+                can_escalate_in_app = True
+            elif spec["requires_key"] and api_key:
+                can_escalate_in_app = True
+            elif spec["provider"] == "ollama":
+                # Pick heaviest pulled local model (e.g. 35B/30B/14B) if Ollama is alive
+                ok_o, pulled = self.find_all_local_ollama_models()
+                if ok_o and pulled:
+                    best_heavy = next(
+                        (m for m in pulled if any(sz in m.lower() for sz in ("35b", "32b", "30b", "27b", "14b", "12b"))),
+                        spec["model"],
+                    )
+                    target_spec["model"] = best_heavy
+                    target_spec["think_mode"] = False
+                    can_escalate_in_app = True
+
+            if can_escalate_in_app:
+                try:
+                    caller = escalate_llm_caller or (lambda msgs, tls, sp, key: self._call_llm(msgs, tls, sp, key))
+                    e_msgs = [
+                        {"role": "system", "content": "You are a senior OS reliability engineer. Give concise, safe, OS-specific remediation steps grounded only in the telemetry below."},
+                        {"role": "user", "content": escalation_prompt},
+                    ]
+                    rep_txt, _ = caller(e_msgs, [], target_spec, api_key)
+                    escalation_summary = (rep_txt or "").strip()[:1800]
+                    escalated_model = str(target_spec.get("model") or "")
+                except Exception as exc:
+                    escalation_summary = f"In-app escalation skipped ({exc})"
+
+        copied_pkt = False
+        if copy_escalation_packet:
+            ok_cp, _ = self.clipboard_write(escalation_prompt)
+            copied_pkt = ok_cp
+
+        return {
+            "ok": True,
+            "os_profile": os_prof,
+            "checks": checks,
+            "anomalies": anomalies,
+            "custom_features": custom_features,
+            "fixes_applied": fixes_applied,
+            "internal_findings": internal_findings,
+            "web_findings": web_findings,
+            "escalated_model": escalated_model,
+            "escalation_summary": escalation_summary,
+            "escalation_packet": escalation_prompt,
+            "copied_to_clipboard": copied_pkt,
+        }
 
     def _init_sessions_db(self) -> None:
         self.hermes_home.mkdir(parents=True, exist_ok=True)
@@ -2596,6 +4035,92 @@ class HermesAgentManager:
         return ran
 
     # ------------------------------------------------------------------
+    # Persistent Subagent Profiles & Task Delegation
+    # ------------------------------------------------------------------
+    def list_subagents(self) -> list[dict[str, Any]]:
+        if not self.subagents_path.exists():
+            return []
+        try:
+            raw = json.loads(self.subagents_path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, list) else []
+        except Exception:
+            return []
+
+    def create_subagent(
+        self,
+        name: str,
+        role_instructions: str,
+        *,
+        default_task: str = "",
+        max_turns: int = 4,
+    ) -> dict[str, Any]:
+        self.ensure_hermes_home()
+        items = self.list_subagents()
+        slug = re.sub(r"[^a-z0-9_-]+", "_", (name or "worker").strip().lower()).strip("_") or "worker"
+        rec = {
+            "subagent_id": f"sub_{slug}_{int(time.time())}",
+            "name": (name or "Worker Subagent").strip()[:80],
+            "role_instructions": (role_instructions or "Focus concisely on the delegated subtask and return verified results.").strip()[:800],
+            "default_task": (default_task or "").strip()[:500],
+            "max_turns": max(1, min(8, int(max_turns or 4))),
+            "runs": 0,
+            "last_summary": "",
+            "last_run_at": "",
+        }
+        items = [x for x in items if str(x.get("name", "")).lower() != rec["name"].lower()]
+        items.append(rec)
+        self.subagents_path.write_text(json.dumps(items, indent=2), encoding="utf-8")
+        return {"ok": True, "subagent": rec}
+
+    def delete_subagent(self, subagent_id_or_name: str) -> dict[str, Any]:
+        key = (subagent_id_or_name or "").strip().lower()
+        items = self.list_subagents()
+        kept = [x for x in items if str(x.get("subagent_id", "")).lower() != key and str(x.get("name", "")).lower() != key]
+        self.subagents_path.write_text(json.dumps(kept, indent=2), encoding="utf-8")
+        return {"ok": len(kept) < len(items), "remaining": len(kept)}
+
+    def run_subagent(
+        self,
+        task: str,
+        config: AppConfig,
+        *,
+        subagent_id_or_name: str = "",
+        role_instructions: str = "",
+        max_turns: int = 4,
+        llm_caller: Callable[..., tuple[str, list[dict[str, Any]]]] | None = None,
+    ) -> dict[str, Any]:
+        self.ensure_hermes_home(config)
+        items = self.list_subagents()
+        key = (subagent_id_or_name or "").strip().lower()
+        matched = next((x for x in items if key and (str(x.get("subagent_id", "")).lower() == key or str(x.get("name", "")).lower() == key)), None)
+        eff_role = role_instructions or (matched.get("role_instructions", "") if matched else "")
+        eff_task = (task or (matched.get("default_task", "") if matched else "")).strip()
+        if not eff_task:
+            return {"ok": False, "error": "Subagent task cannot be empty."}
+        turns = int((matched or {}).get("max_turns") or max_turns or 4)
+        full_prompt = f"[Subagent Role: {eff_role}]\nTask: {eff_task}" if eff_role else eff_task
+        res = self.run_prompt(
+            full_prompt,
+            config,
+            session_id=f"subagent_{int(time.time())}",
+            allow_subagent=False,
+            max_turns=max(1, min(8, turns)),
+            llm_caller=llm_caller,
+        )
+        if matched is not None:
+            matched["runs"] = int(matched.get("runs", 0) or 0) + 1
+            matched["last_summary"] = (res.reply or res.error)[:400]
+            matched["last_run_at"] = utc_now_iso()
+            self.subagents_path.write_text(json.dumps(items, indent=2), encoding="utf-8")
+        return {
+            "ok": res.ok,
+            "subagent": (matched.get("name") if matched else "ad-hoc"),
+            "summary": res.reply[:2000],
+            "tools": len(res.tool_events),
+            "error": res.error,
+        }
+
+    # ------------------------------------------------------------------
     # Game Learning & Live GPU / ~1 GB VRAM Headroom Throttling
     # ------------------------------------------------------------------
     def _load_learned_games(self) -> dict[str, dict[str, Any]]:
@@ -3321,14 +4846,29 @@ class HermesAgentManager:
                 "type": "function",
                 "function": {
                     "name": "web_search",
-                    "description": "Search the live web for improvements, Linux/CachyOS fixes, Python docs, or AstraCradle feature ideas.",
+                    "description": "Search the live web ONLY after checking internal Knowledge Library/files (`deep_recall`), or when fresh online updates are needed. Checks internal library first automatically unless force_web=true.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "query": {"type": "string"},
                             "max_results": {"type": "integer"},
+                            "force_web": {"type": "boolean", "description": "Set true only if internal knowledge was insufficient or live internet info is required."},
                         },
                         "required": ["query"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_inspect_media",
+                    "description": "Inspect any local picture, video (extracts keyframe images + duration/codecs), audio clip (metadata + offline transcript), PDF, or Office document (.docx/.xlsx/.pptx) so Hermes can see and read media files directly.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Path to the picture, video, audio, PDF, or Office file"},
+                        },
+                        "required": ["path"],
                     },
                 },
             },
@@ -3446,12 +4986,200 @@ class HermesAgentManager:
             {
                 "type": "function",
                 "function": {
-                    "name": "delegate_subagent",
-                    "description": "Spawn an isolated Hermes subagent to focus on a subtask and return its summary.",
+                    "name": "memory_search",
+                    "description": "Full-text search across MEMORY.md, USER.md, installed SKILL.md workflows, and past chat transcripts.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"task": {"type": "string"}},
-                        "required": ["task"],
+                        "properties": {
+                            "query": {"type": "string", "description": "Search keywords or topic"},
+                            "limit": {"type": "integer", "description": "Max hits to return (default 10)"},
+                        },
+                        "required": ["query"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_journal_and_crashes",
+                    "description": "Inspect AstraCradle Forensic Journal self-audit warnings, Crash Post-Mortem reports, and Hermes silent diagnostics for root-cause fixing.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"limit": {"type": "integer"}},
+                        "required": [],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_services_and_storage",
+                    "description": "Inspect failed systemd user/system services, open listening ports, and drive usage / SMART health.",
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_screen_and_clipboard",
+                    "description": "Capture the active display/web page (screenshot + OCR text) and read or copy/paste text via the system clipboard.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["read_display", "capture_screen", "clipboard_read", "clipboard_write"]},
+                            "text": {"type": "string", "description": "Text to copy to the clipboard when action=clipboard_write"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_git_sync",
+                    "description": "Inspect Git status, create pre-sync backup zip, pull updates, or test-gate + commit & push local AstraCradle repo changes.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["status", "backup", "pull", "commit_push"]},
+                            "message": {"type": "string", "description": "Commit message for commit_push"},
+                            "repo_path": {"type": "string", "description": "Optional git repo path (defaults to local AstraCradle root)"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_system_updates",
+                    "description": "Check pending OS, Flatpak, and firmware updates (pacman/apt/dnf/fwupdmgr) and optionally run snapshot-backed upgrade (Level 4).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"action": {"type": "string", "enum": ["check", "upgrade"]}},
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_av_and_peripherals",
+                    "description": "Inspect PipeWire/PulseAudio, display refresh rates/VRR, and USB power autosuspend (with safe USB stutter fix).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"action": {"type": "string", "enum": ["inspect", "fix_usb_autosuspend"]}},
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_thermals_and_fans",
+                    "description": "Inspect CPU/GPU/NVMe temperatures, Welford thermal SPC drift anomalies, and GPU fan curves (optionally apply a curve).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["inspect", "apply_curve"]},
+                            "profile_id": {"type": "string", "description": "e.g. gpu_cool_quiet or gpu_performance_max"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_voice_io",
+                    "description": "Check offline STT/TTS tools, speak a short message aloud, or transcribe push-to-talk audio offline.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["status", "speak", "listen"]},
+                            "text": {"type": "string"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_dependencies",
+                    "description": "Check or automatically download/install any missing AstraCradle Python packages and companion OS dependencies.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["check", "install_missing"]},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_knowledge_library",
+                    "description": "Search AstraCradle's local Skill & Knowledge Library (1-200 GB configurable cache), manage subscribed research topics (add/remove/list/harvest full docs), inspect stored items & remaining storage, or prune stale info.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": [
+                                    "search", "deep_recall", "store", "prefetch", "mark_incorrect", "prune", "stats",
+                                    "list_topics", "add_topic", "remove_topic", "harvest_topic",
+                                    "list_items", "delete_item",
+                                ],
+                            },
+                            "query": {"type": "string"},
+                            "topic": {"type": "string"},
+                            "topic_id": {"type": "string"},
+                            "harvest_now": {"type": "boolean"},
+                            "remove_items": {"type": "boolean"},
+                            "title": {"type": "string"},
+                            "body": {"type": "string"},
+                            "category": {"type": "string"},
+                            "source_url": {"type": "string"},
+                            "item_id": {"type": "string"},
+                            "reason": {"type": "string"},
+                            "limit": {"type": "integer"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delegate_subagent",
+                    "description": "Create, list, delete, or run an isolated Hermes subagent for a focused task and return its summary.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["run", "create", "list", "delete"]},
+                            "task": {"type": "string", "description": "Subtask prompt to execute"},
+                            "name": {"type": "string", "description": "Saved subagent profile name"},
+                            "role_instructions": {"type": "string", "description": "Specialized system role for this subagent"},
+                            "max_turns": {"type": "integer"},
+                        },
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_full_os_autofix",
+                    "description": "Run AstraCradle's standard OS-specific common fixes & health checks, cross-check anomalies/custom features via web search, and escalate to a stronger AI model / Arena packet.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "apply_safe_fixes": {"type": "boolean"},
+                            "web_crosscheck": {"type": "boolean"},
+                            "escalate_stronger_ai": {"type": "boolean"},
+                            "copy_escalation_packet": {"type": "boolean"},
+                        },
                     },
                 },
             },
@@ -3499,6 +5227,54 @@ class HermesAgentManager:
                             "args": {"type": "object", "description": "Arguments when action=run"},
                             "enabled": {"type": "boolean"},
                             "improvement_note": {"type": "string"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_sop_templates",
+                    "description": "Query, compose, save, or instantiate Standard Operating Book templates (`SOP_TEMPLATE_LIBRARY`) so Hermes plugs live data into proven workflows and guardrails.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["list", "match", "get", "compose", "instantiate_tool", "save"],
+                            },
+                            "query": {"type": "string"},
+                            "category": {"type": "string"},
+                            "template_id": {"type": "string"},
+                            "template_ids": {"type": "array", "items": {"type": "string"}},
+                            "title": {"type": "string"},
+                            "tool_name": {"type": "string"},
+                            "keywords": {"type": "array", "items": {"type": "string"}},
+                            "decision_rules": {"type": "array", "items": {"type": "string"}},
+                            "tool_pipeline": {"type": "array", "items": {"type": "object"}},
+                            "output_template": {"type": "string"},
+                            "limit": {"type": "integer"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_verify_work",
+                    "description": "Self-check and double-check Hermes's own work: audit drafts/git state/code paths, cross-check technical claims via live web_search + Knowledge Library, or export an Arena second-opinion packet to clipboard.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["audit_draft", "verify_with_web", "export_for_arena"],
+                            },
+                            "query": {"type": "string", "description": "Technical claim or command to cross-check on the web"},
+                            "draft_text": {"type": "string", "description": "Proposed reply or commands to self-audit"},
+                            "session_id": {"type": "string"},
                         },
                         "required": ["action"],
                     },
@@ -4154,7 +5930,30 @@ class HermesAgentManager:
                 if not bool(getattr(config, "hermes_allow_web_search", True)):
                     return {"ok": False, "blocked": True, "error": "Web Search is disabled in Hermes AI settings."}
                 q = str(args.get("query", "")).strip()
+                force_web = bool(args.get("force_web", False))
                 max_r = int(args.get("max_results", 6) or 6)
+                # Internal-First Deep Memory Check: inspect local Knowledge Library & memory BEFORE hitting external web
+                if not force_web and q:
+                    recall = self.deep_internal_recall(q, limit=4)
+                    if recall.get("has_strong_match"):
+                        mapped_results = [
+                            {
+                                "title": str(h.get("title") or ""),
+                                "url": str(h.get("source_url") or h.get("file_path") or "internal://knowledge-library"),
+                                "snippet": str(h.get("summary") or "")[:280],
+                            }
+                            for h in (recall.get("library_hits") or [])
+                        ]
+                        return {
+                            "ok": True,
+                            "source": "internal_first_cache",
+                            "internal_found": True,
+                            "query": q,
+                            "results": mapped_results,
+                            "internal_library_hits": recall.get("library_hits") or [],
+                            "internal_memory_hits": recall.get("memory_hits") or [],
+                            "note": "Answered from your internal Knowledge Library & memory files first (no external web request needed). Pass force_web=true only if live internet updates are required.",
+                        }
                 hits = self._web_search_impl(q, max_results=max_r)
                 if hits:
                     try:
@@ -4171,7 +5970,13 @@ class HermesAgentManager:
                         )
                     except Exception:
                         pass
-                return {"ok": True, "query": q, "results": hits}
+                return {"ok": True, "source": "live_web", "internal_found": False, "query": q, "results": hits}
+
+            if name == "astra_inspect_media":
+                mpath = str(args.get("path") or "").strip()
+                if not mpath:
+                    return {"ok": False, "error": "Provide a file path to the picture, video, audio, PDF, or Office file."}
+                return self.inspect_media_file(mpath)
 
             if name == "web_fetch":
                 if not bool(getattr(config, "hermes_allow_web_search", True)):
@@ -4344,6 +6149,471 @@ class HermesAgentManager:
                     return {"ok": pr.returncode == 0, "returncode": pr.returncode, "output": (pr.stdout + pr.stderr)[-3000:]}
                 return {"ok": False, "error": f"Unknown self-build action: {act}"}
 
+            if name == "memory_search":
+                q = str(args.get("query", "")).strip()
+                lim = int(args.get("limit", 10) or 10)
+                hits = self.search_memory_fts(q, limit=lim)
+                return {"ok": True, "query": q, "count": len(hits), "hits": hits}
+
+            if name == "astra_journal_and_crashes":
+                lim = max(5, min(50, int(args.get("limit", 20) or 20)))
+                audit_list = []
+                try:
+                    audit_list = [
+                        {"severity": a.severity, "title": a.title, "explanation": a.explanation, "remediation": a.remediation}
+                        for a in self.journal.self_audit(limit=300)
+                    ]
+                except Exception:
+                    pass
+                recent_entries = []
+                try:
+                    for item in self.journal.load_recent(limit=lim):
+                        if item.get("outcome") in ("warning", "error") or len(recent_entries) < 8:
+                            recent_entries.append({
+                                "ts": str(item.get("timestamp", ""))[:19],
+                                "action": item.get("action"),
+                                "outcome": item.get("outcome"),
+                                "what": str(item.get("what", ""))[:160],
+                            })
+                except Exception:
+                    pass
+                crashes = []
+                try:
+                    ca = self.crash_analyzer
+                    if ca is None:
+                        from .crash_analyzer import CrashPostMortemAnalyzer
+
+                        ca = CrashPostMortemAnalyzer(self.cfg_mgr, self.journal)
+                    crashes = [
+                        {"id": c.crash_id, "ts": c.timestamp, "summary": c.summary, "likely_cause": c.likely_cause}
+                        for c in ca.load_history()[:6]
+                    ]
+                except Exception:
+                    pass
+                ui_events_tail: list[str] = []
+                ui_log_path = self.cfg_mgr.base_dir / "ui_events.log"
+                try:
+                    if ui_log_path.exists():
+                        ui_events_tail = ui_log_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-40:]
+                except Exception:
+                    pass
+                return {
+                    "ok": True,
+                    "audit_findings": audit_list,
+                    "recent_journal": recent_entries,
+                    "crash_post_mortems": crashes,
+                    "hermes_diagnostics": self.get_recent_diagnostics(limit=10),
+                    "ui_events_log_path": str(ui_log_path),
+                    "recent_ui_events": ui_events_tail,
+                }
+
+            if name == "astra_services_and_storage":
+                failed_units: list[str] = []
+                if shutil.which("systemctl"):
+                    for cmd in (["systemctl", "--user", "--failed", "--no-pager", "--plain"], ["systemctl", "--failed", "--no-pager", "--plain"]):
+                        try:
+                            pr = subprocess.run(cmd, capture_output=True, text=True, timeout=4, creationflags=_WIN_NO_WINDOW)
+                            for ln in (pr.stdout or "").splitlines():
+                                if "failed" in ln.lower() and not ln.strip().startswith("0 "):
+                                    failed_units.append(ln.strip()[:160])
+                        except Exception:
+                            pass
+                disks: list[dict[str, Any]] = []
+                try:
+                    for part in psutil.disk_partitions(all=False):
+                        if any(skip in (part.fstype or "").lower() for skip in ("squashfs", "tmpfs", "devtmpfs", "overlay")):
+                            continue
+                        try:
+                            du = psutil.disk_usage(part.mountpoint)
+                            disks.append({
+                                "mount": part.mountpoint,
+                                "fs": part.fstype,
+                                "free_gb": round(du.free / (1024**3), 1),
+                                "total_gb": round(du.total / (1024**3), 1),
+                                "used_pct": du.percent,
+                            })
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+                ports_summary: list[str] = []
+                if shutil.which("ss"):
+                    try:
+                        pr = subprocess.run(["ss", "-tuln"], capture_output=True, text=True, timeout=4, creationflags=_WIN_NO_WINDOW)
+                        ports_summary = [ln.strip()[:120] for ln in (pr.stdout or "").splitlines()[1:18]]
+                    except Exception:
+                        pass
+                return {
+                    "ok": True,
+                    "failed_systemd_units": failed_units[:15],
+                    "disks": disks[:10],
+                    "listening_ports": ports_summary,
+                    "rocm_multi_gpu": self.detect_rocm_multi_gpu_conflict(),
+                }
+
+            if name == "astra_screen_and_clipboard":
+                act = str(args.get("action") or "read_display").strip().lower()
+                if act == "clipboard_read":
+                    ok_c, txt_c = self.clipboard_read()
+                    return {"ok": ok_c, "clipboard": txt_c[:8000]}
+                if act == "clipboard_write":
+                    if perm == "read_only":
+                        return {"ok": False, "blocked": True, "error": "Clipboard copy blocked in Read-Only mode."}
+                    txt_w = str(args.get("text") or "")
+                    ok_w, msg_w = self.clipboard_write(txt_w)
+                    return {"ok": ok_w, "message": msg_w, "chars": len(txt_w)}
+                cap = self.capture_display_and_ocr()
+                return cap
+
+            if name == "astra_git_sync":
+                act = str(args.get("action") or "status").strip().lower()
+                repo = Path(str(args.get("repo_path") or "")).expanduser().resolve() if args.get("repo_path") else self.get_local_source_root()
+                if act == "backup":
+                    bdir = self.cfg_mgr.base_dir / "backups"
+                    bdir.mkdir(parents=True, exist_ok=True)
+                    zpath = bdir / f"astracradle-backup-{int(time.time())}.zip"
+                    shutil.make_archive(str(zpath.with_suffix("")), "zip", str(repo))
+                    return {"ok": True, "backup_zip": str(zpath)}
+                if not (repo / ".git").exists():
+                    return {"ok": False, "error": f"Not a git repository: {repo}"}
+                if act == "status":
+                    pr = subprocess.run(["git", "status", "-sb"], cwd=str(repo), capture_output=True, text=True, timeout=10, creationflags=_WIN_NO_WINDOW)
+                    rem = subprocess.run(["git", "remote", "-v"], cwd=str(repo), capture_output=True, text=True, timeout=10, creationflags=_WIN_NO_WINDOW)
+                    st_txt = pr.stdout[:3000]
+                    rebase_active = (repo / ".git" / "REBASE_HEAD").exists() or (repo / ".git" / "rebase-merge").exists() or (repo / ".git" / "rebase-apply").exists()
+                    merge_active = (repo / ".git" / "MERGE_HEAD").exists()
+                    unmerged = [ln[3:].strip() for ln in st_txt.splitlines() if len(ln) >= 3 and ln[:2] in ("UU", "AA", "DD", "AU", "UA", "DU", "UD")]
+                    detached = "HEAD (no branch)" in st_txt or "HEAD detached" in st_txt
+                    rec_msg = ""
+                    if rebase_active or unmerged:
+                        rec_msg = (
+                            "WARNING: Git rebase/merge conflict is in progress (detached HEAD). "
+                            "Do NOT run `git commit`! Recover safely via `git rebase --abort` (to return cleanly to main) "
+                            "OR resolve conflicts (`git checkout --theirs .`, verify `python3 -m compileall -q astracradle`, then `git add -A && git rebase --continue`)."
+                        )
+                    elif detached:
+                        rec_msg = "WARNING: Repository is on detached HEAD. Switch back with `git checkout main` before committing."
+                    return {
+                        "ok": pr.returncode == 0,
+                        "repo": str(repo),
+                        "status": st_txt,
+                        "remotes": rem.stdout[:1000],
+                        "detached_head": detached,
+                        "rebase_in_progress": rebase_active,
+                        "merge_in_progress": merge_active,
+                        "unmerged_files": unmerged,
+                        "recommended_recovery": rec_msg,
+                    }
+                if perm in ("read_only", "safe_user"):
+                    return {"ok": False, "blocked": True, "error": "Git pull/push requires Level 3 or Level 4 permissions."}
+                ok_ap, msg_ap = self._request_mutation_approval(
+                    f"Git {act}",
+                    f"Hermes wants to run git {act} in:\n{repo}",
+                    config,
+                )
+                if not ok_ap:
+                    return {"ok": False, "blocked": True, "error": msg_ap}
+                if act == "pull":
+                    pr = subprocess.run(["git", "pull", "--rebase"], cwd=str(repo), capture_output=True, text=True, timeout=60, creationflags=_WIN_NO_WINDOW)
+                    return {"ok": pr.returncode == 0, "output": (pr.stdout + pr.stderr)[:3000]}
+                if act == "commit_push":
+                    cc = subprocess.run([sys.executable, "-m", "compileall", "-q", "astracradle"], cwd=str(repo), capture_output=True, text=True, timeout=45, creationflags=_WIN_NO_WINDOW)
+                    if cc.returncode != 0:
+                        return {"ok": False, "error": f"Blocked commit_push because compileall failed:\n{cc.stderr[:1200]}"}
+                    msg = str(args.get("message") or f"AstraCradle Hermes verified update ({utc_now_iso()[:10]})")
+                    subprocess.run(["git", "add", "-A"], cwd=str(repo), capture_output=True, text=True, timeout=20, creationflags=_WIN_NO_WINDOW)
+                    cm = subprocess.run(["git", "commit", "-m", msg], cwd=str(repo), capture_output=True, text=True, timeout=20, creationflags=_WIN_NO_WINDOW)
+                    ps = subprocess.run(["git", "push"], cwd=str(repo), capture_output=True, text=True, timeout=60, creationflags=_WIN_NO_WINDOW)
+                    return {"ok": ps.returncode == 0, "commit": (cm.stdout + cm.stderr)[:1000], "push": (ps.stdout + ps.stderr)[:2000]}
+                return {"ok": False, "error": f"Unknown git action: {act}"}
+
+            if name == "astra_system_updates":
+                act = str(args.get("action") or "check").strip().lower()
+                pending_os: list[str] = []
+                pkg_mgr = "unknown"
+                if shutil.which("checkupdates"):
+                    pkg_mgr = "pacman"
+                    pr = subprocess.run(["checkupdates"], capture_output=True, text=True, timeout=25, creationflags=_WIN_NO_WINDOW)
+                    pending_os = [ln.strip() for ln in (pr.stdout or "").splitlines() if ln.strip()][:35]
+                elif shutil.which("pacman"):
+                    pkg_mgr = "pacman"
+                    pr = subprocess.run(["pacman", "-Qu"], capture_output=True, text=True, timeout=15, creationflags=_WIN_NO_WINDOW)
+                    pending_os = [ln.strip() for ln in (pr.stdout or "").splitlines() if ln.strip()][:35]
+                elif shutil.which("apt"):
+                    pkg_mgr = "apt"
+                    pr = subprocess.run(["apt", "list", "--upgradable"], capture_output=True, text=True, timeout=20, creationflags=_WIN_NO_WINDOW)
+                    pending_os = [ln.strip() for ln in (pr.stdout or "").splitlines()[1:] if ln.strip()][:35]
+                elif shutil.which("dnf"):
+                    pkg_mgr = "dnf"
+                    pr = subprocess.run(["dnf", "check-update", "-q"], capture_output=True, text=True, timeout=25, creationflags=_WIN_NO_WINDOW)
+                    pending_os = [ln.strip() for ln in (pr.stdout or "").splitlines() if ln.strip()][:35]
+                flatpak_updates: list[str] = []
+                if shutil.which("flatpak"):
+                    fp = subprocess.run(["flatpak", "remote-ls", "--updates"], capture_output=True, text=True, timeout=15, creationflags=_WIN_NO_WINDOW)
+                    flatpak_updates = [ln.strip() for ln in (fp.stdout or "").splitlines() if ln.strip()][:20]
+                fw_updates = ""
+                if shutil.which("fwupdmgr"):
+                    fw = subprocess.run(["fwupdmgr", "get-updates"], capture_output=True, text=True, timeout=15, creationflags=_WIN_NO_WINDOW)
+                    fw_updates = (fw.stdout or fw.stderr or "")[:800]
+                if act == "check":
+                    return {
+                        "ok": True,
+                        "package_manager": pkg_mgr,
+                        "os_updates_count": len(pending_os),
+                        "os_updates": pending_os[:20],
+                        "flatpak_updates": flatpak_updates,
+                        "firmware": fw_updates,
+                        "snapshot_tool": ("timeshift" if shutil.which("timeshift") else ("snapper" if shutil.which("snapper") else "none")),
+                    }
+                if perm != "sudo_with_prompt":
+                    return {"ok": False, "blocked": True, "error": "OS package upgrade requires Level 4 (Sudo When Password Typed)."}
+                snap_prefix = "timeshift --create --comments 'Pre-Hermes-Update' && " if shutil.which("timeshift") else ""
+                up_cmd = f"{snap_prefix}pacman -Syu --noconfirm" if pkg_mgr == "pacman" else (f"{snap_prefix}apt-get upgrade -y" if pkg_mgr == "apt" else f"{snap_prefix}dnf upgrade -y")
+                return self._run_sudo_prompted(up_cmd, "Upgrade OS packages (with pre-upgrade snapshot if available)", config)
+
+            if name == "astra_av_and_peripherals":
+                act = str(args.get("action") or "inspect").strip().lower()
+                if act == "fix_usb_autosuspend":
+                    if perm != "sudo_with_prompt":
+                        return {"ok": False, "blocked": True, "error": "Changing kernel USB autosuspend requires Level 4 (Sudo When Password Typed)."}
+                    cmd = "for f in /sys/bus/usb/devices/*/power/control; do echo on > \"$f\" 2>/dev/null || true; done"
+                    return self._run_sudo_prompted(cmd, "Disable USB autosuspend to prevent mouse/audio headset stutter", config)
+                audio_txt = ""
+                for cmd in (["wpctl", "status"], ["pactl", "info"]):
+                    if shutil.which(cmd[0]):
+                        pr = subprocess.run(cmd, capture_output=True, text=True, timeout=5, creationflags=_WIN_NO_WINDOW)
+                        audio_txt = (pr.stdout or "")[:1200]
+                        if audio_txt:
+                            break
+                disp_txt = ""
+                for cmd in (["kscreen-doctor", "-o"], ["wlr-randr"], ["xrandr", "--query"]):
+                    if shutil.which(cmd[0]):
+                        pr = subprocess.run(cmd, capture_output=True, text=True, timeout=5, creationflags=_WIN_NO_WINDOW)
+                        disp_txt = (pr.stdout or "")[:1200]
+                        if disp_txt:
+                            break
+                usb_auto: list[str] = []
+                try:
+                    for ctl in sorted(Path("/sys/bus/usb/devices").glob("*/power/control"))[:20]:
+                        val = ctl.read_text(encoding="utf-8", errors="ignore").strip()
+                        if val == "auto":
+                            usb_auto.append(ctl.parent.parent.name)
+                except Exception:
+                    pass
+                return {"ok": True, "audio": audio_txt, "display": disp_txt, "usb_autosuspend_devices": usb_auto}
+
+            if name == "astra_thermals_and_fans":
+                act = str(args.get("action") or "inspect").strip().lower()
+                gpu = GpuTelemetryCollector.collect()
+                applied_id, pts = self.gpu_pwr.get_applied_curve() if self.gpu_pwr is not None else ("default", [])
+                if act == "apply_curve" and self.gpu_pwr is not None:
+                    if perm == "read_only":
+                        return {"ok": False, "blocked": True, "error": "Fan curve tuning blocked in Read-Only mode."}
+                    pid_req = str(args.get("profile_id") or "gpu_cool_quiet")
+                    profs = self.gpu_pwr.load_profiles()
+                    chosen_p = next((p for p in profs if p.profile_id == pid_req), profs[0] if profs else None)
+                    if chosen_p is None:
+                        return {"ok": False, "error": f"Profile '{pid_req}' not found."}
+                    ok_c, msg_c, new_pts = self.gpu_pwr.apply_draft_curve(chosen_p.curve_points, profile_id=chosen_p.profile_id, dry_run=False)
+                    return {"ok": ok_c, "message": msg_c, "curve": new_pts}
+                baselines = {}
+                anomalies = []
+                if self.thermal_spc is not None:
+                    baselines = {k: {"mean_temp_c": round(v.mean_temp_c, 1), "count": v.count} for k, v in self.thermal_spc.load_baselines().items()}
+                    anomalies = [str(a) for a in (self.thermal_spc.anomalies or [])[-6:]]
+                return {
+                    "ok": True,
+                    "gpu_name": getattr(gpu, "name", "Integrated"),
+                    "gpu_temp_c": getattr(gpu, "temperature_c", None),
+                    "applied_curve_id": applied_id,
+                    "curve_points": pts,
+                    "spc_baselines": baselines,
+                    "spc_anomalies": anomalies,
+                }
+
+            if name == "astra_voice_io":
+                act = str(args.get("action") or "status").strip().lower()
+                if act == "speak":
+                    ok_s, msg_s = self.speak_text_offline(str(args.get("text") or ""))
+                    return {"ok": ok_s, "message": msg_s}
+                if act == "listen":
+                    ok_l, txt_l = self.listen_voice_offline()
+                    return {"ok": ok_l, "transcript": txt_l}
+                return {
+                    "ok": True,
+                    "tts_backends": [b for b in ("piper", "espeak-ng", "spd-say", "say") if shutil.which(b)],
+                    "stt_backends": [b for b in ("whisper-cli", "whisper", "faster-whisper") if shutil.which(b)],
+                }
+
+            if name == "astra_dependencies":
+                act = str(args.get("action") or "check").strip().lower()
+                if act == "install_missing" and perm == "read_only":
+                    return {"ok": False, "blocked": True, "error": "Installing dependencies is blocked in Read-Only mode."}
+                return self.check_and_install_missing_dependencies(config, install=(act == "install_missing"))
+
+            if name == "astra_knowledge_library":
+                act = str(args.get("action") or "search").strip().lower()
+                if act == "stats":
+                    return self.get_library_stats(config)
+                if act == "search":
+                    q = str(args.get("query") or "").strip()
+                    lim = int(args.get("limit", 5) or 5)
+                    return {"ok": True, "query": q, "hits": self.search_library(q, limit=lim)}
+                if act == "deep_recall":
+                    q = str(args.get("query") or "").strip()
+                    lim = int(args.get("limit", 4) or 4)
+                    return self.deep_internal_recall(q, limit=lim)
+                if act == "store":
+                    return self.store_library_item(
+                        title=str(args.get("title") or "Learned Item"),
+                        body=str(args.get("body") or ""),
+                        category=str(args.get("category") or "learned"),
+                        source_type="learned",
+                        source_url=str(args.get("source_url") or ""),
+                        config=config,
+                    )
+                if act == "prefetch":
+                    return self.prefetch_library_topics(config)
+                if act == "list_topics":
+                    tlist = self.list_library_topics()
+                    return {"ok": True, "count": len(tlist), "topics": tlist}
+                if act == "add_topic":
+                    return self.add_library_topic(
+                        str(args.get("topic") or args.get("query") or ""),
+                        category=str(args.get("category") or "programming"),
+                        harvest_now=bool(args.get("harvest_now", True)),
+                        config=config,
+                    )
+                if act == "remove_topic":
+                    return self.remove_library_topic(
+                        str(args.get("topic_id") or args.get("topic") or args.get("query") or ""),
+                        remove_items=bool(args.get("remove_items", True)),
+                    )
+                if act == "harvest_topic":
+                    return self.harvest_library_topic(
+                        str(args.get("topic_id") or args.get("topic") or args.get("query") or ""),
+                        config,
+                    )
+                if act == "list_items":
+                    ilist = self.list_library_items(
+                        query=str(args.get("query") or ""),
+                        category=str(args.get("category") or ""),
+                        limit=int(args.get("limit", 40) or 40),
+                    )
+                    return {"ok": True, "count": len(ilist), "items": ilist}
+                if act == "delete_item":
+                    return self.delete_library_item(str(args.get("item_id") or ""))
+                if act == "mark_incorrect":
+                    tgt = str(args.get("item_id") or args.get("source_url") or "")
+                    return self.mark_library_item_incorrect(tgt, reason=str(args.get("reason") or ""))
+                if act == "prune":
+                    return self.prune_library(config, aggressive=True)
+                return {"ok": False, "error": f"Unknown library action: {act}"}
+
+            if name == "astra_custom_tool_forge":
+                act = str(args.get("action") or "list").strip().lower()
+                if act == "list":
+                    return {"ok": True, "tools": self.list_custom_tools(include_disabled=True)}
+                if act == "create_composite":
+                    if perm == "read_only":
+                        return {"ok": False, "blocked": True, "error": "Creating custom tools is blocked in Read-Only mode."}
+                    return self.create_composite_custom_tool(
+                        name=str(args.get("name") or ""),
+                        description=str(args.get("description") or ""),
+                        steps=list(args.get("steps") or []),
+                        parameters=args.get("parameters") if isinstance(args.get("parameters"), dict) else None,
+                        config=config,
+                    )
+                if act == "create_python":
+                    return self.create_python_custom_tool(
+                        name=str(args.get("name") or ""),
+                        description=str(args.get("description") or ""),
+                        code=str(args.get("code") or ""),
+                        parameters=args.get("parameters") if isinstance(args.get("parameters"), dict) else None,
+                        config=config,
+                    )
+                if act == "combine":
+                    if perm == "read_only":
+                        return {"ok": False, "blocked": True, "error": "Combining tools is blocked in Read-Only mode."}
+                    return self.combine_tools_into_custom(
+                        name=str(args.get("name") or ""),
+                        description=str(args.get("description") or ""),
+                        source_tools=list(args.get("source_tools") or []),
+                        config=config,
+                    )
+                if act == "improve":
+                    if perm == "read_only":
+                        return {"ok": False, "blocked": True, "error": "Improving custom tools is blocked in Read-Only mode."}
+                    return self.improve_custom_tool(
+                        name=str(args.get("name") or ""),
+                        description=str(args.get("description") or ""),
+                        steps=args.get("steps") if isinstance(args.get("steps"), list) else None,
+                        code=str(args.get("code") or ""),
+                        improvement_note=str(args.get("improvement_note") or ""),
+                        config=config,
+                    )
+                if act == "run":
+                    return self.execute_custom_tool(
+                        str(args.get("name") or ""),
+                        dict(args.get("args") or {}),
+                        config,
+                        allow_subagent=allow_subagent,
+                    )
+                if act == "toggle":
+                    return self.toggle_custom_tool(str(args.get("name") or ""), bool(args.get("enabled", True)))
+                if act == "delete":
+                    return self.delete_custom_tool(str(args.get("name") or ""))
+                return {"ok": False, "error": f"Unknown custom tool forge action: {act}"}
+
+            if name == "astra_sop_templates":
+                act = str(args.get("action") or "match").strip().lower()
+                if act == "list":
+                    items = self.list_sop_templates(category=str(args.get("category") or ""))
+                    return {
+                        "ok": True,
+                        "count": len(items),
+                        "templates": [{"template_id": i["template_id"], "title": i["title"], "category": i["category"], "source": i.get("source", "builtin")} for i in items],
+                    }
+                if act == "match":
+                    hits = self.match_sop_templates(str(args.get("query") or ""), limit=int(args.get("limit", 3) or 3))
+                    return {"ok": True, "matches": hits}
+                if act == "get":
+                    t = self.get_sop_template(str(args.get("template_id") or ""))
+                    return {"ok": t is not None, **({"template": t} if t else {"error": "Template not found"})}
+                if act == "compose":
+                    return self.compose_sop_templates(list(args.get("template_ids") or []), title=str(args.get("title") or ""))
+                if act == "instantiate_tool":
+                    if perm == "read_only":
+                        return {"ok": False, "blocked": True, "error": "Instantiating SOP custom tools is blocked in Read-Only mode."}
+                    return self.instantiate_sop_as_custom_tool(
+                        list(args.get("template_ids") or ([args.get("template_id")] if args.get("template_id") else [])),
+                        tool_name=str(args.get("tool_name") or ""),
+                        config=config,
+                    )
+                if act == "save":
+                    if perm == "read_only":
+                        return {"ok": False, "blocked": True, "error": "Saving learned SOP templates is blocked in Read-Only mode."}
+                    return self.save_learned_sop_template(
+                        template_id=str(args.get("template_id") or ""),
+                        title=str(args.get("title") or "Learned Operating Template"),
+                        category=str(args.get("category") or "learned"),
+                        keywords=list(args.get("keywords") or []),
+                        decision_rules=list(args.get("decision_rules") or []),
+                        tool_pipeline=list(args.get("tool_pipeline") or []),
+                        output_template=str(args.get("output_template") or ""),
+                        config=config,
+                    )
+                return {"ok": False, "error": f"Unknown SOP template action: {act}"}
+
+            if name == "astra_verify_work":
+                return self.verify_work(
+                    action=str(args.get("action") or "audit_draft"),
+                    query=str(args.get("query") or ""),
+                    draft_text=str(args.get("draft_text") or ""),
+                    session_id=str(args.get("session_id") or "default"),
+                    config=config,
+                )
+
             if name == "shell_exec":
                 cmd = str(args.get("command", "")).strip()
                 if not cmd:
@@ -4417,17 +6687,38 @@ class HermesAgentManager:
                 )
                 return {"ok": True, "skill_path": str(p)}
 
+            if name == "astra_full_os_autofix":
+                return self.run_full_os_autofix(
+                    config,
+                    apply_safe_fixes=bool(args.get("apply_safe_fixes", True)),
+                    web_crosscheck=bool(args.get("web_crosscheck", True)),
+                    escalate_stronger_ai=bool(args.get("escalate_stronger_ai", True)),
+                    copy_escalation_packet=bool(args.get("copy_escalation_packet", True)),
+                )
+
             if name == "delegate_subagent":
+                act = str(args.get("action") or "run").strip().lower()
+                if act == "list":
+                    subs = self.list_subagents()
+                    return {"ok": True, "count": len(subs), "subagents": subs}
+                if act == "create":
+                    return self.create_subagent(
+                        str(args.get("name") or "Worker Subagent"),
+                        str(args.get("role_instructions") or ""),
+                        default_task=str(args.get("task") or ""),
+                        max_turns=int(args.get("max_turns") or 4),
+                    )
+                if act == "delete":
+                    return self.delete_subagent(str(args.get("name") or args.get("subagent_id") or ""))
                 if not allow_subagent:
                     return {"ok": False, "error": "Nested subagent recursion capped at depth 1."}
-                sub_res = self.run_prompt(
+                return self.run_subagent(
                     str(args.get("task", "")),
                     config,
-                    session_id=f"subagent_{int(time.time())}",
-                    allow_subagent=False,
-                    max_turns=4,
+                    subagent_id_or_name=str(args.get("name") or args.get("subagent_id") or ""),
+                    role_instructions=str(args.get("role_instructions") or ""),
+                    max_turns=int(args.get("max_turns") or 4),
                 )
-                return {"ok": sub_res.ok, "summary": sub_res.reply[:2000], "tools": len(sub_res.tool_events)}
 
             if name == "cron_schedule":
                 job = self.add_cron_job(
@@ -4449,6 +6740,1425 @@ class HermesAgentManager:
         key = str(getattr(config, "hermes_persona", "astra_standard") or "astra_standard")
         return HERMES_PERSONAS.get(key) or HERMES_PERSONAS["astra_standard"]
 
+    # Dynamic Local Model Tiering (Fast 4B-9B -> Balanced 12B-14B -> Heavy 27B-35B+)
+    _FAST_LOCAL_CANDIDATES: tuple[str, ...] = (
+        "qwen3:8b",
+        "qwen3.5:9b",
+        "qwen2.5:7b",
+        "qwen3:4b",
+        "qwen3.5:4b",
+        "llama3.1:8b",
+        "gemma4:e4b",
+        "gemma3:4b",
+        "phi4-mini",
+    )
+    _BALANCED_LOCAL_CANDIDATES: tuple[str, ...] = (
+        "qwen3:14b",
+        "qwen2.5-coder:14b",
+        "qwen2.5:14b",
+        "gemma4:12b",
+        "gemma3:12b",
+    )
+
+    @staticmethod
+    def classify_prompt_complexity(prompt: str, history: list[dict[str, str]] | None = None) -> str:
+        """Classifies prompt into 'fast', 'balanced', or 'heavy' for dynamic intelligent model scaling."""
+        txt = (prompt or "").strip().lower()
+        n_chars = len(txt)
+
+        heavy_markers = (
+            "code",
+            "edit ",
+            "file_edit",
+            "file_write",
+            "refactor",
+            "implement",
+            "build ",
+            "next update",
+            "self_build",
+            "astracradle",
+            "debug",
+            "traceback",
+            "stack trace",
+            "root cause",
+            "architecture",
+            "research",
+            "web search",
+            "compare ",
+            "deep ",
+            "analyze ",
+            "step by step",
+            "comprehensive",
+            "benchmark",
+            "script",
+            "python",
+            "patch",
+        )
+        balanced_markers = (
+            "diagnose",
+            "scan",
+            "fix ",
+            "optimize",
+            "wi-fi",
+            "wifi",
+            "startup",
+            "probalance",
+            "process",
+            "gpu",
+            "vram",
+            "thermal",
+            "remote",
+            "tailscale",
+            "astrabeam",
+            "skill",
+            "memory",
+            "self-heal",
+            "uninstall",
+            "dependency",
+            "dependencies",
+        )
+        if n_chars >= 420 or any(tok in txt for tok in heavy_markers):
+            return "heavy"
+        if n_chars >= 140 or any(tok in txt for tok in balanced_markers):
+            return "balanced"
+        # Also escalate slightly if the conversation already involves code or multi-turn technical depth
+        if history and len(history) >= 6:
+            recent_blob = " ".join(str(m.get("content") or "").lower()[:180] for m in history[-4:])
+            if any(tok in recent_blob for tok in ("traceback", "def ", "class ", "file_edit", "astra_dev_self_build")):
+                return "heavy"
+        return "fast"
+
+    _VISION_MODEL_HINTS = (
+        "qwen3.6",
+        "qwen3-vl",
+        "qwen2.5vl",
+        "qwen2-vl",
+        "llama3.2-vision",
+        "llava",
+        "minicpm-v",
+        "moondream",
+        "gemma3",
+        "pixtral",
+        "bakllava",
+        "vision",
+        "-vl",
+    )
+
+    def _is_vision_model(self, model_name: str, base_url: str = "http://127.0.0.1:11434") -> bool:
+        low = (model_name or "").lower()
+        if any(h in low for h in self._VISION_MODEL_HINTS):
+            return True
+        if not low:
+            return False
+        try:
+            req = urllib.request.Request(
+                f"{base_url.rstrip('/')}/api/show",
+                data=json.dumps({"model": model_name}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                info = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            caps = [str(c).lower() for c in (info.get("capabilities") or [])]
+            if "vision" in caps:
+                return True
+            mi = info.get("model_info") or {}
+            if any("vision" in str(k).lower() or "mmproj" in str(k).lower() for k in mi.keys()):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _find_vision_ollama_model(self, pulled: list[str], preferred: str = "", base_url: str = "http://127.0.0.1:11434") -> str | None:
+        ordered = ([preferred] if preferred else []) + [m for m in pulled if m != preferred]
+        for cand in ordered:
+            if cand and self._is_vision_model(cand, base_url=base_url):
+                return cand
+        return None
+
+    def select_dynamic_ollama_model(
+        self,
+        prompt: str,
+        config: AppConfig,
+        *,
+        history: list[dict[str, str]] | None = None,
+        installed_models: list[str] | None = None,
+        has_images: bool = False,
+    ) -> dict[str, Any]:
+        """Dynamically picks the fastest intelligent local model matching prompt complexity, vision needs, and GPU headroom."""
+        spec = self.resolve_provider_spec(config)
+        heavy_model = spec["model"]
+        tier = self.classify_prompt_complexity(prompt, history=history)
+        if installed_models is None:
+            ok, listed = self.find_all_local_ollama_models()
+            pulled = listed if ok else self.scan_ollama_disk_manifests()
+        else:
+            pulled = list(installed_models)
+
+        if has_images and spec["provider"] == "ollama":
+            vis_model = self._find_vision_ollama_model(pulled, preferred=heavy_model, base_url=spec["base_url"])
+            if vis_model:
+                return {
+                    "tier": "heavy",
+                    "model": vis_model,
+                    "think": False,
+                    "reason": f"Vision attachment detected -> routed to multimodal model '{vis_model}'",
+                    "fast_available": True,
+                    "missing_fast_recommendation": "",
+                    "vision_routed": True,
+                }
+
+        if not bool(getattr(config, "hermes_dynamic_model_routing", True)) or spec["provider"] != "ollama":
+            return {
+                "tier": tier,
+                "model": heavy_model,
+                "think": (tier == "heavy"),
+                "reason": "Static model mode",
+                "fast_available": True,
+                "missing_fast_recommendation": "",
+            }
+
+        fast_pref = str(getattr(config, "hermes_fast_model", "") or "").strip()
+        fast_candidates = ([fast_pref] if fast_pref else []) + list(self._FAST_LOCAL_CANDIDATES)
+        fast_match = next((self._model_tag_matches(c, pulled) for c in fast_candidates if self._model_tag_matches(c, pulled)), None)
+        balanced_match = next((self._model_tag_matches(c, pulled) for c in self._BALANCED_LOCAL_CANDIDATES if self._model_tag_matches(c, pulled)), None)
+
+        if tier == "fast":
+            chosen = fast_match or balanced_match or heavy_model
+            think = False
+            reason = f"Fast tier -> '{chosen}' (instant response, think=off)" if fast_match else f"Fast tier requested (no 4B-9B model pulled yet; using '{chosen}' with think=off)"
+        elif tier == "balanced":
+            chosen = balanced_match or fast_match or heavy_model
+            think = False
+            reason = f"Balanced OS tier -> '{chosen}'"
+        else:
+            chosen = heavy_model
+            think = any(tok in (prompt or "").lower() for tok in ("debug", "traceback", "stack trace", "root cause", "architecture", "refactor", "step by step")) or len(prompt or "") >= 320
+            reason = f"Deep engineering/research tier -> '{chosen}' (think={'on' if think else 'off'})"
+
+        # If chosen model previously failed on GPU/tools (cpu_safe/cpu_notools) and a working GPU model exists,
+        # prefer the working GPU model (with fast tool calling!) instead of running 35B on slow CPU/no-tools.
+        if chosen in self._gpu_fallback_models and not has_images:
+            alt_gpu = next((m for m in (balanced_match, fast_match) if m and m not in self._gpu_fallback_models), None)
+            if alt_gpu:
+                chosen = alt_gpu
+                think = False
+                reason = f"GPU-fast fallback -> '{chosen}' (keeps tool calling & GPU acceleration active)"
+
+        return {
+            "tier": tier,
+            "model": chosen,
+            "think": think,
+            "reason": reason,
+            "fast_available": bool(fast_match),
+            "missing_fast_recommendation": ("" if fast_match else "qwen3:4b"),
+        }
+
+    def ensure_fast_companion_model_async(
+        self,
+        config: AppConfig,
+        progress_cb: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Background-pulls a lightweight fast companion model (qwen3:8b) if user only has a giant 35B+ model."""
+        if not bool(getattr(config, "hermes_dynamic_model_routing", True)):
+            return {"started": False, "reason": "Dynamic routing disabled"}
+        ok, pulled = self.find_all_local_ollama_models()
+        if not ok and not pulled:
+            return {"started": False, "reason": "Ollama not running"}
+        for cand in self._FAST_LOCAL_CANDIDATES:
+            if self._model_tag_matches(cand, pulled):
+                return {"started": False, "already_present": True, "model": cand}
+        if self._fast_pull_started:
+            return {"started": False, "reason": "Pull already in progress"}
+        self._fast_pull_started = True
+        target = str(getattr(config, "hermes_fast_model", "") or "").strip() or "qwen3:4b"
+
+        def _worker() -> None:
+            try:
+                self.pull_ollama_model(target, progress_cb=progress_cb)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return {"started": True, "model": target}
+
+    # ------------------------------------------------------------------
+    # Silent Diagnostics, ROCm Fix & Autonomous Passive Whole-PC Guardian
+    # ------------------------------------------------------------------
+    def _load_runtime_model_health(self) -> None:
+        if not self.runtime_health_path.exists():
+            return
+        try:
+            raw = json.loads(self.runtime_health_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                fb = raw.get("gpu_fallback_models") or []
+                if isinstance(fb, list):
+                    self._gpu_fallback_models = {str(m) for m in fb if m}
+        except Exception:
+            pass
+
+    def _save_gpu_fallback_model(self, model: str, stage: str = "cpu_safe") -> None:
+        if not model:
+            return
+        self._gpu_fallback_models.add(model)
+        try:
+            self.hermes_home.mkdir(parents=True, exist_ok=True)
+            data: dict[str, Any] = {}
+            if self.runtime_health_path.exists():
+                try:
+                    data = json.loads(self.runtime_health_path.read_text(encoding="utf-8")) or {}
+                except Exception:
+                    data = {}
+            data["gpu_fallback_models"] = sorted(self._gpu_fallback_models)
+            notes = dict(data.get("notes") or {})
+            notes[model] = {"stage": stage, "updated_at": utc_now_iso()}
+            data["notes"] = notes
+            self.runtime_health_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _clear_runtime_model_health(self) -> None:
+        self._gpu_fallback_models.clear()
+        try:
+            if self.runtime_health_path.exists():
+                self.runtime_health_path.unlink()
+        except Exception:
+            pass
+
+    def search_memory_fts(self, query: str, limit: int = 10) -> list[dict[str, str]]:
+        """Full-text FTS5 search across MEMORY.md, USER.md, skills, and sessions.db (with LIKE fallback)."""
+        q = (query or "").strip()
+        if not q:
+            return []
+        self.hermes_home.mkdir(parents=True, exist_ok=True)
+        docs: list[tuple[str, str, str]] = []
+        for lbl, fp in (("MEMORY.md", self.memory_path), ("USER.md", self.user_md_path)):
+            if fp.exists():
+                for idx, chunk in enumerate(fp.read_text(encoding="utf-8", errors="ignore").splitlines()):
+                    if chunk.strip():
+                        docs.append((lbl, f"{lbl}:L{idx+1}", chunk.strip()))
+        for sk in self.list_skills():
+            docs.append((f"skill:{sk['slug']}", sk["path"], sk["content"][:2500]))
+        if self.sessions_db_path.exists():
+            try:
+                with sqlite3.connect(self.sessions_db_path) as sconn:
+                    for sid, role, content, ts in sconn.execute(
+                        "SELECT session_id, role, content, created_at FROM messages ORDER BY id DESC LIMIT 400"
+                    ).fetchall():
+                        if content and str(content).strip():
+                            docs.append((f"chat:{sid}", f"{role} ({str(ts)[:16]})", str(content)[:1200]))
+            except Exception:
+                pass
+
+        try:
+            with sqlite3.connect(self.memory_index_path) as conn:
+                conn.execute("DROP TABLE IF EXISTS memory_fts")
+                conn.execute("CREATE VIRTUAL TABLE memory_fts USING fts5(source, ref, body)")
+                conn.executemany("INSERT INTO memory_fts(source, ref, body) VALUES (?, ?, ?)", docs)
+                tokens = [re.sub(r"[^a-zA-Z0-9_-]", "", t) for t in q.split() if len(t.strip()) >= 2]
+                fts_q = " OR ".join(f'"{t}"*' for t in tokens[:8]) or f'"{q}"'
+                rows = conn.execute(
+                    "SELECT source, ref, snippet(memory_fts, 2, '[', ']', '...', 24), body FROM memory_fts WHERE memory_fts MATCH ? LIMIT ?",
+                    (fts_q, max(1, min(30, int(limit) * 2))),
+                ).fetchall()
+                hits_out = [{"source": r[0], "ref": r[1], "snippet": r[2], "_body": r[3]} for r in rows]
+                # Hybrid Local Vector Rerank when an Ollama embedding model is installed
+                q_vec = self._compute_local_embedding(q)
+                if q_vec and hits_out:
+                    scored: list[tuple[float, dict[str, str]]] = []
+                    for idx_h, item in enumerate(hits_out):
+                        d_vec = self._compute_local_embedding(item.get("_body", "")[:600])
+                        sim = self._cosine_sim(q_vec, d_vec) if d_vec else (1.0 / (1.0 + idx_h))
+                        scored.append((sim, item))
+                    scored.sort(key=lambda pair: pair[0], reverse=True)
+                    hits_out = [pair[1] for pair in scored]
+                return [{"source": h["source"], "ref": h["ref"], "snippet": h["snippet"]} for h in hits_out[: int(limit)]]
+        except Exception:
+            low_tokens = [t.lower() for t in q.split() if t.strip()]
+            hits: list[dict[str, str]] = []
+            for src, ref, body in docs:
+                bl = body.lower()
+                if any(t in bl for t in low_tokens):
+                    hits.append({"source": src, "ref": ref, "snippet": body[:240]})
+                    if len(hits) >= limit:
+                        break
+            return hits
+
+    @staticmethod
+    def _cosine_sim(a: list[float], b: list[float]) -> float:
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        na = sum(x * x for x in a) ** 0.5
+        nb = sum(y * y for y in b) ** 0.5
+        return (dot / (na * nb)) if (na > 0 and nb > 0) else 0.0
+
+    def _compute_local_embedding(self, text: str) -> list[float]:
+        """Computes a local vector embedding via Ollama /api/embed if an embedding model is installed."""
+        clean = (text or "").strip()[:1000]
+        if not clean:
+            return []
+        try:
+            ok, pulled = self.find_all_local_ollama_models()
+            if not ok:
+                return []
+            emb_model = next(
+                (self._model_tag_matches(c, pulled) for c in ("nomic-embed-text", "mxbai-embed-large", "all-minilm") if self._model_tag_matches(c, pulled)),
+                None,
+            )
+            if not emb_model:
+                return []
+            req = urllib.request.Request(
+                "http://127.0.0.1:11434/api/embed",
+                data=json.dumps({"model": emb_model, "input": clean}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            vecs = data.get("embeddings") or []
+            if vecs and isinstance(vecs[0], list):
+                return [float(v) for v in vecs[0]]
+        except Exception:
+            pass
+        return []
+
+    def clipboard_read(self) -> tuple[bool, str]:
+        for cmd in (["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"], ["xsel", "--clipboard", "--output"]):
+            if shutil.which(cmd[0]):
+                try:
+                    pr = subprocess.run(cmd, capture_output=True, text=True, timeout=3, creationflags=_WIN_NO_WINDOW)
+                    if pr.returncode == 0:
+                        return True, pr.stdout
+                except Exception:
+                    pass
+        if sys.platform == "darwin" and shutil.which("pbpaste"):
+            pr = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=3)
+            return pr.returncode == 0, pr.stdout
+        return False, "No clipboard utility found (wl-paste/xclip/xsel)."
+
+    def clipboard_write(self, text: str) -> tuple[bool, str]:
+        for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+            if shutil.which(cmd[0]):
+                try:
+                    pr = subprocess.run(cmd, input=text, text=True, capture_output=True, timeout=3, creationflags=_WIN_NO_WINDOW)
+                    if pr.returncode == 0:
+                        return True, f"Copied {len(text)} chars to clipboard via {cmd[0]}."
+                except Exception:
+                    pass
+        if sys.platform == "darwin" and shutil.which("pbcopy"):
+            pr = subprocess.run(["pbcopy"], input=text, text=True, capture_output=True, timeout=3)
+            return pr.returncode == 0, f"Copied {len(text)} chars to clipboard."
+        return False, "No clipboard utility found (wl-copy/xclip/xsel)."
+
+    def capture_display_and_ocr(self) -> dict[str, Any]:
+        """Captures current screen/display and extracts readable text via OCR + active window title."""
+        self.captures_dir.mkdir(parents=True, exist_ok=True)
+        out_img = self.captures_dir / "latest_screen.png"
+        captured = False
+        method = ""
+        for cmd in (
+            ["grim", str(out_img)],
+            ["spectacle", "-b", "-n", "-o", str(out_img)],
+            ["scrot", "-o", str(out_img)],
+            ["import", "-window", "root", str(out_img)],
+        ):
+            if shutil.which(cmd[0]):
+                try:
+                    pr = subprocess.run(cmd, capture_output=True, text=True, timeout=8, creationflags=_WIN_NO_WINDOW)
+                    if pr.returncode == 0 and out_img.exists():
+                        captured = True
+                        method = cmd[0]
+                        break
+                except Exception:
+                    pass
+        if not captured:
+            try:
+                from PIL import ImageGrab
+
+                im = ImageGrab.grab()
+                im.save(out_img)
+                captured = out_img.exists()
+                method = "PIL.ImageGrab"
+            except Exception:
+                pass
+
+        ocr_text = ""
+        if captured and shutil.which("tesseract"):
+            try:
+                pr = subprocess.run(
+                    ["tesseract", str(out_img), "stdout", "--psm", "6"],
+                    capture_output=True,
+                    text=True,
+                    timeout=12,
+                    creationflags=_WIN_NO_WINDOW,
+                )
+                if pr.returncode == 0:
+                    ocr_text = pr.stdout.strip()[:7500]
+            except Exception:
+                pass
+
+        active_title = ""
+        for cmd in (["xdotool", "getactivewindow", "getwindowname"], ["kdotool", "getactivewindow", "getwindowname"]):
+            if shutil.which(cmd[0]):
+                try:
+                    pr = subprocess.run(cmd, capture_output=True, text=True, timeout=3, creationflags=_WIN_NO_WINDOW)
+                    if pr.returncode == 0 and pr.stdout.strip():
+                        active_title = pr.stdout.strip()[:200]
+                        break
+                except Exception:
+                    pass
+
+        ok_clip, clip_txt = self.clipboard_read()
+        return {
+            "ok": bool(captured or ocr_text or ok_clip),
+            "captured": captured,
+            "capture_method": method,
+            "screenshot_path": (str(out_img) if captured else ""),
+            "active_window": active_title,
+            "ocr_text": ocr_text,
+            "clipboard_preview": (clip_txt[:1500] if ok_clip else ""),
+            "note": ("" if ocr_text else ("Captured screenshot (attach it in chat for vision models, or install tesseract for direct OCR)." if captured else "Screen capture tool (grim/spectacle/scrot) not available in headless session.")),
+        }
+
+    def speak_text_offline(self, text: str) -> tuple[bool, str]:
+        clean = (text or "").strip()[:1200]
+        if not clean:
+            return False, "Nothing to speak."
+        for cmd in (["spd-say", clean], ["espeak-ng", clean], ["say", clean]):
+            if shutil.which(cmd[0]):
+                try:
+                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=_WIN_NO_WINDOW)
+                    return True, f"Speaking via {cmd[0]}."
+                except Exception:
+                    pass
+        return False, "No offline TTS engine found (install espeak-ng, speech-dispatcher, or piper)."
+
+    def listen_voice_offline(self, seconds: int = 6) -> tuple[bool, str]:
+        """Records short microphone clip and transcribes offline if whisper/arecord are installed."""
+        self.captures_dir.mkdir(parents=True, exist_ok=True)
+        wav = self.captures_dir / "voice_input.wav"
+        rec_cmd = None
+        if shutil.which("pw-record"):
+            rec_cmd = ["pw-record", str(wav)]
+        elif shutil.which("arecord"):
+            rec_cmd = ["arecord", "-d", str(max(2, min(15, seconds))), "-f", "cd", "-q", str(wav)]
+        if rec_cmd is None:
+            return False, "No audio recorder found (install pipewire/pw-record or alsa-utils/arecord)."
+        try:
+            proc = subprocess.Popen(rec_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=_WIN_NO_WINDOW)
+            time.sleep(max(2, min(12, seconds)))
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception as exc:
+            return False, f"Voice capture failed: {exc}"
+        if shutil.which("whisper-cli"):
+            pr = subprocess.run(["whisper-cli", "-nt", "-f", str(wav)], capture_output=True, text=True, timeout=25)
+            return pr.returncode == 0, (pr.stdout or "").strip()
+        if shutil.which("whisper"):
+            pr = subprocess.run(["whisper", str(wav), "--output_format", "txt", "--output_dir", str(self.captures_dir)], capture_output=True, text=True, timeout=45)
+            txt_p = wav.with_suffix(".txt")
+            if txt_p.exists():
+                return True, txt_p.read_text(encoding="utf-8", errors="ignore").strip()
+        return False, "Audio recorded, but offline whisper/whisper-cli binary is not installed."
+
+    @staticmethod
+    def _select_tool_schemas(prompt: str, all_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Picks a lean, intent-matched subset of tools so local models respond faster and more accurately."""
+        low = (prompt or "").strip().lower()
+        selected_names: set[str] = {
+            "astra_system_status",
+            "memory_search",
+            "astra_knowledge_library",
+            "astra_custom_tool_forge",
+            "astra_sop_templates",
+            "astra_verify_work",
+        }
+
+        if any(w in low for w in ("scan", "fix", "autofix", "heal", "clean", "ram", "cpu", "gpu", "thermal", "temp", "fan", "probalance", "process", "kill", "startup", "autorun", "rollback", "undo", "dependency", "dependencies", "audio", "pipewire", "display", "usb", "stutter", "escalate")):
+            selected_names.update({
+                "astra_full_os_autofix", "astra_deep_scan", "astra_fix_safe", "astra_process_lookup", "astra_process_manage",
+                "astra_probalance_and_profile", "astra_startup_audit", "astra_self_heal_repair",
+                "astra_rollback_undo", "astra_dependencies", "astra_pc_usage_summary",
+                "astra_thermals_and_fans", "astra_av_and_peripherals",
+            })
+        if any(w in low for w in ("wifi", "wi-fi", "network", "dns", "internet", "ping", "remote", "phone", "iphone", "android", "watch", "tailscale", "adb", "astrabeam", "sunshine")):
+            selected_names.update({"astra_wifi_check", "astra_wifi_optimize", "astra_remote_tasks", "astra_services_and_storage"})
+        if any(w in low for w in ("crash", "journal", "audit", "error", "warning", "fail", "service", "systemd", "port", "firewall", "disk", "smart", "ssd", "nvme", "storage", "diagnostic", "upgrade", "pacman", "apt", "firmware")):
+            selected_names.update({"astra_journal_and_crashes", "astra_services_and_storage", "astra_deep_scan", "astra_self_heal_repair", "astra_system_updates"})
+        if any(w in low for w in ("screen", "display", "page", "webpage", "web page", "clipboard", "copy", "paste", "ocr", "voice", "speak", "mic", "dictate", "picture", "image", "photo", "screenshot", "video", "clip", "mp4", "mkv", "mov", "webm", "audio", "mp3", "wav", "media", "pdf", "docx", "xlsx", "pptx")):
+            selected_names.update({"astra_screen_and_clipboard", "astra_voice_io", "astra_inspect_media", "web_fetch"})
+        if re.search(r"\b(?:astra|astracradle)\b", low) or any(w in low for w in ("code", "file", "edit", "write", "read", "grep", "search", "changes", "improve", "review", "feature", "build", "test", "update", "patch", "script", "python", "shell", "command", "terminal", "sudo", "git", "github", "push", "pull", "backup", "tool", "macro", "combine", "automate", "workflow", "template", "playbook", "sop")):
+            selected_names.update({
+                "file_read", "file_write", "file_edit", "list_dir", "grep_search",
+                "astra_dev_self_build", "astra_git_sync", "astra_journal_and_crashes",
+                "astra_pc_usage_summary", "shell_exec", "sudo_exec", "astra_rollback_undo",
+            })
+        if any(w in low for w in ("learned", "usage", "apps", "games", "summary", "summarize", "web", "online", "docs", "research", "url", "skill", "memory", "remember", "cron", "schedule", "subagent", "sub-agent")):
+            selected_names.update({
+                "astra_pc_usage_summary", "web_search", "web_fetch", "memory_read", "memory_save", "memory_search",
+                "skill_save", "skill_install_from_url", "cron_schedule", "delegate_subagent",
+            })
+
+        # If prompt looked action-oriented without hitting a narrow group, provide the core OS + screen + memory trio
+        if len(selected_names) <= 6:
+            selected_names.update({
+                "astra_deep_scan", "astra_pc_usage_summary", "astra_journal_and_crashes",
+                "astra_services_and_storage", "astra_screen_and_clipboard", "astra_fix_safe",
+                "memory_read", "web_search",
+            })
+
+        # Also include up to 8 enabled custom tools so the AI can call its own forged/combined tools directly
+        custom_schemas = [t for t in all_tools if str((t.get("function") or {}).get("name") or "").startswith("custom_")][:8]
+        filtered = [t for t in all_tools if (t.get("function") or {}).get("name") in selected_names]
+        for ct in custom_schemas:
+            if ct not in filtered:
+                filtered.append(ct)
+        return filtered or all_tools
+
+    def _record_hermes_rollback(self, action_id: str, title: str, summary: str, revert_cmds: list[str] | None = None) -> str:
+        if self.rollback_mgr is None:
+            return ""
+        try:
+            from .models import RollbackEntry
+
+            eid = f"hermes-{uuid.uuid4().hex[:8]}"
+            self.rollback_mgr.record(
+                RollbackEntry(
+                    entry_id=eid,
+                    timestamp=utc_now_iso(),
+                    action_id=action_id,
+                    title=title[:120],
+                    dry_run=False,
+                    status="applied",
+                    summary=summary[:240],
+                    revert_commands=list(revert_cmds or []),
+                )
+            )
+            return eid
+        except Exception:
+            return ""
+
+    def _request_mutation_approval(self, title: str, detail: str, config: AppConfig) -> tuple[bool, str]:
+        if not bool(getattr(config, "hermes_require_approval", True)):
+            return True, ""
+        if self.approval_prompt_cb is None:
+            return True, ""
+        try:
+            approved = bool(self.approval_prompt_cb(title, detail))
+            if not approved:
+                return False, f"User declined approval for: {title}"
+            return True, ""
+        except Exception:
+            return True, ""
+
+    _IMAGE_ATTACHMENT_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".ico", ".svg", ".heic")
+    _VIDEO_ATTACHMENT_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".flv")
+    _AUDIO_ATTACHMENT_EXTS = (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".opus", ".aac")
+    _OFFICE_ATTACHMENT_EXTS = (".docx", ".xlsx", ".pptx")
+
+    @staticmethod
+    def _image_file_to_png_b64(p: Path) -> str:
+        import base64
+        import io
+
+        ext = p.suffix.lower()
+        if ext in (".png", ".jpg", ".jpeg", ".webp"):
+            return base64.b64encode(p.read_bytes()).decode("ascii")
+        try:
+            from PIL import Image
+
+            with Image.open(p) as im:
+                rgb = im.convert("RGB")
+                buf = io.BytesIO()
+                rgb.save(buf, format="PNG")
+                return base64.b64encode(buf.getvalue()).decode("ascii")
+        except Exception:
+            if shutil.which("ffmpeg"):
+                try:
+                    tmp_png = p.with_suffix(".converted.png")
+                    pr = subprocess.run(
+                        ["ffmpeg", "-y", "-i", str(p), "-vframes", "1", str(tmp_png)],
+                        capture_output=True,
+                        timeout=8,
+                        creationflags=_WIN_NO_WINDOW,
+                    )
+                    if pr.returncode == 0 and tmp_png.exists():
+                        b64 = base64.b64encode(tmp_png.read_bytes()).decode("ascii")
+                        tmp_png.unlink(missing_ok=True)
+                        return b64
+                except Exception:
+                    pass
+        return base64.b64encode(p.read_bytes()).decode("ascii")
+
+    @staticmethod
+    def _extract_office_text(p: Path) -> str:
+        import xml.etree.ElementTree as ET
+        import zipfile
+
+        ext = p.suffix.lower()
+        parts: list[str] = []
+        def _xml_text(raw_bytes: bytes, *, only_t_tag: bool = True) -> str:
+            try:
+                root = ET.fromstring(raw_bytes)
+                if only_t_tag:
+                    return " ".join(
+                        t.text for t in root.iter()
+                        if (t.tag.endswith("}t") or t.tag == "t" or t.tag.endswith(":t")) and t.text
+                    )
+                return " ".join(t.text for t in root.iter() if t.text and t.text.strip())
+            except Exception:
+                raw_s = raw_bytes.decode("utf-8", errors="ignore")
+                return " ".join(m.strip() for m in re.findall(r">([^<]+)<", raw_s) if m.strip())
+
+        try:
+            with zipfile.ZipFile(p, "r") as zf:
+                names = zf.namelist()
+                if ext == ".docx" and "word/document.xml" in names:
+                    parts.append(_xml_text(zf.read("word/document.xml"), only_t_tag=True))
+                elif ext == ".xlsx":
+                    for target in sorted(n for n in names if n.startswith("xl/sharedStrings") or n.startswith("xl/worksheets/sheet"))[:6]:
+                        txt = _xml_text(zf.read(target), only_t_tag=False)
+                        if txt:
+                            parts.append(f"[{Path(target).name}] {txt[:1500]}")
+                elif ext == ".pptx":
+                    for target in sorted(n for n in names if n.startswith("ppt/slides/slide") and n.endswith(".xml"))[:10]:
+                        txt = _xml_text(zf.read(target), only_t_tag=True)
+                        if txt:
+                            parts.append(f"[{Path(target).stem}] {txt[:1000]}")
+        except Exception:
+            return ""
+        return "\n".join(parts).strip()[:6000]
+
+    def _extract_video_frames_and_info(self, p: Path) -> tuple[list[str], list[str], str]:
+        """Extracts up to 4 evenly spaced PNG keyframes + ffprobe metadata + optional OCR/audio transcript for videos."""
+        import base64
+
+        frames_b64: list[str] = []
+        frame_paths: list[str] = []
+        meta_lines: list[str] = []
+        duration_sec = 0.0
+
+        if shutil.which("ffprobe"):
+            try:
+                pr = subprocess.run(
+                    [
+                        "ffprobe", "-v", "quiet", "-print_format", "json",
+                        "-show_format", "-show_streams", str(p),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                    creationflags=_WIN_NO_WINDOW,
+                )
+                if pr.returncode == 0 and pr.stdout.strip():
+                    info = json.loads(pr.stdout)
+                    fmt = info.get("format") or {}
+                    duration_sec = float(fmt.get("duration") or 0.0)
+                    streams = info.get("streams") or []
+                    vstreams = [s for s in streams if s.get("codec_type") == "video"]
+                    astreams = [s for s in streams if s.get("codec_type") == "audio"]
+                    if vstreams:
+                        vs = vstreams[0]
+                        meta_lines.append(
+                            f"Video stream: {vs.get('codec_name', '?')} {vs.get('width', '?')}x{vs.get('height', '?')} @ {vs.get('r_frame_rate', '?')} fps, duration={duration_sec:.1f}s"
+                        )
+                    if astreams:
+                        as0 = astreams[0]
+                        meta_lines.append(f"Audio stream: {as0.get('codec_name', '?')} {as0.get('sample_rate', '?')} Hz")
+            except Exception:
+                pass
+
+        if shutil.which("ffmpeg"):
+            out_dir = self.captures_dir / "media_frames"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", p.stem)[:32] or "video"
+            ts_marks = (
+                [max(0.0, duration_sec * frac) for frac in (0.1, 0.35, 0.65, 0.88)]
+                if duration_sec >= 2.0
+                else [0.0, 0.5]
+            )
+            for idx, tsec in enumerate(ts_marks[:4]):
+                out_png = out_dir / f"{stem}_f{idx + 1}.png"
+                try:
+                    pr = subprocess.run(
+                        [
+                            "ffmpeg", "-y", "-ss", f"{tsec:.2f}", "-i", str(p),
+                            "-vframes", "1", "-vf", "scale='min(1280,iw)':-1", str(out_png),
+                        ],
+                        capture_output=True,
+                        timeout=10,
+                        creationflags=_WIN_NO_WINDOW,
+                    )
+                    if pr.returncode == 0 and out_png.exists() and out_png.stat().st_size > 0:
+                        frames_b64.append(base64.b64encode(out_png.read_bytes()).decode("ascii"))
+                        frame_paths.append(str(out_png))
+                except Exception:
+                    continue
+
+        if frame_paths and shutil.which("tesseract"):
+            ocr_Snips: list[str] = []
+            for fp in frame_paths[:2]:
+                try:
+                    o = subprocess.run(["tesseract", fp, "stdout", "--psm", "6"], capture_output=True, text=True, timeout=6, creationflags=_WIN_NO_WINDOW)
+                    if o.returncode == 0 and o.stdout.strip():
+                        ocr_Snips.append(o.stdout.strip()[:700])
+                except Exception:
+                    pass
+            if ocr_Snips:
+                meta_lines.append("OCR from video frames:\n" + "\n---\n".join(ocr_Snips))
+
+        if not frames_b64:
+            meta_lines.append("(ffmpeg not installed or video unreadable for frame extraction; install `ffmpeg` for visual video frame inspection.)")
+        else:
+            meta_lines.append(f"Extracted {len(frames_b64)} visual keyframe(s) for multimodal vision inspection.")
+
+        return frames_b64, frame_paths, "\n".join(meta_lines)
+
+    def _extract_audio_info(self, p: Path) -> str:
+        lines: list[str] = []
+        if shutil.which("ffprobe"):
+            try:
+                pr = subprocess.run(
+                    ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", str(p)],
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                    creationflags=_WIN_NO_WINDOW,
+                )
+                if pr.returncode == 0 and pr.stdout.strip():
+                    info = json.loads(pr.stdout)
+                    fmt = info.get("format") or {}
+                    dur = float(fmt.get("duration") or 0.0)
+                    lines.append(f"Audio: format={fmt.get('format_name', '?')}, duration={dur:.1f}s, bitrate={fmt.get('bit_rate', '?')}")
+            except Exception:
+                pass
+        if shutil.which("whisper"):
+            try:
+                out_dir = self.captures_dir / "media_frames"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                subprocess.run(
+                    ["whisper", str(p), "--model", "tiny", "--output_format", "txt", "--output_dir", str(out_dir)],
+                    capture_output=True,
+                    text=True,
+                    timeout=35,
+                    creationflags=_WIN_NO_WINDOW,
+                )
+                txt_p = out_dir / f"{p.stem}.txt"
+                if txt_p.exists():
+                    lines.append("Transcript:\n" + txt_p.read_text(encoding="utf-8", errors="ignore")[:3000])
+            except Exception:
+                pass
+        return "\n".join(lines) or "Audio clip attached (install ffmpeg/whisper for duration & speech transcription)."
+
+    def inspect_media_file(self, path_str: str) -> dict[str, Any]:
+        """Inspects any local picture, video, audio, PDF, or Office file and extracts frames/metadata/text."""
+        p = Path(str(path_str or "").strip()).expanduser().resolve()
+        if not p.exists() or not p.is_file():
+            return {"ok": False, "error": f"Media file not found: {p}"}
+        imgs, ctx_txt, names = self.prepare_attachments([str(p)])
+        ext = p.suffix.lower()
+        out_frames: list[str] = []
+        if ext in self._IMAGE_ATTACHMENT_EXTS:
+            out_frames = [str(p)]
+        elif ext in self._VIDEO_ATTACHMENT_EXTS:
+            frame_dir = self.captures_dir / "media_frames"
+            stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", p.stem)[:32] or "video"
+            out_frames = [str(x) for x in sorted(frame_dir.glob(f"{stem}_f*.png"))[:4]] if frame_dir.exists() else []
+        return {
+            "ok": True,
+            "file": str(p),
+            "name": p.name,
+            "media_kind": (
+                "image" if ext in self._IMAGE_ATTACHMENT_EXTS else
+                "video" if ext in self._VIDEO_ATTACHMENT_EXTS else
+                "audio" if ext in self._AUDIO_ATTACHMENT_EXTS else
+                "office" if ext in self._OFFICE_ATTACHMENT_EXTS else
+                "document"
+            ),
+            "vision_frames_count": len(imgs),
+            "image_paths": out_frames,
+            "summary": ctx_txt[:4000],
+        }
+
+    @staticmethod
+    def _encode_image_attachments(attachments: list[str] | None) -> list[str]:
+        encoded: list[str] = []
+        for raw_p in (attachments or [])[:6]:
+            try:
+                p = Path(str(raw_p)).expanduser().resolve()
+                if not p.exists() or not p.is_file():
+                    continue
+                if p.suffix.lower() not in HermesAgentManager._IMAGE_ATTACHMENT_EXTS:
+                    continue
+                if p.stat().st_size > 12 * 1024 * 1024:
+                    continue
+                encoded.append(HermesAgentManager._image_file_to_png_b64(p))
+            except Exception:
+                continue
+        return encoded
+
+    def prepare_attachments(self, attachments: list[str] | None) -> tuple[list[str], str, list[str]]:
+        """Processes images (including SVG/TIFF/BMP/GIF), videos (keyframe images + metadata), audio, PDFs, Office docs, and code/log files."""
+        import hashlib
+
+        encoded_imgs: list[str] = []
+        ctx_blocks: list[str] = []
+        names: list[str] = []
+
+        for raw_p in (attachments or [])[:8]:
+            try:
+                p = Path(str(raw_p)).expanduser().resolve()
+                if not p.exists() or not p.is_file():
+                    continue
+                names.append(p.name)
+                sz = p.stat().st_size
+                ext = p.suffix.lower()
+
+                if ext in self._IMAGE_ATTACHMENT_EXTS:
+                    if sz <= 12 * 1024 * 1024:
+                        encoded_imgs.append(self._image_file_to_png_b64(p))
+                    ocr_txt = ""
+                    if shutil.which("tesseract"):
+                        try:
+                            o = subprocess.run(
+                                ["tesseract", str(p), "stdout", "--psm", "6"],
+                                capture_output=True,
+                                text=True,
+                                timeout=8,
+                                creationflags=_WIN_NO_WINDOW,
+                            )
+                            if o.returncode == 0 and o.stdout.strip():
+                                ocr_txt = o.stdout.strip()[:2500]
+                        except Exception:
+                            pass
+                    meta = f"[Attached image: {p.name} ({sz} bytes, path={p})]"
+                    if ocr_txt:
+                        meta += f"\nOCR extracted visible text:\n{ocr_txt}"
+                    ctx_blocks.append(meta)
+                    continue
+
+                if ext in self._VIDEO_ATTACHMENT_EXTS:
+                    v_frames, _v_paths, v_meta = self._extract_video_frames_and_info(p)
+                    for vb in v_frames[:4]:
+                        if len(encoded_imgs) < 6:
+                            encoded_imgs.append(vb)
+                    ctx_blocks.append(f"[Attached video: {p.name} ({sz} bytes, path={p})]\n{v_meta}")
+                    continue
+
+                if ext in self._AUDIO_ATTACHMENT_EXTS:
+                    a_meta = self._extract_audio_info(p)
+                    ctx_blocks.append(f"[Attached audio: {p.name} ({sz} bytes, path={p})]\n{a_meta}")
+                    continue
+
+                if ext in self._OFFICE_ATTACHMENT_EXTS:
+                    o_txt = self._extract_office_text(p)
+                    ctx_blocks.append(
+                        f"[Attached Office doc: {p.name} ({sz} bytes, path={p})]\n"
+                        + (o_txt or "(Could not extract XML text from Office archive.)")
+                    )
+                    continue
+
+                if ext == ".pdf":
+                    pdf_txt = ""
+                    if shutil.which("pdftotext"):
+                        try:
+                            pr = subprocess.run(
+                                ["pdftotext", str(p), "-"],
+                                capture_output=True,
+                                text=True,
+                                timeout=10,
+                            )
+                            if pr.returncode == 0 and pr.stdout.strip():
+                                pdf_txt = pr.stdout.strip()[:6000]
+                        except Exception:
+                            pass
+                    if not pdf_txt:
+                        try:
+                            import pypdf  # type: ignore
+
+                            reader = pypdf.PdfReader(str(p))
+                            pdf_txt = "\n".join((pg.extract_text() or "") for pg in reader.pages[:12]).strip()[:6000]
+                        except Exception:
+                            pass
+                    ctx_blocks.append(
+                        f"[Attached PDF: {p.name} ({sz} bytes, path={p})]\n"
+                        + (pdf_txt or "(Could not extract text; inspect file path with tools if needed.)")
+                    )
+                    continue
+
+                # Read text/code/log/config/data files cleanly
+                raw_bytes = p.read_bytes()[:64000]
+                is_binary = b"\x00" in raw_bytes[:2048]
+                if not is_binary:
+                    txt = raw_bytes.decode("utf-8", errors="replace")
+                    if len(txt) > 6000:
+                        txt = txt[:5800] + "\n... [truncated; use file tools to read full file]"
+                    ctx_blocks.append(f"[Attached file: {p.name} ({sz} bytes, path={p})]\n```\n{txt}\n```")
+                else:
+                    digest = hashlib.sha256(raw_bytes[:65536]).hexdigest()[:16]
+                    ctx_blocks.append(
+                        f"[Attached binary file: {p.name} ({sz} bytes, sha256_prefix={digest}, path={p})]"
+                    )
+            except Exception:
+                continue
+
+        return encoded_imgs, "\n\n".join(ctx_blocks), names
+
+    def record_hermes_diagnostic(
+        self,
+        event: str,
+        severity: str,
+        detail: str,
+        remediation: str = "",
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Logs Hermes runtime/GPU/OS diagnostics cleanly without polluting user chat bubbles."""
+        try:
+            self.hermes_home.mkdir(parents=True, exist_ok=True)
+            entry = {
+                "ts": utc_now_iso(),
+                "event": event,
+                "severity": severity,
+                "detail": detail,
+                "remediation": remediation,
+                "metadata": metadata or {},
+            }
+            lines: list[str] = []
+            if self.diagnostics_log_path.exists():
+                lines = self.diagnostics_log_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-199:]
+            lines.append(json.dumps(entry))
+            self.diagnostics_log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            self.journal.record(
+                actor="hermes_agent",
+                action=event,
+                what=detail[:240],
+                how="Hermes silent diagnostic & auto-recovery",
+                why=remediation[:240] or "Keep AI & OS running smoothly",
+                outcome=("warning" if severity in ("warning", "error") else "ok"),
+                metadata=metadata or {},
+            )
+        except Exception:
+            pass
+
+    def get_recent_diagnostics(self, limit: int = 25) -> list[dict[str, Any]]:
+        if not self.diagnostics_log_path.exists():
+            return []
+        out: list[dict[str, Any]] = []
+        for ln in self.diagnostics_log_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-limit:]:
+            try:
+                d = json.loads(ln)
+                if isinstance(d, dict):
+                    out.append(d)
+            except Exception:
+                continue
+        return list(reversed(out))
+
+    @staticmethod
+    def detect_rocm_multi_gpu_conflict() -> dict[str, Any]:
+        """Detects Linux AMD multi-GPU (iGPU + discrete Radeon) where Ollama lacks ROCR_VISIBLE_DEVICES=0."""
+        if sys.platform != "linux":
+            return {"conflict": False, "reason": "Not Linux"}
+        try:
+            drm_dir = Path("/sys/class/drm")
+            amd_cards: list[str] = []
+            if drm_dir.exists():
+                for card in sorted(drm_dir.glob("card[0-9]*")):
+                    if "-" in card.name:
+                        continue
+                    vfile = card / "device" / "vendor"
+                    if vfile.exists() and vfile.read_text(encoding="utf-8", errors="ignore").strip().lower() == "0x1002":
+                        amd_cards.append(card.name)
+            if len(amd_cards) < 2:
+                return {"conflict": False, "amd_cards": amd_cards}
+            dropin_dir = Path("/etc/systemd/system/ollama.service.d")
+            has_rocr = False
+            if dropin_dir.exists():
+                for conf in dropin_dir.glob("*.conf"):
+                    txt = conf.read_text(encoding="utf-8", errors="ignore")
+                    if "ROCR_VISIBLE_DEVICES" in txt:
+                        has_rocr = True
+                        break
+            return {
+                "conflict": (not has_rocr),
+                "amd_cards": amd_cards,
+                "dropin_configured": has_rocr,
+                "fix_cmd": (
+                    "mkdir -p /etc/systemd/system/ollama.service.d && "
+                    "printf '[Service]\\nEnvironment=\"ROCR_VISIBLE_DEVICES=0\"\\n' > /etc/systemd/system/ollama.service.d/rocm-gpu.conf && "
+                    "systemctl daemon-reload && systemctl restart ollama"
+                ),
+            }
+        except Exception as exc:
+            return {"conflict": False, "error": str(exc)}
+
+    def fix_ollama_rocm_systemd(self, config: AppConfig) -> dict[str, Any]:
+        """Applies ROCR_VISIBLE_DEVICES=0 to Ollama's systemd unit (using Level 4 sudo prompt if enabled)."""
+        info = self.detect_rocm_multi_gpu_conflict()
+        if not info.get("conflict"):
+            return {"ok": True, "already_configured": True, "message": "Ollama ROCm multi-GPU override is not needed or already configured."}
+        perm = self._effective_permission_level(config)
+        if perm != "sudo_with_prompt":
+            return {
+                "ok": False,
+                "needs_sudo_level": True,
+                "command": info["fix_cmd"],
+                "message": "Switch Hermes Permissions to Level 4 (Sudo When Password Typed) or run the command once in Terminal.",
+            }
+        res = self._run_sudo_prompted(
+            info["fix_cmd"],
+            "Pin Ollama ROCm to discrete GPU 0 (ROCR_VISIBLE_DEVICES=0) to stop AMD multi-GPU crashes",
+            config,
+        )
+        if res.get("ok"):
+            self._clear_runtime_model_health()
+            self.record_hermes_diagnostic(
+                "rocm_systemd_fixed",
+                "info",
+                "Applied ROCR_VISIBLE_DEVICES=0 systemd override and restarted Ollama.",
+            )
+        return res
+
+    def get_autonomous_guardian_status(self) -> dict[str, Any]:
+        if not self.autonomous_status_path.exists():
+            return {"last_run": "Pending first cycle", "actions": [], "health": "Ready", "rocm_conflict": False}
+        try:
+            data = json.loads(self.autonomous_status_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {"last_run": "Unknown", "actions": [], "health": "Ready"}
+
+    def run_autonomous_passive_cycle(
+        self,
+        config: AppConfig,
+        *,
+        snapshot=None,
+        gpu=None,
+        is_gaming: bool = False,
+        min_interval_sec: float = 90.0,
+    ) -> dict[str, Any]:
+        """Passively protects, heals, optimizes, and learns from the whole PC in background without disturbing the user."""
+        if not bool(getattr(config, "hermes_autonomous_guardian", True)):
+            return {"ran": False, "reason": "disabled"}
+        now = time.monotonic()
+        with self._autonomous_lock:
+            if (now - self._last_autonomous_cycle_ts) < float(min_interval_sec):
+                return {"ran": False, "reason": "throttled"}
+            self._last_autonomous_cycle_ts = now
+
+        actions_taken: list[str] = []
+        warnings: list[str] = []
+        perm = self._effective_permission_level(config)
+
+        try:
+            self.hermes_home.mkdir(parents=True, exist_ok=True)
+            # 1. Thermal & RAM Passive Protection (respecting active games)
+            ram_pct = float(getattr(snapshot, "mem_percent", 0.0) or 0.0)
+            gpu_temp = float(getattr(gpu, "temperature_c", 0.0) or 0.0)
+            if gpu_temp >= 85.0:
+                warnings.append(f"High GPU temperature ({gpu_temp:.0f}C)")
+                self.record_hermes_diagnostic(
+                    "thermal_guard_alert",
+                    "warning",
+                    f"GPU temperature reached {gpu_temp:.0f}C during autonomous monitoring.",
+                    "Ensure airflow/fan curve is active or lower GPU load.",
+                )
+            if not is_gaming and ram_pct >= 86.0 and self.ram_standby_mgr is not None and perm != "read_only":
+                try:
+                    trim_res = self.ram_standby_mgr.trim_standby_memory(dry_run=False)
+                    if getattr(trim_res, "ok", False):
+                        actions_taken.append(f"Trimmed RAM standby lists at {ram_pct:.0f}% RAM")
+                except Exception:
+                    pass
+
+            # 2. Passive Self-Heal Invariant Sweep (auto-repair safe temp/schema items)
+            adapter = get_os_adapter()
+            if not is_gaming and self.self_heal is not None and perm != "read_only":
+                try:
+                    ev_list, _aud = self.self_heal.run_self_check(adapter, config)
+                    repaired = [e.check_name for e in ev_list if getattr(e, "repaired", False)]
+                    if repaired:
+                        actions_taken.append(f"Self-Heal auto-repaired {len(repaired)} item(s): {', '.join(repaired[:2])}")
+                except Exception:
+                    pass
+
+            # 2b. ProBalance Background CPU Hog Restraint (safe user-space renice when not gaming)
+            if not is_gaming and self.probalance is not None and perm != "read_only" and getattr(config, "probalance_enabled", False):
+                try:
+                    procs = list(getattr(snapshot, "top_processes", []) or [])
+                    if procs:
+                        pb_notes = self.probalance.evaluate_tick(procs, "", config, dry_run=False)
+                        if pb_notes:
+                            actions_taken.append(pb_notes[0][:120])
+                except Exception:
+                    pass
+
+            # 2c. Disk Safety Floor Guard (reversible temp/cache auto-trim via SafeBeginnerFixer)
+            if not is_gaming and self.safe_fixer is not None and perm != "read_only":
+                try:
+                    du = psutil.disk_usage(str(self.cfg_mgr.base_dir))
+                    free_pct = round((du.free / max(1, du.total)) * 100.0, 1)
+                    floor_pct = float(getattr(config, "disk_safety_floor_percent", 12.0) or 12.0)
+                    if free_pct < floor_pct:
+                        ok_sf, msg_sf, _ = self.safe_fixer.run_fix_everything_safe(adapter, config, dry_run=False)
+                        if ok_sf:
+                            actions_taken.append(f"Low disk ({free_pct}% free) -> {msg_sf[:100]}")
+                except Exception:
+                    pass
+
+            # 2d. Passive DNS Latency & Wi-Fi Congestion Guard
+            if not is_gaming and self.net_dns_inspector is not None:
+                try:
+                    ping_ms = self.net_dns_inspector.measure_dns_ping_ms()
+                    if ping_ms is not None and ping_ms >= 220.0:
+                        warnings.append(f"Elevated DNS/WAN latency ({ping_ms:.0f} ms)")
+                except Exception:
+                    pass
+            if (
+                not is_gaming
+                and self.wifi_optimizer is not None
+                and getattr(config, "wifi_auto_optimize", True)
+                and perm in ("standard_user", "sudo_with_prompt")
+            ):
+                try:
+                    w_res = self.wifi_optimizer.scan_wifi_environment()
+                    w_rec = self.wifi_optimizer.recommend_best_channel(w_res)
+                    if w_rec and w_rec.get("should_switch") and w_rec.get("best_channel"):
+                        ok_w, msg_w = self.wifi_optimizer.apply_channel_recommendation(
+                            w_rec["best_channel"],
+                            dry_run=False,
+                        )
+                        if ok_w:
+                            actions_taken.append(f"Wi-Fi auto-optimized: {msg_w[:90]}")
+                except Exception:
+                    pass
+
+            # 2e. Native Scheduled Cron Execution (paused automatically during gaming)
+            if not is_gaming and getattr(config, "hermes_cron_enabled", False):
+                try:
+                    cron_ran = self.run_due_cron_jobs(config)
+                    if cron_ran:
+                        actions_taken.append(f"Executed {len(cron_ran)} scheduled cron task(s)")
+                except Exception:
+                    pass
+
+            # 2f. Startup & Privacy Hygiene Watchdog (detect newly added user autoruns)
+            if not is_gaming and self.autoruns_auditor is not None:
+                try:
+                    cur_entries = self.autoruns_auditor.scan_autoruns(adapter, include_system=False)
+                    cur_ids = sorted(e.entry_id for e in cur_entries if e.enabled)
+                    if self.startup_baseline_path.exists():
+                        prev_ids = set(json.loads(self.startup_baseline_path.read_text(encoding="utf-8")) or [])
+                        new_ids = [eid for eid in cur_ids if eid not in prev_ids]
+                        if new_ids:
+                            warnings.append(f"New startup item(s) detected: {', '.join(new_ids[:3])}")
+                            self.record_hermes_diagnostic(
+                                "new_startup_detected",
+                                "warning",
+                                f"New enabled startup autorun(s): {', '.join(new_ids[:5])}",
+                                "Review in Hermes or Autoruns Audit to disable unwanted updaters.",
+                            )
+                    self.startup_baseline_path.write_text(json.dumps(cur_ids, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+
+            # 2g. Anomaly & Crash Root-Cause Auto-Resolver
+            if not is_gaming:
+                try:
+                    aud_items = self.journal.self_audit(limit=250)
+                    err_titles = [a.title for a in aud_items if a.severity == "error"]
+                    if err_titles:
+                        self.record_hermes_diagnostic(
+                            "recurring_anomaly_digest",
+                            "warning",
+                            "; ".join(err_titles[:4]),
+                            "Ask Hermes 'inspect journal and crashes' for root-cause remediation.",
+                        )
+                except Exception:
+                    pass
+
+            # 3. AMD Multi-GPU ROCm Conflict Detection (silent diagnostic log for quick fix)
+            rocm = self.detect_rocm_multi_gpu_conflict()
+            rocm_conflict = bool(rocm.get("conflict"))
+            if rocm_conflict:
+                warnings.append("AMD multi-GPU ROCm conflict detected (ROCR_VISIBLE_DEVICES=0 recommended)")
+
+            # 4. Dependency & Fast Companion Model Readiness
+            if not is_gaming:
+                try:
+                    dep_res = self.check_and_install_missing_dependencies(
+                        config,
+                        install=bool(getattr(config, "consent_auto_install_deps", False)) and perm != "read_only",
+                    )
+                    if dep_res.get("installed_python"):
+                        actions_taken.append(f"Installed missing Python pkg(s): {', '.join(dep_res['installed_python'])}")
+                    if dep_res.get("missing_fast_model") and getattr(config, "hermes_dynamic_model_routing", True):
+                        self.ensure_fast_companion_model_async(config)
+                except Exception:
+                    pass
+
+            # 6. Skill & Knowledge Library Auto-Prune + Periodic Web Reference Prefetch
+            try:
+                if bool(getattr(config, "hermes_library_auto_prune", True)):
+                    prune_res = self.prune_library(config, aggressive=False)
+                    if prune_res.get("removed", 0) > 0:
+                        actions_taken.append(f"Pruned {prune_res['removed']} stale/incorrect library item(s)")
+                now_mono = time.monotonic()
+                if (
+                    not is_gaming
+                    and bool(getattr(config, "hermes_allow_web_search", True))
+                    and bool(getattr(config, "hermes_library_auto_prefetch", True))
+                    and (now_mono - self._last_library_prefetch_ts) >= 3600.0
+                ):
+                    self._last_library_prefetch_ts = now_mono
+                    pf = self.prefetch_library_topics(config)
+                    if pf.get("stored", 0) > 0:
+                        actions_taken.append(f"Refreshed {pf['stored']} Knowledge Library web reference(s)")
+            except Exception:
+                pass
+
+            prev = self.get_autonomous_guardian_status()
+            hist = list(prev.get("recent_actions") or [])
+            for a in actions_taken:
+                hist.insert(0, f"[{utc_now_iso()[:19].replace('T', ' ')}] {a}")
+            status_obj = {
+                "last_run": utc_now_iso(),
+                "is_gaming": bool(is_gaming),
+                "health": ("Needs Attention" if warnings else "Protected & Healthy"),
+                "warnings": warnings,
+                "actions_this_cycle": actions_taken,
+                "recent_actions": hist[:25],
+                "rocm_conflict": rocm_conflict,
+                "permission_level": perm,
+            }
+            self.autonomous_status_path.write_text(json.dumps(status_obj, indent=2), encoding="utf-8")
+            if actions_taken:
+                self.record_hermes_diagnostic(
+                    "autonomous_passive_cycle",
+                    "info",
+                    "; ".join(actions_taken),
+                )
+            return {"ran": True, **status_obj}
+        except Exception as exc:
+            return {"ran": False, "error": str(exc)}
+
+    def check_and_install_missing_dependencies(self, config: AppConfig, *, install: bool = False) -> dict[str, Any]:
+        """Checks missing Python packages & companion OS tools (and Ollama fast companion model) and optionally installs them."""
+        import importlib.util
+
+        py_reqs = [
+            ("psutil", "psutil"),
+            ("customtkinter", "customtkinter"),
+            ("PIL", "pillow"),
+            ("pystray", "pystray"),
+            ("cryptography", "cryptography"),
+        ]
+        missing_py = [pip_name for mod_name, pip_name in py_reqs if importlib.util.find_spec(mod_name) is None]
+
+        dep_lib = self.dep_lib
+        if dep_lib is None:
+            try:
+                from .dependency_library import DependencyLibraryManager
+
+                dep_lib = DependencyLibraryManager(self.cfg_mgr, self.journal)
+            except Exception:
+                dep_lib = None
+
+        missing_sys: list[dict[str, str]] = []
+        if dep_lib is not None:
+            for st in dep_lib.inspect_all():
+                if not st.installed:
+                    missing_sys.append(
+                        {
+                            "dep_id": st.dep_id,
+                            "name": st.name,
+                            "required_for": st.required_for,
+                            "recommended_cmd": st.recommended_cmd,
+                        }
+                    )
+
+        fast_missing = ""
+        if getattr(config, "hermes_mode", "") == "local_gpu" or getattr(config, "hermes_local_only", False):
+            ok_o, pulled = self.find_all_local_ollama_models()
+            if ok_o and not any(self._model_tag_matches(c, pulled) for c in self._FAST_LOCAL_CANDIDATES):
+                fast_missing = "qwen3:8b"
+
+        if not install:
+            return {
+                "ok": True,
+                "missing_python": missing_py,
+                "missing_companion": missing_sys,
+                "missing_fast_model": fast_missing,
+                "all_ready": (not missing_py and not missing_sys and not fast_missing),
+            }
+
+        installed_py: list[str] = []
+        failed_py: list[str] = []
+        if missing_py:
+            pr = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--quiet", *missing_py],
+                capture_output=True,
+                text=True,
+                timeout=180,
+                creationflags=_WIN_NO_WINDOW,
+            )
+            if pr.returncode == 0:
+                installed_py = list(missing_py)
+            else:
+                failed_py = list(missing_py)
+
+        sys_outcomes: list[dict[str, Any]] = []
+        if dep_lib is not None and missing_sys:
+            outs = dep_lib.install_all_missing(permitted=True, dry_run=False)
+            sys_outcomes = [{"dep_id": o.dep_id, "ok": o.ok, "message": o.message} for o in outs]
+
+        fast_pull_res: dict[str, Any] = {}
+        if fast_missing:
+            fast_pull_res = self.ensure_fast_companion_model_async(config)
+
+        return {
+            "ok": not failed_py,
+            "installed_python": installed_py,
+            "failed_python": failed_py,
+            "companion_outcomes": sys_outcomes,
+            "fast_model_pull": fast_pull_res,
+        }
+
+    @staticmethod
+    def _prompt_needs_tools(prompt: str) -> bool:
+        """Returns True when the user is asking for live system/file/web/remote action rather than pure chat."""
+        low = (prompt or "").strip().lower()
+        if len(low) <= 28 and not any(w in low for w in ("scan", "fix", "check", "wifi", "wi-fi", "gpu", "ram", "cpu", "file", "search", "open", "kill", "run", "test", "install", "update", "remote")):
+            return False
+        action_hints = (
+            "scan", "fix", "check", "diagnose", "optimize", "wifi", "wi-fi", "startup",
+            "probalance", "process", "kill", "restart", "gpu", "vram", "ram", "cpu",
+            "temp", "disk", "file", "edit", "write", "read", "code", "patch", "test",
+            "self-check", "install", "dependency", "dependencies", "search", "web",
+            "browse", "fetch", "skill", "memory", "remember", "cron", "remote",
+            "device", "tailscale", "bluetooth", "astrabeam", "astracradle", "astra",
+            "changes", "improve", "review", "feature", "learned", "usage", "apps",
+            "games", "tool", "custom", "status", "audit", "summary", "summarize",
+            "library", "topic", "research", "storage", "harvest", "autofix", "subagent", "sub-agent", "escalate",
+            "picture", "image", "photo", "video", "audio", "media", "mp4", "mkv", "mp3", "wav", "docx", "xlsx", "pptx",
+            "shell", "command", "terminal", "sudo", "update", "build", "error", "crash", "log",
+        )
+        return any(tok in low for tok in action_hints)
+
+    def _build_compact_system_prompt(self, config: AppConfig) -> str:
+        """Lightweight prompt for instant simple chat responses without 4KB prefill lag."""
+        self.ensure_hermes_home(config)
+        persona = self.get_active_persona(config)
+        return (
+            f"You are {persona['name']} ({persona['badge']}), AstraCradle's integrated PC AI assistant.\n"
+            f"Traits: {persona['traits']}.\n"
+            "Never invent fake percentages, endpoints, files, or metrics. Answer clearly, concisely, and helpfully in plain readable text without markdown code fences."
+        )
+
     def _build_system_prompt(self, config: AppConfig) -> str:
         self.ensure_hermes_home(config)
         user_txt = self.user_md_path.read_text(encoding="utf-8", errors="ignore")[:700]
@@ -4467,6 +8177,9 @@ class HermesAgentManager:
         src_root = self.get_local_source_root()
         web_ok = bool(getattr(config, "hermes_allow_web_search", True))
         persona = self.get_active_persona(config)
+        manifest = self.build_internal_memory_manifest()
+        topics_txt = ", ".join(manifest.get("topics") or [])[:260] or "none yet"
+        cats_txt = ", ".join(manifest.get("categories") or [])[:180] or "general"
 
         return (
             f"You are {persona['name']} ({persona['badge']}), AstraCradle's PC Action & Self-Development AI.\n"
@@ -4475,8 +8188,11 @@ class HermesAgentManager:
             f"{persona['prompt_directive']}\n"
             f"Learned Whole-PC & Remote Usage Context: Source={src_root} | WebSearch={'ON' if web_ok else 'OFF'} | Safety={perm_lbl} | "
             f"TopApps={apps_txt} | Games={games_txt} | Skills={skill_summary} | CustomTools={ct_summary}\n"
+            f"Internal Deep Memory Index: KnownTopics=[{topics_txt}] | Categories=[{cats_txt}]\n"
             f"User Notes: {user_txt}\nMemory: {mem}\n"
-            "Action & Self-Development Assistant Guidelines: Answer the user's exact request directly—if they ask for improvements, tests, or skills, propose concrete file-specific additions instead of saying no action is needed. "
+            "Action & Self-Development Assistant Guidelines: ALWAYS check your own internal Knowledge Library, MEMORY.md, Skills, and local files FIRST (`astra_knowledge_library(action='deep_recall')` / `memory_search`) before going to `web_search`, especially when a prompt relates to your KnownTopics. "
+            "If the user references a picture, video, audio clip, PDF, or Office document, inspect it with `astra_inspect_media` (or attached multimodal frames). "
+            "Answer the user's exact request directly—if they ask for improvements, tests, or skills, propose concrete file-specific additions instead of saying no action is needed. "
             "You can create, combine, and improve your own reusable custom tools via `astra_custom_tool_forge` whenever a recurring multi-step workflow would make the user's life easier. "
             "Ground EVERY file path, module name, metric, and error in real tool output from this turn; NEVER invent fictional modules, packages, endpoints, percentages, or bridges (such as non-existent bridges). "
             "CRITICAL: Tools like `astra_fix_safe`, `astra_process_manage`, `astra_startup_audit`, `astra_services_and_storage`, `astra_dev_self_build`, and `astra_knowledge_library` are internal AI function tools—NEVER tell the user to run `astra_*` commands or flags in bash/terminal. Offer to run them directly or describe the plain UI action. "
@@ -4542,10 +8258,19 @@ class HermesAgentManager:
             raw_content = str(msg.get("content") or "").strip()
             # Cleanly strip <think>...</think> reasoning blocks if a local reasoning model (e.g. Qwen3.6) emits them
             cleaned = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+            if not cleaned and msg.get("thinking"):
+                th = str(msg.get("thinking") or "").strip()
+                # If a reasoning trace leaked without final content, extract the last drafted paragraph rather than dumping the checklist
+                m_draft = re.search(
+                    r"(?:Drafting the Response[^:]*:|Final Answer[^:]*:|Response:)\s*(.+)",
+                    th,
+                    flags=re.DOTALL | re.IGNORECASE,
+                )
+                cleaned = m_draft.group(1).strip() if m_draft else th
             content = (
                 cleaned
                 or raw_content
-                or str(msg.get("thinking") or msg.get("reasoning") or "").strip()
+                or str(msg.get("reasoning") or "").strip()
             )
             raw_calls = msg.get("tool_calls") or []
             # Fallback: parse inline <tool_call>{...}</tool_call> blocks if a local model emitted tool calls in text
@@ -4692,45 +8417,62 @@ class HermesAgentManager:
         if delay_s > 0.0:
             time.sleep(min(2.0, delay_s))
 
-        # Stage 0: Requested GPU budget options
-        opts_primary: dict[str, Any] = {
-            "num_ctx": int(gpu_plan.get("num_ctx") or spec.get("context_tokens", 32768)),
-        }
+        # Stage 0: Requested GPU budget options (or lean fast budget for instant quick chat)
+        is_fast_tier = spec.get("dynamic_tier") == "fast"
+        base_ctx = int(gpu_plan.get("num_ctx") or spec.get("context_tokens", 32768))
+        if is_fast_tier:
+            base_ctx = min(2048, base_ctx)
+        opts_primary: dict[str, Any] = {"num_ctx": base_ctx}
+        if is_fast_tier:
+            opts_primary["num_predict"] = 768
         if gpu_plan.get("num_batch"):
             opts_primary["num_batch"] = int(gpu_plan["num_batch"])
         if gpu_plan.get("num_gpu_layers") is not None:
             opts_primary["num_gpu"] = int(gpu_plan["num_gpu_layers"])
 
         native_msgs = _to_native_ollama_messages(messages)
-        attempts: list[tuple[str, dict[str, Any], bool]] = [
-            ("primary", opts_primary, True),
-            # Stage 1: Drop partial num_gpu/num_batch splits (common ROCm/MoE segfault trigger on Qwen3.6) + lean 8K ctx
-            ("gpu_safe", {"num_ctx": min(8192, int(opts_primary.get("num_ctx", 8192)))}, True),
-            # Stage 2: Pure CPU/RAM safe fallback (num_gpu=0) if GPU/ROCm runner itself segfaults
-            ("cpu_safe", {"num_gpu": 0, "num_ctx": 4096}, True),
-            # Stage 3: Pure CPU/RAM fallback without tool schema payload if Jinja tool template crashed runner
-            ("cpu_notools", {"num_gpu": 0, "num_ctx": 4096}, False),
-        ]
+        if spec["model"] in self._gpu_fallback_models:
+            # Skip already-known crashing GPU stages for this model so replies don't stall waiting for a segfault
+            attempts: list[tuple[str, dict[str, Any], bool]] = [
+                ("cpu_safe", {"num_gpu": 0, "num_ctx": min(4096, base_ctx)}, True),
+                ("cpu_notools", {"num_gpu": 0, "num_ctx": min(4096, base_ctx)}, False),
+            ]
+        else:
+            attempts = [
+                ("primary", opts_primary, True),
+                # Stage 1: Drop partial num_gpu/num_batch splits (common ROCm/MoE segfault trigger) + lean 8K ctx
+                ("gpu_safe", {"num_ctx": min(8192, base_ctx)}, True),
+                # Stage 2: Pure CPU/RAM safe fallback (num_gpu=0) if GPU/ROCm runner itself segfaults
+                ("cpu_safe", {"num_gpu": 0, "num_ctx": min(4096, base_ctx)}, True),
+                # Stage 3: Pure CPU/RAM fallback without tool schema payload if Jinja tool template crashed runner
+                ("cpu_notools", {"num_gpu": 0, "num_ctx": min(4096, base_ctx)}, False),
+            ]
 
         last_http_exc: urllib.error.HTTPError | None = None
-        for idx, (_stage_name, stage_opts, include_tools) in enumerate(attempts):
+        for idx, (stage_name, stage_opts, include_tools) in enumerate(attempts):
             try_payload: dict[str, Any] = {
                 "model": spec["model"],
                 "messages": native_msgs,
                 "stream": bool(stream_cb is not None),
                 "options": stage_opts,
             }
+            if "think_mode" in spec:
+                try_payload["think"] = bool(spec["think_mode"])
             if include_tools and tools:
                 try_payload["tools"] = tools
             if gpu_plan.get("keep_alive"):
                 try_payload["keep_alive"] = str(gpu_plan["keep_alive"])
             try:
                 content, t_calls = _post_chat_ollama_native(try_payload)
-                if idx >= 2 and content and not t_calls:
-                    content += (
-                        "\n\n_(Auto-recovered via safe CPU/RAM fallback after Ollama GPU runner crashed. "
-                        "Tip: if you have an AMD Ryzen iGPU + Radeon discrete GPU on Linux/CachyOS, setting "
-                        "`ROCR_VISIBLE_DEVICES=0` in Ollama's systemd override fixes ROCm multi-GPU segfaults.)_"
+                if idx > 0 or stage_name.startswith("cpu"):
+                    if stage_name.startswith("cpu"):
+                        self._save_gpu_fallback_model(spec["model"], stage_name)
+                    self.record_hermes_diagnostic(
+                        "ollama_gpu_runner_fallback",
+                        "warning",
+                        f"Ollama model '{spec['model']}' recovered on '{stage_name}' stage.",
+                        "If using AMD Ryzen iGPU + Radeon dGPU, apply ROCR_VISIBLE_DEVICES=0 in Ollama systemd override.",
+                        metadata={"model": spec["model"], "stage": stage_name},
                     )
                 return content, t_calls
             except urllib.error.HTTPError as exc:
@@ -4741,6 +8483,19 @@ class HermesAgentManager:
                 except Exception:
                     err_txt = str(exc)
                 low_err = err_txt.lower()
+                # Older Ollama builds may reject top-level "think" with HTTP 400 — retry cleanly without it
+                if exc.code == 400 and "think" in low_err and "think" in try_payload:
+                    try_payload.pop("think", None)
+                    try:
+                        return _post_chat_ollama_native(try_payload)
+                    except urllib.error.HTTPError as exc2:
+                        exc = exc2
+                        last_http_exc = exc2
+                        try:
+                            err_txt = exc2.read().decode("utf-8", errors="ignore")
+                        except Exception:
+                            err_txt = str(exc2)
+                        low_err = err_txt.lower()
                 is_runner_crash = exc.code >= 500 and any(
                     tok in low_err
                     for tok in (
@@ -4808,8 +8563,24 @@ class HermesAgentManager:
         self._append_session_message(session_id, "user", clean_prompt + att_note, title_hint=clean_prompt)
 
         history = self.get_session_messages(session_id, limit=24)
+        use_compact = False
+        if spec["provider"] == "ollama":
+            route = self.select_dynamic_ollama_model(
+                clean_prompt,
+                config,
+                history=history,
+                has_images=bool(encoded_imgs),
+            )
+            spec["model"] = route["model"]
+            spec["think_mode"] = route["think"]
+            spec["dynamic_tier"] = route["tier"]
+            if llm_caller is None and route.get("missing_fast_recommendation"):
+                self.ensure_fast_companion_model_async(config)
+            if route["tier"] == "fast" and not self._prompt_needs_tools(clean_prompt) and not attachments:
+                use_compact = True
         # Compact older history if long so context fits comfortably
-        messages: list[dict[str, Any]] = [{"role": "system", "content": self._build_system_prompt(config)}]
+        sys_prompt = self._build_compact_system_prompt(config) if use_compact else self._build_system_prompt(config)
+        messages: list[dict[str, Any]] = [{"role": "system", "content": sys_prompt}]
         if len(history) > 14:
             older_summary = " | ".join(f"{m['role']}: {m['content'][:90]}" for m in history[:-10])
             messages.append({"role": "system", "content": f"Earlier session summary: {older_summary[:1400]}"})
@@ -4820,7 +8591,65 @@ class HermesAgentManager:
             if m["role"] in ("user", "assistant"):
                 messages.append({"role": m["role"], "content": m["content"]})
 
-        tools = self._tool_schemas()
+        # Attach base64 images AND extracted file/OCR context on the final user message
+        if encoded_imgs or attachment_context:
+            for m in reversed(messages):
+                if m.get("role") == "user":
+                    if encoded_imgs:
+                        m["images"] = encoded_imgs
+                    if attachment_context:
+                        m["content"] = f"{m['content']}\n\n{attachment_context}"
+                    break
+
+        # Deep Internal Memory Recall (check own library/memory/skills FIRST before external web searches)
+        if not use_compact:
+            try:
+                recall = self.deep_internal_recall(clean_prompt, limit=3)
+                blocks_int: list[str] = []
+                for h in (recall.get("library_hits") or []):
+                    blocks_int.append(f"- [Library:{h.get('category', '')}] {h['title']}: {h.get('summary', '')[:220]}")
+                for m in (recall.get("memory_hits") or []):
+                    blocks_int.append(f"- [Memory:{m.get('source', '')}] {m.get('ref', '')}: {m.get('snippet', '')[:180]}")
+                if blocks_int:
+                    messages.insert(
+                        1,
+                        {
+                            "role": "system",
+                            "content": (
+                                "Deep Internal Memory Recall (Consult these internal files FIRST before calling web_search):\n"
+                                + "\n".join(blocks_int)[:1100]
+                            ),
+                        },
+                    )
+            except Exception:
+                pass
+            try:
+                sop_hits = self.match_sop_templates(clean_prompt, limit=2)
+                if sop_hits:
+                    sop_blocks = []
+                    for sop in sop_hits:
+                        rules_s = " | ".join(sop.get("decision_rules") or [])[:300]
+                        tools_s = ", ".join(s.get("tool", "") for s in (sop.get("tool_pipeline") or []))
+                        sop_blocks.append(
+                            f"[{sop['template_id']}] {sop['title']}\n"
+                            f"Decision Rules: {rules_s}\n"
+                            f"Pipeline Tools: {tools_s}\n"
+                            f"Fill-In Template:\n{sop.get('output_template', '')[:420]}"
+                        )
+                    messages.insert(
+                        1,
+                        {
+                            "role": "system",
+                            "content": (
+                                "Matched Standard Operating Book Template(s) — Run the pipeline tools first, obey Decision Rules, "
+                                "and plug real tool results into this template structure:\n\n" + "\n---\n".join(sop_blocks)[:1500]
+                            ),
+                        },
+                    )
+            except Exception:
+                pass
+
+        tools = [] if use_compact else self._select_tool_schemas(clean_prompt, self._tool_schemas())
         caller = llm_caller or self._call_llm
         tool_events: list[dict[str, Any]] = []
         skill_created = ""
@@ -4861,9 +8690,13 @@ class HermesAgentManager:
                 ):
                     auto_calls: list[dict[str, Any]] = []
                     low_p = clean_prompt.lower()
-                    if "astra_dev_self_build" in low_p or any(k in low_p for k in ("astra", "astracradle", "changes", "codebase", "architecture")):
+                    if "astra_dev_self_build" in low_p or re.search(r"\b(?:astra|astracradle)\b", low_p) or any(k in low_p for k in ("codebase", "architecture")):
                         auto_calls.append({"id": "auto_inspect", "function": {"name": "astra_dev_self_build", "arguments": {"action": "inspect"}}})
                         auto_calls.append({"id": "auto_git", "function": {"name": "astra_git_sync", "arguments": {"action": "status"}}})
+                    if "astra_process_lookup" in low_p or ("ollama" in low_p and "process" in low_p):
+                        auto_calls.append({"id": "auto_proc", "function": {"name": "astra_process_lookup", "arguments": {"query": "ollama"}}})
+                    if "astra_startup_audit" in low_p:
+                        auto_calls.append({"id": "auto_startup", "function": {"name": "astra_startup_audit", "arguments": {}}})
                     if "astra_journal_and_crashes" in low_p or "diagnostics" in low_p or "ui log" in low_p:
                         auto_calls.append({"id": "auto_diag", "function": {"name": "astra_journal_and_crashes", "arguments": {"limit": 10}}})
                     if "astra_system_status" in low_p or "astra_deep_scan" in low_p:
@@ -4911,10 +8744,56 @@ class HermesAgentManager:
                             "content": json.dumps(result)[:3500],
                         }
                     )
+                    # If astra_inspect_media extracted visual frames (image or video keyframes), inject them for vision models
+                    if tname == "astra_inspect_media" and result.get("ok") and result.get("image_paths"):
+                        media_imgs = self._encode_image_attachments(list(result.get("image_paths") or [])[:4])
+                        if media_imgs:
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": f"[Visual frames from {result.get('name', 'media')} — inspect directly]",
+                                    "images": media_imgs,
+                                }
+                            )
             else:
                 final_reply = "Completed tool workflow."
 
-            # Hermes Closed Learning Loop: auto-crystallize reusable skill AND composite custom tool after 3+ successful tool calls
+            # Post-reply self-verification guardrail: catch dangerous mid-rebase git commit advice or fake CLI flags
+            try:
+                audit_res = self.verify_work(action="audit_draft", draft_text=final_reply, session_id=session_id, config=config)
+                if not audit_res.get("verified") and audit_res.get("warnings"):
+                    final_reply = (
+                        final_reply.rstrip()
+                        + "\n\nSelf-Verification Guardrail:\n- "
+                        + "\n- ".join(audit_res["warnings"])
+                    )
+            except Exception:
+                pass
+
+            # Hermes Fast Closed Learning Loop: crystallize SOP template after 2+ successful tool calls,
+            # and full SKILL.md + reusable composite custom tool after 3+ successful tool calls
+            ok_steps_all = [
+                {"tool": ev["tool"], "args": ev["args"], "continue_on_error": True}
+                for ev in tool_events
+                if ev.get("ok") and not str(ev.get("tool", "")).startswith(("custom_", "astra_custom_tool_forge", "astra_sop_templates", "sudo_exec", "shell_exec"))
+            ]
+            if len(ok_steps_all) >= 2 and self._effective_permission_level(config) != "read_only":
+                slug_sop = re.sub(r"[^a-z0-9]+", "_", clean_prompt.lower())[:30].strip("_") or "workflow"
+                try:
+                    kw_list = [w for w in re.findall(r"[a-z0-9_]{3,}", clean_prompt.lower()) if w not in ("the", "and", "for", "with", "that", "this")][:6]
+                    self.save_learned_sop_template(
+                        template_id=f"sop_auto_{slug_sop}",
+                        title=f"Auto-SOP: {clean_prompt[:70]}",
+                        category="learned",
+                        keywords=kw_list or ["auto", "workflow"],
+                        decision_rules=["Follow verified tool outputs from this pipeline; confirm before destructive changes."],
+                        tool_pipeline=ok_steps_all[:5],
+                        output_template=f"Auto-Learned SOP ({clean_prompt[:60]}):\n" + "\n".join(f"- {s['tool']}: {{{{result_{i+1}}}}}" for i, s in enumerate(ok_steps_all[:5])),
+                        config=config,
+                    )
+                except Exception:
+                    pass
+
             if len(tool_events) >= 3 and not skill_created:
                 slug = re.sub(r"[^a-z0-9]+", "-", clean_prompt.lower())[:32].strip("-") or "auto-workflow"
                 steps_txt = "\n".join(f"{idx+1}. Call `{ev['tool']}` ({json.dumps(ev['args'])})" for idx, ev in enumerate(tool_events))
@@ -4924,17 +8803,12 @@ class HermesAgentManager:
                     f"# Auto-Learned Procedure\n{steps_txt}\n",
                 )
                 skill_created = str(sp)
-                ok_steps = [
-                    {"tool": ev["tool"], "args": ev["args"], "continue_on_error": True}
-                    for ev in tool_events
-                    if ev.get("ok") and not str(ev.get("tool", "")).startswith(("custom_", "astra_custom_tool_forge", "sudo_exec", "shell_exec"))
-                ]
-                if len(ok_steps) >= 3 and self._effective_permission_level(config) != "read_only":
+                if len(ok_steps_all) >= 3 and self._effective_permission_level(config) != "read_only":
                     try:
                         self.create_composite_custom_tool(
                             name=f"custom_auto_{slug.replace('-', '_')}",
                             description=f"Auto-combined workflow for: {clean_prompt[:110]}",
-                            steps=ok_steps[:6],
+                            steps=ok_steps_all[:6],
                             auto_learned=True,
                             config=config,
                         )

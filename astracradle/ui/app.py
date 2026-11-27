@@ -303,6 +303,12 @@ class AstraCradleApp(ctk.CTk):
             playbook_builder=self.playbook_builder,
             ram_standby_mgr=self.ram_standby_mgr,
             net_dns_inspector=self.net_dns_inspector,
+            dep_lib=self.dep_lib,
+            crash_analyzer=self.crash_analyzer,
+            approval_prompt_cb=self._prompt_hermes_approval_from_worker,
+            thermal_spc=self.thermal_spc,
+            gpu_pwr=self.gpu_pwr,
+            catalog_scanner=self.catalog_scanner,
         )
         self.i18n = Translator(self.config_obj.language)
         self._last_duplicate_groups: list[DuplicateGroup] = []
@@ -1388,7 +1394,6 @@ class AstraCradleApp(ctk.CTk):
             ("wifi", "Wi-Fi, Failover & Mesh", "Wi-Fi channel optimizer, Ethernet <-> Wi-Fi ping failover & PC Wi-Fi Mesh Array Assistant."),
             ("rf_waves", "Bandwidth & RF Waves", "Special Category: Live network RX/TX wave oscilloscope & 2.4/5/6 GHz + Bluetooth radio-wave spectrum chart."),
             ("remote_beam", "Remote Stream & Devices", "AstraBeam TLS streaming, iOS/Android/Apple Watch proximity auto-connect, Bluetooth fallback & custom device registry."),
-            ("hermes", "Hermes OS AI", "Native Hermes AI agent: auto-matched GPU local model (Ollama), free cloud APIs, persistent memory, self-learned SKILL.md & cron."),
             ("cmd_vault", "Command & Install Vault", "SQLite install commands & reusable script database with quick dropdown picker, copy & custom save."),
             ("scanner", "System Scanner & DB", "Special Category: Multi-drive file & program catalog, passive scanner, new-app watcher, Known Issues DB & quiet auto-repair."),
             ("probalance", self.i18n.t("nav.probalance", "ProBalance & Latency"), "ProBalance Foreground Boost, Auto-Reverted App Profiles & Interrupt/DPC Guard (Ctrl+9)."),
@@ -1400,12 +1405,12 @@ class AstraCradleApp(ctk.CTk):
         self._full_nav_labels: dict[str, str] = {k: lbl for k, lbl, _ in nav_items}
         self._simple_nav_labels: dict[str, str] = {
             "dashboard": "Home Overview",
+            "hermes": "Hermes OS AI",
             "playbook": "Fix Problems",
             "hunter": "Speed Up Apps",
             "modules": "Clean & Protect",
             "wifi": "Wi-Fi & Internet",
             "remote_beam": "Phone & Remote",
-            "hermes": "Hermes OS AI",
             "settings": "Settings & Updates",
         }
         self._advanced_nav_keys: tuple[str, ...] = (
@@ -6121,6 +6126,21 @@ class AstraCradleApp(ctk.CTk):
                             render_hermes_page(self) if self.current_nav == "hermes" else None,
                         ),
                     )
+                # Ensure a fast companion model is available for instant dynamic routing on simple queries
+                if getattr(self.config_obj, "hermes_dynamic_model_routing", True):
+                    self.hermes_mgr.ensure_fast_companion_model_async(self.config_obj)
+                # Auto-install any missing Python/companion dependencies when consent is active
+                dep_res = self.hermes_mgr.check_and_install_missing_dependencies(
+                    self.config_obj,
+                    install=bool(getattr(self.config_obj, "consent_auto_install_deps", False)),
+                )
+                if dep_res.get("installed_python"):
+                    self.after(
+                        0,
+                        lambda pkgs=", ".join(dep_res["installed_python"]): self.show_toast(
+                            f"Downloaded missing Python dependencies: {pkgs}"
+                        ),
+                    )
             except Exception:
                 pass
 
@@ -8986,14 +9006,24 @@ class AstraCradleApp(ctk.CTk):
                 if run_heavy and self.config_obj.is_module_enabled("hermes_ai"):
                     try:
                         focus_obj = getattr(self, "_bg_focus_state", None)
+                        is_fs_game = bool(focus_obj.is_fullscreen if focus_obj else False)
                         self.hermes_mgr.observe_running_workload(
                             snap.top_processes,
                             focus_process=(focus_obj.process_name if focus_obj else ""),
-                            is_fullscreen=bool(focus_obj.is_fullscreen if focus_obj else False),
+                            is_fullscreen=is_fs_game,
                             gpu=gpu,
                             cpu_percent=snap.cpu_percent,
                             ram_percent=snap.mem_percent,
                         )
+                        cyc = self.hermes_mgr.run_autonomous_passive_cycle(
+                            self.config_obj,
+                            snapshot=snap,
+                            gpu=gpu,
+                            is_gaming=is_fs_game,
+                        )
+                        if cyc.get("ran") and cyc.get("actions_this_cycle"):
+                            summary_txt = "; ".join(cyc["actions_this_cycle"][:2])
+                            self.after(0, lambda m=summary_txt: self.show_toast(f"Hermes Guardian: {m}"))
                     except Exception:
                         pass
                 sensors = (
