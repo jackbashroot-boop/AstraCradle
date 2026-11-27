@@ -923,7 +923,31 @@ def _build_chat_workspace(
         app._hermes_session_id = f"session_{int(_t.time())}"
         render_hermes_page(app)
 
-    ctk.CTkButton(row_a, text="+ New Chat", width=96, height=28, fg_color=p.bg_card, command=_new_session).pack(side="left", padx=(0, 12))
+    def _delete_session() -> None:
+        from tkinter import messagebox
+
+        if getattr(app, "_show_startup_popups", True):
+            if not messagebox.askyesno(
+                "Delete Chat Session",
+                f"Delete chat session '{session_id}' and all its messages?\n\n(Your MEMORY.md and Knowledge Library stay intact.)",
+            ):
+                return
+        res_del = hm.delete_session(session_id)
+        app._hermes_session_id = str(res_del.get("next_session_id") or "default")
+        app.show_toast(f"Deleted chat '{session_id}' ({res_del.get('deleted_messages', 0)} messages removed).")
+        render_hermes_page(app)
+
+    ctk.CTkButton(row_a, text="+ New Chat", width=96, height=28, fg_color=p.bg_card, command=_new_session).pack(side="left", padx=(0, 6))
+    ctk.CTkButton(
+        row_a,
+        text="🗑 Delete Chat",
+        width=104,
+        height=28,
+        fg_color=p.accent_coral,
+        text_color="#1A0A0D",
+        font=f["small_bold"],
+        command=_delete_session,
+    ).pack(side="left", padx=(0, 12))
 
     # Active Identity / Persona selector right in the chat header
     p_labels, p_by_lbl = _persona_options()

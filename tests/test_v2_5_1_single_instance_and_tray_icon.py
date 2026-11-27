@@ -3023,6 +3023,37 @@ def test_github_pull_updates_git_clone_directly(monkeypatch) -> None:
         assert any("-e" in c and str(repo) in c for c in calls)
 
 
+def test_hermes_delete_chat_session_and_ui_button() -> None:
+    import tempfile
+    from pathlib import Path
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "astra")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig()
+        hm.ensure_hermes_home(cfg)
+        hm.append_memory("Keep this memory forever.", target="MEMORY.md")
+
+        hm._append_session_message("sess_keep", "user", "keep me", title_hint="Keep Chat")
+        hm._append_session_message("sess_old", "user", "old question", title_hint="Old Chat")
+        hm._append_session_message("sess_old", "assistant", "old answer")
+
+        res = hm.delete_session("sess_old")
+        assert res["ok"] is True
+        assert res["deleted_messages"] == 2
+        assert res["next_session_id"] == "sess_keep"
+        assert hm.get_session_messages("sess_old") == []
+        assert all(s["session_id"] != "sess_old" for s in hm.list_sessions())
+        assert "Keep this memory forever." in hm.memory_path.read_text(encoding="utf-8")
+
+        hp = (Path(__file__).resolve().parents[1] / "astracradle" / "ui" / "pages" / "hermes_page.py").read_text(encoding="utf-8")
+        assert "Delete Chat" in hp and "_delete_session" in hp
+
+
+
 
 
 

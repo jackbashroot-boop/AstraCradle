@@ -3964,6 +3964,28 @@ class HermesAgentManager:
             for r in rows
         ]
 
+    def delete_session(self, session_id: str) -> dict[str, Any]:
+        """Deletes a chat session and all of its stored messages from sessions.db, returning the next active session ID."""
+        sid = (session_id or "").strip() or "default"
+        self._init_sessions_db()
+        with sqlite3.connect(self.sessions_db_path) as conn:
+            cur_m = conn.execute("DELETE FROM messages WHERE session_id=?", (sid,))
+            deleted_msgs = int(cur_m.rowcount or 0)
+            cur_s = conn.execute("DELETE FROM sessions WHERE session_id=?", (sid,))
+            deleted_sess = int(cur_s.rowcount or 0)
+            conn.commit()
+            nxt_row = conn.execute("SELECT session_id FROM sessions ORDER BY updated_at DESC LIMIT 1").fetchone()
+        next_sid = str(nxt_row[0]) if nxt_row else "default"
+        if next_sid == sid:
+            next_sid = "default"
+        return {
+            "ok": True,
+            "deleted_session": sid,
+            "deleted_messages": deleted_msgs,
+            "deleted_record": bool(deleted_sess),
+            "next_session_id": next_sid,
+        }
+
     def _append_session_message(self, session_id: str, role: str, content: str, tool_trace: str = "", title_hint: str = "") -> None:
         self._init_sessions_db()
         now = utc_now_iso()
