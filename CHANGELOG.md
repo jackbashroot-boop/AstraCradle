@@ -15,6 +15,10 @@ All notable updates and fixes to **AstraCradle** (`v2.5.1+`) are documented here
 - Polls automatically every 60s and triggers an **important alert toast + desktop tray notification** whenever any Bluetooth device battery drops below **20%** (with recharge hysteresis at 25%).
 - Displays live and tracked Bluetooth device battery badges in **Clean & Protect → Smart TV, Bluetooth & Network Devices** and `python3 -m astracradle --scan-tv`.
 
+### Hermes AI On-The-Fly Shell & Preference Adaptation (Fish / Zsh / Bash / Standing Rules)
+- Added `astra_adapt_preferences` tool and `hermes_preferred_shell` config so Hermes adapts on the fly when told to switch shells (e.g., *"use Fish instead of bash for all commands"*) or given new standing rules, persisting them into `config.json`, `USER.md`, and `MEMORY.md`.
+- Updated `shell_exec` and `_run_sudo_prompted` to execute directly through the active preferred shell (`fish -c`, `zsh -c`, `bash -c`, etc.) instead of hardcoded `/bin/sh`, plus turn-0 auto-grounding so Hermes applies live shell/rule preferences immediately instead of refusing.
+
 ### Hermes AI Full PC File Catalog, Passive Idle Scanner & Pre-Activation Guard
 - Added `PcFileGuardian` (`astracradle/core/file_guardian.py`) and the `astra_file_guardian` Hermes tool so Hermes can catalog PC files/drives, capture full system/hardware/package/port inventory, passively scan during idle time (`cpu < 25%` and not gaming), verify incoming files (`Downloads`/`Desktop`/`autostart`/`systemd user`), and warn the user **before** risky files or startup units are turned on.
 - Updated Hermes prompts, tool routing, short-retry intent inheritance (`"Try again"` / `"Go ahead"`), and universal turn-0/fallback grounding across Wi-Fi, diagnostics, startup, remote tasks, Smart TV/LAN, and file catalog prompts so Astra/Hermes runs live AstraCradle tools directly instead of claiming it lacks OS/hardware access.

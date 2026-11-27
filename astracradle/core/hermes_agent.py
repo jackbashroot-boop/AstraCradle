@@ -5393,6 +5393,25 @@ class HermesAgentManager:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_adapt_preferences",
+                    "description": "Adapt Hermes on the fly to user preferences and standing rules: switch active command shell (e.g. 'fish', 'bash', 'zsh', 'sh', 'auto') or persist standing behavioral instructions into USER.md & config.json.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["set_shell", "add_standing_rule", "get_preferences"],
+                            },
+                            "shell": {"type": "string", "description": "Shell name such as fish, bash, zsh, sh, or auto"},
+                            "rule": {"type": "string", "description": "Standing rule or preference to apply from now on"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
         ]
         tools_list = [
             # Dynamic enabled custom tools registered by the agent
@@ -5529,6 +5548,28 @@ class HermesAgentManager:
                 )
         return None
 
+    @staticmethod
+    def _resolve_command_shell(config: AppConfig) -> tuple[str, list[str]]:
+        """Resolves active command shell honoring config.hermes_preferred_shell (fish/bash/zsh/sh/auto)."""
+        pref = str(getattr(config, "hermes_preferred_shell", "auto") or "auto").strip().lower()
+        if platform.system() == "Windows":
+            if pref in ("pwsh", "powershell"):
+                exe = shutil.which("pwsh") or shutil.which("powershell")
+                if exe:
+                    return Path(exe).name.lower(), [exe, "-NoProfile", "-Command"]
+            return "cmd", ["cmd", "/c"]
+
+        if pref == "auto":
+            env_sh = Path(str(os.environ.get("SHELL") or "")).name.lower()
+            pref = env_sh if env_sh in ("fish", "bash", "zsh", "sh") else "sh"
+
+        if pref in ("fish", "bash", "zsh", "sh"):
+            exe = shutil.which(pref)
+            if exe:
+                return pref, [exe, "-c"]
+        sh_bin = shutil.which("sh") or "/bin/sh"
+        return "sh", [sh_bin, "-c"]
+
     def _run_sudo_prompted(self, cmd: str, reason: str, config: AppConfig) -> dict[str, Any]:
         lvl = self._effective_permission_level(config)
         if lvl != "sudo_with_prompt":
@@ -5562,7 +5603,8 @@ class HermesAgentManager:
 
             runner = ElevationRunner(password_prompt_cb=_cli_pw)
 
-        argv = ["cmd", "/c", clean_cmd] if platform.system() == "Windows" else ["sh", "-c", clean_cmd]
+        shell_name, shell_prefix = self._resolve_command_shell(config)
+        argv = ["cmd", "/c", clean_cmd] if platform.system() == "Windows" else [*shell_prefix, clean_cmd]
         res = runner.run_privileged(
             argv,
             reason=f"{reason}\n\nCommand: {clean_cmd}",
@@ -6968,6 +7010,50 @@ class HermesAgentManager:
                     return {"ok": True, "acknowledged": cleared}
                 return self.file_guardian.get_status()
 
+            if name == "astra_adapt_preferences":
+                act = str(args.get("action") or "get_preferences").strip().lower()
+                if act == "set_shell":
+                    req_sh = str(args.get("shell") or "auto").strip().lower()
+                    allowed_shells = ("auto", "fish", "bash", "zsh", "sh", "pwsh", "powershell", "cmd")
+                    if req_sh not in allowed_shells:
+                        return {"ok": False, "error": f"Unsupported shell '{req_sh}'. Supported: {', '.join(allowed_shells)}"}
+                    if req_sh not in ("auto", "cmd"):
+                        exe_found = shutil.which(req_sh)
+                        if not exe_found and not (req_sh == "powershell" and shutil.which("pwsh")):
+                            return {
+                                "ok": False,
+                                "shell": req_sh,
+                                "error": f"'{req_sh}' binary is not installed in PATH yet. Install {req_sh} first or use another installed shell.",
+                            }
+                    config.hermes_preferred_shell = req_sh
+                    try:
+                        self.cfg_mgr.save(config)
+                    except Exception:
+                        pass
+                    eff_name, _ = self._resolve_command_shell(config)
+                    self.append_memory(f"Preferred command shell: {eff_name} (user requested '{req_sh}')", target="USER.md")
+                    self.journal.log_event("HermesOS", "adapt_shell", f"Switched preferred command shell to {eff_name}", "On-the-fly user preference", "ok")
+                    return {
+                        "ok": True,
+                        "preferred_shell": eff_name,
+                        "requested": req_sh,
+                        "message": f"Switched active command shell to {eff_name} for all future shell and elevated commands.",
+                    }
+                if act == "add_standing_rule":
+                    rule_txt = str(args.get("rule") or "").strip()
+                    if not rule_txt:
+                        return {"ok": False, "error": "Missing rule text"}
+                    p_u = self.append_memory(f"Standing Rule: {rule_txt}", target="USER.md")
+                    self.append_memory(f"Adapted on the fly: {rule_txt}", target="MEMORY.md")
+                    return {"ok": True, "saved_to": str(p_u), "rule": rule_txt, "message": f"Saved standing rule: {rule_txt}"}
+                eff_name, _ = self._resolve_command_shell(config)
+                return {
+                    "ok": True,
+                    "preferred_shell": eff_name,
+                    "configured_shell": getattr(config, "hermes_preferred_shell", "auto"),
+                    "permission_level": perm,
+                }
+
             if name == "shell_exec":
                 cmd = str(args.get("command", "")).strip()
                 if not cmd:
@@ -7002,17 +7088,19 @@ class HermesAgentManager:
                     if not ok_ap:
                         return {"ok": False, "blocked": True, "error": msg_ap}
                     self._record_hermes_rollback("shell_exec", f"Shell: {cmd[:60]}", f"Executed shell command: {cmd[:180]}")
+                shell_name, shell_prefix = self._resolve_command_shell(config)
                 proc = subprocess.run(
-                    cmd,
-                    shell=True,
+                    [*shell_prefix, cmd],
+                    shell=False,
                     capture_output=True,
                     text=True,
                     timeout=15,
                     creationflags=_WIN_NO_WINDOW,
                 )
-                self.journal.log_event("HermesOS", "shell_exec", f"Ran: {cmd[:120]} (rc={proc.returncode})", "Hermes tool", "ok" if proc.returncode == 0 else "warning")
+                self.journal.log_event("HermesOS", "shell_exec", f"Ran ({shell_name}): {cmd[:120]} (rc={proc.returncode})", "Hermes tool", "ok" if proc.returncode == 0 else "warning")
                 return {
                     "ok": proc.returncode == 0,
+                    "shell": shell_name,
                     "returncode": proc.returncode,
                     "stdout": (proc.stdout or "")[:3000],
                     "stderr": (proc.stderr or "")[:1000],
@@ -7648,9 +7736,9 @@ class HermesAgentManager:
                 "astra_dev_self_build", "astra_git_sync", "astra_journal_and_crashes",
                 "astra_pc_usage_summary", "shell_exec", "sudo_exec", "astra_rollback_undo",
             })
-        if any(w in low for w in ("learned", "usage", "apps", "games", "summary", "summarize", "web", "online", "docs", "research", "url", "skill", "memory", "remember", "cron", "schedule", "subagent", "sub-agent")):
+        if any(w in low for w in ("learned", "usage", "apps", "games", "summary", "summarize", "web", "online", "docs", "research", "url", "skill", "memory", "remember", "cron", "schedule", "subagent", "sub-agent", "fish", "zsh", "bash", "from now on", "instead of", "prefer", "adapt", "always use", "standing rule")):
             selected_names.update({
-                "astra_pc_usage_summary", "web_search", "web_fetch", "memory_read", "memory_save", "memory_search",
+                "astra_adapt_preferences", "astra_pc_usage_summary", "web_search", "web_fetch", "memory_read", "memory_save", "memory_search",
                 "skill_save", "skill_install_from_url", "cron_schedule", "delegate_subagent",
             })
 
@@ -8550,6 +8638,11 @@ class HermesAgentManager:
                 "can't run processes",
                 "lack direct access",
                 "unable to directly",
+                "cannot switch to",
+                "can't switch to",
+                "not supported in the current environment",
+                "please use a supported shell",
+                "cannot adapt",
             )
         )
 
@@ -8559,7 +8652,7 @@ class HermesAgentManager:
         for tname, res in executed_results:
             ok_str = "OK" if res.get("ok") else "Notice"
             summary_parts: list[str] = []
-            for k in ("os", "cpu_percent", "ram_percent", "ram_used", "ssid", "interface", "signal_dbm", "channel", "recommended_channel", "message", "status_message", "files_cataloged", "sudo_capability_note", "error"):
+            for k in ("os", "cpu_percent", "ram_percent", "ram_used", "ssid", "interface", "signal_dbm", "channel", "recommended_channel", "preferred_shell", "shell", "rule", "message", "status_message", "files_cataloged", "sudo_capability_note", "error"):
                 if k in res and res[k] not in (None, "", []):
                     summary_parts.append(f"{k}={res[k]}")
             if not summary_parts:
@@ -8587,6 +8680,7 @@ class HermesAgentManager:
             "library", "topic", "research", "storage", "harvest", "autofix", "subagent", "sub-agent", "escalate",
             "picture", "image", "photo", "video", "audio", "media", "mp4", "mkv", "mp3", "wav", "docx", "xlsx", "pptx",
             "shell", "command", "terminal", "sudo", "update", "build", "error", "crash", "log",
+            "fish", "zsh", "bash", "from now on", "instead of", "prefer", "adapt", "always use", "switch",
         )
         return any(tok in low for tok in action_hints)
 
@@ -8594,10 +8688,11 @@ class HermesAgentManager:
         """Lightweight prompt for instant simple chat responses without 4KB prefill lag."""
         self.ensure_hermes_home(config)
         persona = self.get_active_persona(config)
+        sh_name, _ = self._resolve_command_shell(config)
         return (
-            f"You are {persona['name']} ({persona['badge']}), AstraCradle's integrated PC AI assistant running directly on the user's computer with full local OS diagnostic, file catalog, and guardian tools.\n"
+            f"You are {persona['name']} ({persona['badge']}), AstraCradle's integrated PC AI assistant running directly on the user's computer with full local OS diagnostic, file catalog, shell ({sh_name}), and guardian tools.\n"
             f"Traits: {persona['traits']}.\n"
-            "Never claim you lack access to the user's PC, files, drives, or OS. Never invent fake percentages, endpoints, files, or metrics. Answer clearly, concisely, and helpfully in plain readable text without markdown code fences."
+            "You can adapt on the fly to user preferences and switch shells via `astra_adapt_preferences`. Never claim you lack access to the user's PC, files, drives, or OS. Never invent fake percentages, endpoints, files, or metrics. Answer clearly, concisely, and helpfully in plain readable text without markdown code fences."
         )
 
     def _build_system_prompt(self, config: AppConfig) -> str:
@@ -8621,18 +8716,20 @@ class HermesAgentManager:
         manifest = self.build_internal_memory_manifest()
         topics_txt = ", ".join(manifest.get("topics") or [])[:260] or "none yet"
         cats_txt = ", ".join(manifest.get("categories") or [])[:180] or "general"
+        active_shell, _ = self._resolve_command_shell(config)
 
         return (
             f"You are {persona['name']} ({persona['badge']}), AstraCradle's PC Action & Self-Development AI.\n"
             f"Traits: {persona['traits']}\n"
             f"Mannerisms: {persona['mannerisms']}\n"
             f"{persona['prompt_directive']}\n"
-            f"Learned Whole-PC & Remote Usage Context: Source={src_root} | WebSearch={'ON' if web_ok else 'OFF'} | Safety={perm_lbl} | "
+            f"Learned Whole-PC & Remote Usage Context: Source={src_root} | ActiveCommandShell={active_shell} | WebSearch={'ON' if web_ok else 'OFF'} | Safety={perm_lbl} | "
             f"TopApps={apps_txt} | Games={games_txt} | Skills={skill_summary} | CustomTools={ct_summary}\n"
             f"Internal Deep Memory Index: KnownTopics=[{topics_txt}] | Categories=[{cats_txt}]\n"
             f"User Notes: {user_txt}\nMemory: {mem}\n"
-            "Action & Self-Development Assistant Guidelines: You ARE running directly on the user's local PC inside AstraCradle with REAL OS tools (`astra_file_guardian`, `astra_deep_scan`, `astra_services_and_storage`, `astra_system_status`, `shell_exec`, `sudo_exec`, `list_dir`, `file_read`). "
-            "NEVER say 'I don't have direct access to your hardware or operating system' or 'I can't scan/catalog files or run processes'. "
+            "Action & Self-Development Assistant Guidelines: You ARE running directly on the user's local PC inside AstraCradle with REAL OS tools (`astra_adapt_preferences`, `astra_file_guardian`, `astra_deep_scan`, `astra_services_and_storage`, `astra_system_status`, `shell_exec`, `sudo_exec`, `list_dir`, `file_read`). "
+            "NEVER say 'I don't have direct access to your hardware or operating system', 'I cannot switch to Fish shell', or 'I can't scan/catalog files or run processes'. "
+            "You CAN adapt on the fly: when the user gives a standing rule or shell preference (e.g. 'from now on use Fish instead of bash', 'always...', 'never...'), IMMEDIATELY call `astra_adapt_preferences` (`set_shell` or `add_standing_rule`) so all subsequent commands and restarts follow it! "
             "When the user asks to scan their PC, catalog all files/drives, passively scan while idle, scan incoming files, or notify BEFORE risky items turn on, IMMEDIATELY call `astra_file_guardian(action='start_full_catalog_and_guard')` (and `sudo_exec` when Permission Level 4 allows elevated inspection, or note how to enable Level 4 for root-only paths). "
             "ALWAYS check your own internal Knowledge Library, MEMORY.md, Skills, and local files FIRST (`astra_knowledge_library(action='deep_recall')` / `memory_search`) before going to `web_search`, especially when a prompt relates to your KnownTopics. "
             "If the user references a picture, video, audio clip, PDF, or Office document, inspect it with `astra_inspect_media` (or attached multimodal frames). "
@@ -9174,6 +9271,12 @@ class HermesAgentManager:
                     if any(k in low_p for k in ("catalog", "all files", "all drives", "full scan", "incoming files", "passively scan", "before they are turned on")):
                         _add_auto("auto_fg", "astra_file_guardian", {"action": "start_full_catalog_and_guard"})
                         _add_auto("auto_svc", "astra_services_and_storage", {})
+                    for sh_cand in ("fish", "zsh", "bash", "pwsh"):
+                        if sh_cand in low_p and any(k in low_p for k in ("use ", "switch", "instead of", "from now on", "prefer", "all commands")):
+                            _add_auto("auto_shell", "astra_adapt_preferences", {"action": "set_shell", "shell": sh_cand})
+                            break
+                    if any(k in low_p for k in ("from now on", "always remember", "standing rule")) and "auto_shell" not in [c["id"] for c in auto_calls]:
+                        _add_auto("auto_rule", "astra_adapt_preferences", {"action": "add_standing_rule", "rule": clean_prompt})
                     if not auto_calls and self._looks_like_false_refusal(content):
                         _add_auto("auto_stat", "astra_system_status", {})
                         _add_auto("auto_scan", "astra_deep_scan", {})

@@ -3687,6 +3687,59 @@ def test_hermes_retry_inherits_intent_and_prevents_false_refusal() -> None:
         assert "astra_file_guardian [OK]" in fallback and "files_cataloged=420" in fallback
 
 
+def test_hermes_on_the_fly_shell_and_rule_adaptation(monkeypatch) -> None:
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "astra")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig(hermes_permission_level="standard_user")
+        hm.ensure_hermes_home(cfg)
+
+        orig_which = shutil.which
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/fish" if name == "fish" else orig_which(name))
+
+        # 1. Tool selector & _prompt_needs_tools recognize Fish & standing-rule requests
+        p_txt = "Also from now on you need to use Fish instead of bash for all commands."
+        assert hm._prompt_needs_tools(p_txt) is True
+        sel_names = {t["function"]["name"] for t in hm._select_tool_schemas(p_txt, hm._tool_schemas())}
+        assert "astra_adapt_preferences" in sel_names
+        assert hm._looks_like_false_refusal("I cannot switch to Fish shell as it is not supported in the current environment.") is True
+
+        # 2. Switch preferred shell to Fish on the fly -> updates config, USER.md, and _build_system_prompt
+        sw = hm.execute_tool("astra_adapt_preferences", {"action": "set_shell", "shell": "fish"}, cfg)
+        assert sw["ok"] is True
+        assert sw["preferred_shell"] == "fish"
+        assert cfg.hermes_preferred_shell == "fish"
+        sh_name, sh_prefix = hm._resolve_command_shell(cfg)
+        assert sh_name == "fish" and sh_prefix == ["/usr/bin/fish", "-c"]
+        assert "ActiveCommandShell=fish" in hm._build_system_prompt(cfg)
+
+        # 3. Verify shell_exec actually passes commands through ["/usr/bin/fish", "-c", ...]
+        seen_argv: list[object] = []
+
+        def _fake_run(argv, **kw):
+            seen_argv.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout="fish ok\n", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        sh_res = hm.execute_tool("shell_exec", {"command": "ls -la"}, cfg)
+        assert sh_res["ok"] is True and sh_res["shell"] == "fish"
+        assert seen_argv == [["/usr/bin/fish", "-c", "ls -la"]]
+
+        # 4. Standing rule adapts immediately into USER.md & MEMORY.md
+        r_res = hm.execute_tool("astra_adapt_preferences", {"action": "add_standing_rule", "rule": "Always prefer Fish syntax"}, cfg)
+        assert r_res["ok"] is True
+        assert "Always prefer Fish syntax" in hm.user_md_path.read_text(encoding="utf-8")
+
+
+
 
 
 
