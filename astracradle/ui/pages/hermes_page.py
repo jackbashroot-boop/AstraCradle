@@ -1480,16 +1480,16 @@ def _build_chat_workspace(
                     if getattr(app, "current_nav", "hermes") == "hermes":
                         render_hermes_page(app)
                     else:
-                        app.show_toast("Hermes AI finished replying — open Hermes OS AI to view.", important=True)
+                        app.show_toast("Stephen AI finished replying — open Stephen AI to view.", important=True)
                     if res.skill_created:
-                        app.show_toast("Hermes auto-learned a new reusable SKILL.md!", important=False)
+                        app.show_toast("Stephen AI auto-learned a new reusable SKILL.md!", important=False)
                 else:
                     app._hermes_live_error = res.error
                     app._hermes_live_error_session = session_id
                     reloader = getattr(app, "_hermes_chat_reloader", None)
                     if callable(reloader) and getattr(app, "_hermes_chat_session_id", "") == session_id:
                         reloader(err=res.error, use_cache=False)
-                    app.show_toast(f"Hermes error: {res.error}", important=True)
+                    app.show_toast(f"Stephen AI error: {res.error}", important=True)
 
             app.after(0, _ui)
 
@@ -1542,7 +1542,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
 
         threading.Thread(target=_bg_probe, daemon=True).start()
 
-    # Full-Screen Chat Focus Mode — fills the entire Hermes OS AI canvas
+    # Full-Screen Chat Focus Mode — fills the entire Stephen AI canvas
     if bool(getattr(app, "_hermes_fullscreen_chat", False)):
         fs_bar = ctk.CTkFrame(parent, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12)
         fs_bar.pack(fill="x", padx=4, pady=(2, 8))
@@ -1551,7 +1551,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
         ctk.CTkLabel(
             fs_bar,
             text=(
-                f"Hermes OS AI · Full-Screen Action Chat   |   Model: {spec_fs['model']}   ·   "
+                f"Stephen AI · Full-Screen Action Chat   |   Model: {spec_fs['model']}   ·   "
                 f"GPU: {gpu_fs['target_gpu_pct']}% (Reserve {gpu_fs['vram_reserve_mb']} MB VRAM)"
             ),
             font=f["small_bold"],
@@ -1572,7 +1572,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
         _build_chat_workspace(fs_card, app, is_fullscreen=True)
         return
 
-    # ── Top Banner: Hermes OS AI Status & Hardware Match ─────────────────────
+    # ── Top Banner: Stephen AI Status & Hardware Match ─────────────────────
     hdr = ctk.CTkFrame(parent, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12)
     hdr.pack(fill="x", padx=4, pady=(2, 10))
 
@@ -1580,7 +1580,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     top_row.pack(fill="x", padx=14, pady=(12, 6))
     ctk.CTkLabel(
         top_row,
-        text="Hermes OS AI Agent · Autonomous Assistant, Skills, Memory & Cron",
+        text="Stephen AI Agent · Autonomous Assistant, Skills, Memory & Cron",
         font=f["section"],
         text_color=p.accent_cyan,
     ).pack(side="left")
@@ -1928,7 +1928,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
             def _done() -> None:
                 prog_bar.set(1.0 if ok else 0.7)
                 prog_lbl.configure(text=summary, text_color=(p.accent_jade if ok else p.accent_brass))
-                app.show_toast("Hermes OS AI setup complete!" if ok else "Hermes setup finished with notes.")
+                app.show_toast("Stephen AI setup complete!" if ok else "Stephen AI setup finished with notes.")
                 render_hermes_page(app)
 
             app.after(0, _done)
@@ -1937,7 +1937,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
 
     ctk.CTkButton(
         btn_row,
-        text="Auto-Install & Set Up Hermes AI Now",
+        text="Auto-Install & Set Up Stephen AI Now",
         height=32,
         fg_color=p.accent_jade,
         text_color="#071510",
@@ -1968,7 +1968,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
             hm.save_env_vars({spec["env_var"]: key_ent.get().strip()})
         hm.ensure_hermes_home(cfg)
         app._hermes_status_cache = hm.get_status(cfg)
-        app.show_toast("Saved Hermes AI configuration & credentials.")
+        app.show_toast("Saved Stephen AI configuration & credentials.")
         render_hermes_page(app)
 
     ctk.CTkButton(
@@ -2536,9 +2536,9 @@ def render_hermes_page(app: AstraCradleApp) -> None:
         perm_var.set(safe_perm_var.get())
         app.cfg_mgr.save(cfg)
         hm.write_config_yaml(cfg)
-        app.show_toast("Updated Hermes OS permission level & safety settings.")
+        app.show_toast("Updated Stephen AI permission level & safety settings.")
 
-    ctk.CTkLabel(t_safe, text="How Much System Control Should Hermes OS AI Have?", font=f["body_bold"], text_color=p.accent_cyan).pack(anchor="w", padx=10, pady=(10, 4))
+    ctk.CTkLabel(t_safe, text="How Much System Control Should Stephen AI Have?", font=f["body_bold"], text_color=p.accent_cyan).pack(anchor="w", padx=10, pady=(10, 4))
     ctk.CTkOptionMenu(t_safe, values=perm_labels, variable=safe_perm_var, width=520, command=_save_safety).pack(anchor="w", padx=10, pady=(0, 4))
     perm_desc_lbl.pack(anchor="w", padx=12, pady=(0, 8))
 
@@ -2546,8 +2546,8 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     ctk.CTkSwitch(t_safe, text="Dynamic Smart Model Routing (Fast 4B-9B model for simple chat -> Heavy 35B for coding/research)", variable=dyn_route_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
     ctk.CTkSwitch(t_safe, text="Allow AI Web Search, Online Docs Research & Skill URL Fetch (keeps local GPU model offline)", variable=web_search_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
     ctk.CTkSwitch(t_safe, text="Require explicit approval / dry-run before risky changes (Recommended)", variable=req_app_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
-    ctk.CTkSwitch(t_safe, text="Enable scheduled Hermes Cron tasks while AstraCradle runs", variable=cron_en_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
-    ctk.CTkSwitch(t_safe, text="Speak Hermes AI replies aloud offline (TTS via espeak-ng / spd-say)", variable=voice_tts_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
+    ctk.CTkSwitch(t_safe, text="Enable scheduled Stephen AI Cron tasks while AstraCradle runs", variable=cron_en_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
+    ctk.CTkSwitch(t_safe, text="Speak Stephen AI replies aloud offline (TTS via espeak-ng / spd-say)", variable=voice_tts_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
 
     # Library Storage Cap (1 GB – 200 GB) + Auto-Prune / Auto-Download Card
     lib_card = ctk.CTkFrame(t_safe, fg_color=p.bg_elevated, corner_radius=9)

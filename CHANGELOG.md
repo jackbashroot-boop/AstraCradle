@@ -15,6 +15,10 @@ All notable updates and fixes to **AstraCradle** (`v2.5.1+`) are documented here
 - Polls automatically every 60s and triggers an **important alert toast + desktop tray notification** whenever any Bluetooth device battery drops below **20%** (with recharge hysteresis at 25%).
 - Displays live and tracked Bluetooth device battery badges in **Clean & Protect → Smart TV, Bluetooth & Network Devices** and `python3 -m astracradle --scan-tv`.
 
+### Stephen AI Rename & Dedicated Bluetooth & Peripherals Category
+- Renamed **Hermes OS AI** across the sidebar, topbar, Command Deck tile, chat assistant persona (`Stephen · Stephen AI`), setup wizard, and settings to **Stephen AI** in honor of the user's late father (keeping all existing internal configs, sessions, and memories seamlessly intact).
+- Added a dedicated **Bluetooth & Peripherals** (`peripherals`) sidebar category & page (`astracradle/ui/pages/peripherals_page.py`) showing **all connected devices**: Bluetooth devices with live battery % & `<20%` low-battery alert switch, all USB/HID/PCIe/input peripherals with BadUSB Trust & Strict Kernel Gate controls, audio outputs/mics, displays, and USB autosuspend nodes.
+
 ### Hermes AI Quick Actions Dropdown & Tool Grounding Audit
 - Replaced the 2-row quick-fix button grid below the chat box with a single compact **Quick Actions Dropdown** (`CTkOptionMenu` + `▶ Run`) containing 15 verified actions, including Full PC File Catalog & Pre-Launch Guard, Smart TVs & LAN Sinkhole Scan, Bluetooth Battery Check (`<20%`), Storage/SMART/Services, System/Firmware Updates, Crash Logs & Error Audit, and Verify Work / Second Opinion.
 - Fixed real tool flaws discovered during full button audit: `astra_process_lookup(query='')` now returns live top CPU/RAM processes instead of failing, `astra_fix_safe` now works standalone (`GuardedExecutor` + `SafeBeginnerFixer`) without an attached GUI fixer, `astra_rollback_undo` now reads `RollbackEntry.action_id` instead of crashing on missing `action_type`, `astra_av_and_peripherals` now includes live Bluetooth device & battery telemetry, and internal `astra_*` syntax no longer leaks into quick-action chat bubbles.

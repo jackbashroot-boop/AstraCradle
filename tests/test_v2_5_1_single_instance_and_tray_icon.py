@@ -3838,6 +3838,96 @@ def test_all_quick_actions_dropdown_and_tool_grounding_no_hallucinations(monkeyp
         assert sent_prompts == [hp_mod._QUICK_ACTION_CHIPS[4][1]]
 
 
+def test_stephen_ai_rename_and_bluetooth_peripherals_page(monkeypatch) -> None:
+    import types
+    from pathlib import Path
+    from astracradle.core.config import AppConfig
+    from astracradle.core.hermes_agent import HERMES_PERSONAS
+    from astracradle.core.lan_tv_shield import BluetoothDeviceInfo
+    from astracradle.core.usb_guard import PeripheralDevice
+    from astracradle.theme import get_palette, get_ui_fonts
+    import astracradle.ui.pages.peripherals_page as pp_mod
+
+    # 1. Default persona & UI labels reflect Stephen AI
+    assert HERMES_PERSONAS["astra_standard"]["name"] == "Stephen"
+    assert "Stephen AI" in HERMES_PERSONAS["astra_standard"]["badge"]
+    app_src = (Path(__file__).resolve().parents[1] / "astracradle" / "ui" / "app.py").read_text(encoding="utf-8")
+    assert '("hermes", "Stephen AI",' in app_src
+    assert '("peripherals", "Bluetooth & Peripherals",' in app_src
+    hp_src = (Path(__file__).resolve().parents[1] / "astracradle" / "ui" / "pages" / "hermes_page.py").read_text(encoding="utf-8")
+    assert "Stephen AI Agent" in hp_src
+
+    # 2. Dedicated Bluetooth & Peripherals page renders Bluetooth batteries (<20% highlighted) + USB/HID + Audio/Displays
+    rendered_texts: list[str] = []
+
+    class _FakePWidget:
+        def __init__(self, *a, **kw):
+            if "text" in kw:
+                rendered_texts.append(str(kw["text"]))
+
+        def pack(self, *a, **kw):
+            return self
+
+        def winfo_children(self):
+            return []
+
+        def winfo_exists(self):
+            return True
+
+        def destroy(self):
+            return None
+
+    monkeypatch.setattr(
+        pp_mod,
+        "ctk",
+        types.SimpleNamespace(CTkFrame=_FakePWidget, CTkLabel=_FakePWidget, CTkButton=_FakePWidget, CTkSwitch=_FakePWidget),
+    )
+    monkeypatch.setattr(
+        pp_mod,
+        "tk",
+        types.SimpleNamespace(BooleanVar=lambda value=False: types.SimpleNamespace(get=lambda: value, set=lambda _v: None)),
+    )
+    monkeypatch.setattr(pp_mod, "_collect_audio_and_display_summary", lambda: (["PipeWire Sink 1"], ["HDMI-A-1 connected"], ["usb1"]))
+
+    fake_app = types.SimpleNamespace(
+        peripherals_scroll=_FakePWidget(),
+        palette=get_palette("obsidian"),
+        fonts=get_ui_fonts(1.0),
+        config_obj=AppConfig(),
+        cfg_mgr=types.SimpleNamespace(save=lambda _c: None),
+        usb_guard=types.SimpleNamespace(
+            scan_all_peripherals=lambda: [
+                PeripheralDevice(
+                    device_key="usb-1",
+                    bus="usb",
+                    name="Keychron K2",
+                    vendor="Keychron",
+                    status="trusted",
+                    plain_description="USB Mechanical Keyboard",
+                )
+            ]
+        ),
+        _latest_bt_devices=[
+            BluetoothDeviceInfo(mac="AA:BB:CC:11:22:33", name="Sony WH-1000XM5", device_kind="audio", connected=True, battery_pct=14),
+            BluetoothDeviceInfo(mac="DD:EE:FF:44:55:66", name="Xbox Controller", device_kind="input", connected=True, battery_pct=82),
+        ],
+        _latest_peripherals=None,
+        _content_wrap=lambda pad=0: 700,
+        _on_toggle_usb_strict_gate=lambda _v: None,
+        _on_trust_usb=lambda _d: None,
+        switch_nav=lambda _k: None,
+        show_toast=lambda *_a, **_kw: None,
+    )
+    pp_mod.render_peripherals_page(fake_app)  # type: ignore[arg-type]
+    joined = "\n".join(rendered_texts)
+    assert "Bluetooth & Peripherals — All Connected Devices" in joined
+    assert "Sony WH-1000XM5" in joined and "14% LOW!" in joined
+    assert "Xbox Controller" in joined and "82%" in joined
+    assert "Keychron K2" in joined
+    assert "PipeWire Sink 1" in joined and "HDMI-A-1 connected" in joined
+
+
+
 
 
 

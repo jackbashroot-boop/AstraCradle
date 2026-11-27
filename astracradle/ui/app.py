@@ -153,6 +153,7 @@ from .pages.dashboard_snapshot import (
 from .pages.hermes_page import render_hermes_page
 from .pages.monitoring import build_monitoring_page, refresh_monitoring_peripherals, update_monitoring_live
 from .pages.network_failover import render_failover_section
+from .pages.peripherals_page import render_peripherals_page
 from .pages.remote_beam import AstraBeamViewerWindow, render_remote_beam_page
 from .pages.rf_waves import render_rf_waves_page
 from .pages.wifi_mesh import render_wifi_mesh_section
@@ -1389,8 +1390,9 @@ class AstraCradleApp(ctk.CTk):
         self.nav_buttons: dict[str, ctk.CTkButton] = {}
         nav_items = [
             ("dashboard", self.i18n.t("nav.dashboard", "Command Deck"), "Interactive snapshot of AstraCradle options, compact expandable diagnostics & thermals (Ctrl+1)."),
-            ("hermes", "Hermes OS AI", "Native Hermes AI agent: auto-matched GPU local model (Ollama), dynamic model scaling, free cloud APIs, persistent memory, self-learned SKILL.md & cron."),
+            ("hermes", "Stephen AI", "Stephen AI agent: auto-matched GPU local model (Ollama), dynamic model scaling, free cloud APIs, persistent memory, self-learned SKILL.md & cron."),
             ("monitoring", "Live Monitoring", "Dedicated Live Monitoring category: full charts, detailed sensors, USB/BadUSB audit & conflicts."),
+            ("peripherals", "Bluetooth & Peripherals", "All Bluetooth devices & battery monitor (<20% alert), USB/BadUSB guard, audio, displays, keyboards, mice & controllers."),
             ("playbook", self.i18n.t("nav.playbook", "Diagnostics & Playbook"), "Actionable findings with Confidence %, Safe Auto-Fix & copyable DIY steps (Ctrl+2)."),
             ("hunter", "AI & Process Hunter", "Spot idle AI chatbots (Ollama, LM Studio) & dormant helpers holding RAM (Ctrl+3)."),
             ("scripts", self.i18n.t("nav.scripts", "Toggleable Scripts"), "One-click workload modes (Gaming, 3D Render, Compile) with OS hardware snapshots (Ctrl+4)."),
@@ -1410,7 +1412,8 @@ class AstraCradleApp(ctk.CTk):
         self._full_nav_labels: dict[str, str] = {k: lbl for k, lbl, _ in nav_items}
         self._simple_nav_labels: dict[str, str] = {
             "dashboard": "Home Overview",
-            "hermes": "Hermes OS AI",
+            "hermes": "Stephen AI",
+            "peripherals": "Bluetooth & Devices",
             "playbook": "Fix Problems",
             "hunter": "Speed Up Apps",
             "modules": "Clean & Protect",
@@ -1678,6 +1681,7 @@ class AstraCradleApp(ctk.CTk):
         for key in (
             "dashboard",
             "monitoring",
+            "peripherals",
             "playbook",
             "hunter",
             "scripts",
@@ -1700,6 +1704,7 @@ class AstraCradleApp(ctk.CTk):
 
         self._build_dashboard_page()
         self._build_monitoring_page()
+        self._build_peripherals_page()
         self._build_playbook_page()
         self._build_hunter_page()
         self._build_scripts_page()
@@ -2064,6 +2069,7 @@ class AstraCradleApp(ctk.CTk):
         titles = {
             "dashboard": "Command Deck",
             "monitoring": "Live Monitoring & Deep Diagnostics",
+            "peripherals": "Bluetooth & Peripherals · All Connected Devices",
             "playbook": "Diagnostics & Playbook",
             "hunter": "AI & Process Hunter",
             "scripts": "Toggleable Scripts",
@@ -2072,7 +2078,7 @@ class AstraCradleApp(ctk.CTk):
             "wifi": "Wi-Fi Optimizer, Failover & Mesh Assistant",
             "rf_waves": "Bandwidth & RF Radio-Wave Spectrum",
             "remote_beam": "AstraBeam · Tailscale, iOS/Android/Watch & Devices",
-            "hermes": "Hermes OS AI · Autonomous Agent, GPU Local & Free Cloud",
+            "hermes": "Stephen AI · Autonomous Agent, GPU Local & Free Cloud",
             "cmd_vault": "Install Commands & Script Vault (SQLite)",
             "scanner": "Full System Scanner & Known-Issues DB",
             "probalance": "ProBalance & Latency",
@@ -2099,6 +2105,8 @@ class AstraCradleApp(ctk.CTk):
         if key == "monitoring":
             update_monitoring_live(self)
             refresh_monitoring_peripherals(self)
+        elif key == "peripherals":
+            self._render_peripherals_page()
         elif key == "playbook":
             self._render_playbook()
         elif key == "hunter":
@@ -2420,12 +2428,12 @@ class AstraCradleApp(ctk.CTk):
                         self.after(
                             0,
                             lambda: self.show_toast(
-                                "Hermes OS AI setup complete!" if ok_h else f"Hermes OS AI: {msg_h[:80]}"
+                                "Stephen AI setup complete!" if ok_h else f"Stephen AI: {msg_h[:80]}"
                             ),
                         )
 
                     threading.Thread(target=_bg_hermes_wizard_setup, daemon=True).start()
-                    setup_actions.append("Hermes OS AI installing")
+                    setup_actions.append("Stephen AI installing")
                 elif self.config_obj.is_module_enabled("hermes_ai") and str(payload.get("hermes_api_key") or "").strip():
                     spec_h = self.hermes_mgr.resolve_provider_spec(self.config_obj)
                     self.hermes_mgr.save_env_vars({spec_h["env_var"]: str(payload["hermes_api_key"]).strip()})
@@ -6119,8 +6127,8 @@ class AstraCradleApp(ctk.CTk):
         def _ask() -> bool:
             dlg = YesNoActionDialog(
                 self,
-                title=f"Approve Hermes Action: {title}",
-                question=f"{detail}\n\nAllow Hermes OS AI to proceed?",
+                title=f"Approve Stephen AI Action: {title}",
+                question=f"{detail}\n\nAllow Stephen AI to proceed?",
                 yes_label="Approve",
                 no_label="Deny",
             )
@@ -6147,6 +6155,13 @@ class AstraCradleApp(ctk.CTk):
     def _render_remote_beam_page(self) -> None:
         render_remote_beam_page(self)
 
+    def _build_peripherals_page(self) -> None:
+        self.peripherals_scroll = ctk.CTkScrollableFrame(self.pages["peripherals"], fg_color="transparent")
+        self.peripherals_scroll.pack(fill="both", expand=True)
+
+    def _render_peripherals_page(self) -> None:
+        render_peripherals_page(self)
+
     def _build_hermes_page(self) -> None:
         self.hermes_scroll = ctk.CTkScrollableFrame(self.pages["hermes"], fg_color="transparent")
         self.hermes_scroll.pack(fill="both", expand=True)
@@ -6160,7 +6175,7 @@ class AstraCradleApp(ctk.CTk):
                     self.after(
                         0,
                         lambda m=res.get("model", ""): (
-                            self.show_toast(f"Hermes AI auto-integrated local GPU model ({m}) — ready offline with zero re-download."),
+                            self.show_toast(f"Stephen AI auto-integrated local GPU model ({m}) — ready offline with zero re-download."),
                             render_hermes_page(self) if self.current_nav == "hermes" else None,
                         ),
                     )
@@ -8390,11 +8405,11 @@ class AstraCradleApp(ctk.CTk):
             ],
         )
 
-        # Card 5: Hermes AI Skill & Knowledge Library (1 GB – 200 GB)
+        # Card 5: Stephen AI Skill & Knowledge Library (1 GB – 200 GB)
         sec_lib = _make_section_card(
-            "5. Hermes AI Skill & Knowledge Library (1 GB – 200 GB)",
+            "5. Stephen AI Skill & Knowledge Library (1 GB – 200 GB)",
             p.accent_jade,
-            "Configure how much disk space Hermes AI can use to store skills, web docs, and common reference items, with automatic pruning.",
+            "Configure how much disk space Stephen AI can use to store skills, web docs, and common reference items, with automatic pruning.",
         )
         cur_lib_gb = max(1, min(200, int(getattr(self.config_obj, "hermes_library_max_gb", 10) or 10)))
         self.set_hermes_lib_gb_var = tk.IntVar(value=cur_lib_gb)

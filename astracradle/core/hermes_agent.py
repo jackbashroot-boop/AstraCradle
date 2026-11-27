@@ -155,10 +155,10 @@ HERMES_GPU_MODES: dict[str, dict[str, Any]] = {
 
 HERMES_PERSONAS: dict[str, dict[str, str]] = {
     "astra_standard": {
-        "label": "Standard · Astra Assistant (Balanced, Clear & Proactive)",
-        "name": "Astra",
-        "badge": "Standard AI Assistant",
-        "tagline": "Warm, direct, practical, and tool-first — explains clearly without jargon or fluff.",
+        "label": "Standard · Stephen AI (Balanced, Clear & Proactive)",
+        "name": "Stephen",
+        "badge": "Stephen AI · Standard Assistant",
+        "tagline": "Warm, direct, practical, and tool-first — named in honor of Stephen, explains clearly without jargon or fluff.",
         "traits": "Calm, grounded, honest, plain-English first with structured technical depth on demand.",
         "mannerisms": (
             "Inspects real telemetry/files before guessing; states clearly what was checked, changed, and verified; "
@@ -6763,9 +6763,10 @@ class HermesAgentManager:
                         {
                             "name": d.name,
                             "mac": d.mac,
+                            "kind": getattr(d, "device_kind", "device"),
                             "connected": d.connected,
-                            "battery_percent": d.battery_percent,
-                            "low_battery": bool(d.battery_percent is not None and d.battery_percent < int(getattr(config, "bluetooth_low_battery_threshold", 20) or 20)),
+                            "battery_pct": getattr(d, "battery_pct", None),
+                            "low_battery": bool(getattr(d, "battery_pct", None) is not None and int(getattr(d, "battery_pct", 100)) < int(getattr(config, "bluetooth_low_battery_threshold", 20) or 20)),
                         }
                         for d in bt_devs
                     ]

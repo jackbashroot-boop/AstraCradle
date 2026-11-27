@@ -3077,7 +3077,7 @@ class SetupWizardDialog(ctk.CTkToplevel):
                 )
                 h_card.pack(fill="x", padx=10, pady=5)
                 ctk.CTkLabel(
-                    h_card, text="Hermes OS AI Agent (Local GPU & Free Cloud Setup)", font=f["body_bold"], text_color=p.accent_jade
+                    h_card, text="Stephen AI Agent (Local GPU & Free Cloud Setup)", font=f["body_bold"], text_color=p.accent_jade
                 ).pack(anchor="w", padx=12, pady=(8, 2))
                 if self._hermes_rec is not None:
                     r = self._hermes_rec
@@ -3105,7 +3105,7 @@ class SetupWizardDialog(ctk.CTkToplevel):
                 ).pack(anchor="w", padx=12, pady=(0, 6))
                 ctk.CTkLabel(
                     h_card,
-                    text="How much system access should Hermes AI have?",
+                    text="How much system access should Stephen AI have?",
                     font=f["small"],
                     text_color=p.text_primary,
                 ).pack(anchor="w", padx=12, pady=(2, 2))
@@ -3114,7 +3114,7 @@ class SetupWizardDialog(ctk.CTkToplevel):
                 ).pack(anchor="w", padx=12, pady=(0, 6))
                 ctk.CTkLabel(
                     h_card,
-                    text="How much GPU should local Hermes AI use?",
+                    text="How much GPU should local Stephen AI use?",
                     font=f["small"],
                     text_color=p.text_primary,
                 ).pack(anchor="w", padx=12, pady=(2, 2))
@@ -3130,7 +3130,7 @@ class SetupWizardDialog(ctk.CTkToplevel):
                 self._hermes_key_entry.pack(anchor="w", padx=12, pady=(0, 6))
                 ctk.CTkCheckBox(
                     h_card,
-                    text="Automatically download, install & set up Hermes AI right after finishing this wizard",
+                    text="Automatically download, install & set up Stephen AI right after finishing this wizard",
                     variable=self.v_hermes_auto_setup,
                     font=f["small"],
                     text_color=p.text_primary,
@@ -3170,7 +3170,7 @@ class SetupWizardDialog(ctk.CTkToplevel):
                 actions_note.append("iPhone 16 Pro Max / Watch Host: Will start immediately and show your PIN & URL.")
             if "hermes_ai" in sel_set:
                 actions_note.append(
-                    f"Hermes OS AI: {self.v_hermes_choice.get()}"
+                    f"Stephen AI: {self.v_hermes_choice.get()}"
                     + (" (auto-install & configure immediately)" if self.v_hermes_auto_setup.get() else "")
                 )
             if self.v_run_initial_fix.get():
