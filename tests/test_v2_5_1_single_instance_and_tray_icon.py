@@ -1827,6 +1827,7 @@ def test_ui_theme_fonts_palette_and_hermes_page_render_headless(monkeypatch) -> 
         CTkEntry=_FakeWidget,
         CTkTextbox=_FakeWidget,
         CTkSwitch=_FakeWidget,
+        CTkSlider=_FakeWidget,
         CTkProgressBar=_FakeWidget,
         CTkTabview=_FakeWidget,
         CTkToplevel=_FakeWidget,

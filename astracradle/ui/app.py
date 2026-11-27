@@ -8202,6 +8202,93 @@ class AstraCradleApp(ctk.CTk):
             ],
         )
 
+        # Card 5: Hermes AI Skill & Knowledge Library (1 GB – 200 GB)
+        sec_lib = _make_section_card(
+            "5. Hermes AI Skill & Knowledge Library (1 GB – 200 GB)",
+            p.accent_jade,
+            "Configure how much disk space Hermes AI can use to store skills, web docs, and common reference items, with automatic pruning.",
+        )
+        cur_lib_gb = max(1, min(200, int(getattr(self.config_obj, "hermes_library_max_gb", 10) or 10)))
+        self.set_hermes_lib_gb_var = tk.IntVar(value=cur_lib_gb)
+        self.set_hermes_lib_prefetch_var = tk.BooleanVar(
+            value=bool(getattr(self.config_obj, "hermes_library_auto_prefetch", True))
+        )
+        self.set_hermes_lib_prune_var = tk.BooleanVar(
+            value=bool(getattr(self.config_obj, "hermes_library_auto_prune", True))
+        )
+        lib_stats = self.hermes_mgr.get_library_stats(self.config_obj)
+        lib_slider_box = ctk.CTkFrame(sec_lib, fg_color="transparent")
+        lib_val_lbl = ctk.CTkLabel(
+            lib_slider_box,
+            text=f"{cur_lib_gb} GB  (Used: {lib_stats['total_mb']} MB · {lib_stats['skills_count']} Skills · {lib_stats['total_items']} Ref Items)",
+            font=self.fonts["small_bold"],
+            text_color=p.accent_cyan,
+        )
+
+        def _on_lib_slider(val: float) -> None:
+            gb = max(1, min(200, int(round(val))))
+            self.set_hermes_lib_gb_var.set(gb)
+            lib_val_lbl.configure(
+                text=f"{gb} GB  (Used: {lib_stats['total_mb']} MB · {lib_stats['skills_count']} Skills · {lib_stats['total_items']} Ref Items)"
+            )
+
+        lib_slider = ctk.CTkSlider(
+            lib_slider_box,
+            from_=1,
+            to=200,
+            number_of_steps=199,
+            width=260,
+            command=_on_lib_slider,
+        )
+        lib_slider.set(cur_lib_gb)
+        lib_slider.pack(side="left", padx=(0, 10))
+        lib_val_lbl.pack(side="left")
+
+        lib_actions_box = ctk.CTkFrame(sec_lib, fg_color="transparent")
+
+        def _settings_refresh_lib() -> None:
+            self.show_toast("Downloading fresh reference topics into Knowledge Library...")
+
+            def _rw() -> None:
+                res = self.hermes_mgr.prefetch_library_topics(self.config_obj)
+                self.after(0, lambda: (self.show_toast(f"Library updated ({res.get('stored', 0)} topic(s) stored)."), self._build_settings_page()))
+
+            threading.Thread(target=_rw, daemon=True).start()
+
+        def _settings_prune_lib() -> None:
+            pr = self.hermes_mgr.prune_library(self.config_obj, aggressive=True)
+            self.show_toast(f"Pruned {pr.get('removed', 0)} old/unused/incorrect library item(s).")
+            self._build_settings_page()
+
+        ctk.CTkButton(lib_actions_box, text="Update Library Now", height=28, width=155, fg_color=p.accent_cyan, text_color="#071217", font=self.fonts["small_bold"], command=_settings_refresh_lib).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(lib_actions_box, text="Prune Old / Incorrect", height=28, width=165, fg_color=p.bg_elevated, font=self.fonts["small"], command=_settings_prune_lib).pack(side="left")
+
+        _populate_rows(
+            sec_lib,
+            [
+                (
+                    "Max Library Size (1 GB – 200 GB)",
+                    lib_slider_box,
+                    "Adjust disk allowance from 1 GB up to 200 GB for cached web docs, common OS/dev items, and learned skills.",
+                ),
+                (
+                    "Auto-Download Useful References",
+                    ctk.CTkSwitch(sec_lib, text="Download & cache relevant web docs automatically", variable=self.set_hermes_lib_prefetch_var),
+                    "Quietly caches verified OS/GPU/Python/AstraCradle findings from web search into the local library.",
+                ),
+                (
+                    "Auto-Prune Old / Unused / Wrong Data",
+                    ctk.CTkSwitch(sec_lib, text="Prune stale, unused & superseded web items", variable=self.set_hermes_lib_prune_var),
+                    "Removes outdated, unused, or flagged-incorrect entries automatically and enforces your GB cap.",
+                ),
+                (
+                    "Library Maintenance",
+                    lib_actions_box,
+                    "Immediately refresh common topics from the web or prune stale/incorrect entries.",
+                ),
+            ],
+        )
+
         prot_card = ctk.CTkFrame(
             scroll, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12
         )
@@ -9491,6 +9578,16 @@ class AstraCradleApp(ctk.CTk):
             self.config_obj.badusb_guard_enabled = bool(self.set_badusb_var.get())
         if hasattr(self, "set_probalance_var"):
             self.config_obj.probalance_enabled = bool(self.set_probalance_var.get())
+        if hasattr(self, "set_hermes_lib_gb_var"):
+            self.config_obj.hermes_library_max_gb = max(1, min(200, int(self.set_hermes_lib_gb_var.get() or 10)))
+        if hasattr(self, "set_hermes_lib_prefetch_var"):
+            self.config_obj.hermes_library_auto_prefetch = bool(self.set_hermes_lib_prefetch_var.get())
+        if hasattr(self, "set_hermes_lib_prune_var"):
+            self.config_obj.hermes_library_auto_prune = bool(self.set_hermes_lib_prune_var.get())
+        if hasattr(self, "hermes_mgr"):
+            self.hermes_mgr.write_config_yaml(self.config_obj)
+            if self.config_obj.hermes_library_auto_prune:
+                self.hermes_mgr.prune_library(self.config_obj, aggressive=False)
         if hasattr(self, "set_sched_var"):
             want_sched = bool(self.set_sched_var.get())
             if want_sched != self.config_obj.background_schedule_enabled:

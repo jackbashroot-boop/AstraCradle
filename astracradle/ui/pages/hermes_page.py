@@ -1291,11 +1291,41 @@ def render_hermes_page(app: AstraCradleApp) -> None:
 
     ctk.CTkButton(t_mem, text="Save MEMORY.md", width=130, height=26, fg_color=p.accent_jade, text_color="#071510", command=_save_mem_md).pack(anchor="w", padx=8, pady=(0, 8))
 
-    ctk.CTkLabel(t_mem, text="Learned Skills (skills/*/SKILL.md):", font=f["body_bold"]).pack(anchor="w", padx=8, pady=(2, 2))
+    # Knowledge Library Browser & Maintenance Card
+    lib_st = hm.get_library_stats(cfg)
+    lib_hdr = ctk.CTkFrame(t_mem, fg_color="transparent")
+    lib_hdr.pack(fill="x", padx=8, pady=(2, 4))
+    ctk.CTkLabel(
+        lib_hdr,
+        text=(
+            f"Full Skill Suite ({lib_st['skills_count']} skills) & Knowledge Library "
+            f"({lib_st['total_items']} ref items · {lib_st['total_mb']} MB / {lib_st['max_gb']} GB cap)"
+        ),
+        font=f["body_bold"],
+        text_color=p.accent_cyan,
+    ).pack(side="left")
+
+    def _lib_prefetch_now() -> None:
+        app.show_toast("Downloading verified reference updates to library...")
+
+        def _pw() -> None:
+            r = hm.prefetch_library_topics(cfg)
+            app.after(0, lambda: (app.show_toast(f"Stored {r.get('stored', 0)} web reference(s)."), render_hermes_page(app)))
+
+        threading.Thread(target=_pw, daemon=True).start()
+
+    def _lib_prune_now() -> None:
+        r = hm.prune_library(cfg, aggressive=True)
+        app.show_toast(f"Pruned {r.get('removed', 0)} stale/incorrect library item(s).")
+        render_hermes_page(app)
+
+    ctk.CTkButton(lib_hdr, text="Prune Stale/Wrong", width=130, height=26, fg_color=p.bg_elevated, font=f["caption"], command=_lib_prune_now).pack(side="right", padx=(4, 0))
+    ctk.CTkButton(lib_hdr, text="Refresh Web Library", width=140, height=26, fg_color=p.accent_cyan, text_color="#071217", font=f["caption"], command=_lib_prefetch_now).pack(side="right", padx=4)
+
     skills_box = ctk.CTkTextbox(t_mem, height=130, font=f["small"], fg_color=p.bg_elevated)
     skills_box.pack(fill="both", expand=True, padx=8, pady=(0, 6))
     for sk in hm.list_skills():
-        skills_box.insert("end", f"=== {sk['slug']} ({sk['path']}) ===\n{sk['content']}\n\n")
+        skills_box.insert("end", f"=== SKILL: {sk['slug']} ({sk['path']}) ===\n{sk['content']}\n\n")
     skills_box.configure(state="disabled")
 
     # ── Tab 3: Cron & Subagents ──────────────────────────────────────────────

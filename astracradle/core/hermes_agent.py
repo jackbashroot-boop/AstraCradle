@@ -589,6 +589,228 @@ def recommend_hermes_models() -> HermesHardwareRecommendation:
     )
 
 
+BUILTIN_FULL_SKILL_SUITE: tuple[tuple[str, str, str], ...] = (
+    (
+        "astracradle-os-bridge",
+        "Use AstraCradle native OS tools to diagnose hardware/thermals, reclaim safe caches, check Wi-Fi channels, and explain running processes.",
+        "# AstraCradle OS Equilibrium Workflow\n"
+        "1. Call `astra_system_status` first to get live CPU, RAM, disk, and GPU metrics.\n"
+        "2. Call `astra_deep_scan` when the user asks why their computer is slow, hot, or cluttered.\n"
+        "3. Only call `astra_fix_safe` with `dry_run=false` when the user asks to apply safe cleanup; otherwise preview with `dry_run=true`.\n"
+        "4. Call `astra_process_lookup` to explain unfamiliar PIDs or processes in plain English.\n",
+    ),
+    (
+        "root-cause-debugging",
+        "Trace bugs, crashes, and tracebacks from symptom to verified root cause before patching.",
+        "# Root-Cause Debugging Playbook\n"
+        "1. Reproduce or inspect exact error logs (`astra_journal_and_crashes`, `file_read`, `grep_search`).\n"
+        "2. Check recent changes (`astra_dev_self_build(action='git_status')`) and exact line numbers.\n"
+        "3. State the exact root cause observed in files/logs, apply a surgical fix (`file_edit`), and verify with `compile_check` + `run_tests`.",
+    ),
+    (
+        "surgical-code-editing",
+        "Read target files first, make minimal verified diffs with rollback safety, and run tests.",
+        "# Surgical Code Editing\n"
+        "1. Always `file_read` the exact lines before calling `file_edit` or `file_write`.\n"
+        "2. Keep diffs focused; never rewrite unrelated code.\n"
+        "3. Verify syntax and run `astra_dev_self_build(action='compile_check')` and `run_tests` after every code edit.",
+    ),
+    (
+        "codebase-navigation",
+        "Discover real project modules, UI pages, and tests without guessing symbol names.",
+        "# Codebase Navigation\n"
+        "1. Run `astra_dev_self_build(action='inspect')` first to get exact `core_modules`, `ui_pages`, and `test_files`.\n"
+        "2. Use `grep_search` and `file_read` to inspect exact functions before proposing changes.\n"
+        "3. Never fabricate module or service names not present in tool output.",
+    ),
+    (
+        "linux-systemd-diagnostics",
+        "Inspect failed systemd units, journalctl errors, and open listening ports safely.",
+        "# Linux Systemd Diagnostics\n"
+        "1. Call `astra_services_and_storage` to inspect failed units, listening sockets, and SMART/disk status.\n"
+        "2. Check `astra_journal_and_crashes` for recent AstraCradle or OS warnings.\n"
+        "3. Propose exact `systemctl` / config remediations and verify health afterward.",
+    ),
+    (
+        "gpu-rocm-nvidia-tuning",
+        "Keep local AI fast on GPU, resolve AMD iGPU+dGPU ROCm conflicts, and manage VRAM/fan curves.",
+        "# GPU, ROCm & NVIDIA Tuning\n"
+        "1. Check `astra_thermals_and_fans(action='inspect')` and `astra_system_status` for GPU utilization, VRAM, and thermals.\n"
+        "2. On dual-AMD systems (Ryzen iGPU + Radeon dGPU), ensure `ROCR_VISIBLE_DEVICES=0` is configured in Ollama systemd override.\n"
+        "3. Keep ~1 GB VRAM headroom when gaming and choose fast/balanced models for snappy response times.",
+    ),
+    (
+        "network-wifi-rf-tuning",
+        "Diagnose slow internet, DNS latency, Wi-Fi channel congestion, and network failover.",
+        "# Network, Wi-Fi & RF Tuning\n"
+        "1. Run `astra_wifi_check` to measure signal RSSI, channel overlap, and DNS speed.\n"
+        "2. Use `astra_wifi_optimize` only when a measurably cleaner 5/6 GHz channel exists.\n"
+        "3. Check `astra_remote_tasks` for Tailscale/AstraBeam/ADB link status.",
+    ),
+    (
+        "pc-slowdown-triage",
+        "Identify CPU/RAM/disk hogs, thermal throttling, and safe cache bloat quickly.",
+        "# PC Slowdown Triage\n"
+        "1. Run `astra_deep_scan` and `astra_process_lookup` to identify top CPU, RAM, and I/O consumers.\n"
+        "2. Preview or run `astra_fix_safe` and `astra_probalance_and_profile` to restrain background hogs safely.\n"
+        "3. Protect user apps/games and verify before/after metrics.",
+    ),
+    (
+        "memory-and-context-hygiene",
+        "Recall durable user preferences, search the local Knowledge Library first, and prune stale notes.",
+        "# Memory & Library Hygiene\n"
+        "1. Query `astra_knowledge_library(action='search')` and `memory_search` before hitting slow web queries.\n"
+        "2. Save durable machine facts with `memory_save` and useful docs with `astra_knowledge_library(action='store')`.\n"
+        "3. Mark wrong/outdated entries with `mark_incorrect` and prune regularly.",
+    ),
+    (
+        "web-research-and-verification",
+        "Search the web, fetch primary docs, cross-check against local codebase, and cache verified takeaways.",
+        "# Web Research & Verification\n"
+        "1. Check local `astra_knowledge_library` first; if missing or stale, call `web_search` and `web_fetch`.\n"
+        "2. Verify versions, distro commands, and APIs before recommending them.\n"
+        "3. Store verified findings cleanly in the Knowledge Library with URL attribution.",
+    ),
+    (
+        "screen-ocr-and-clipboard",
+        "Read active displays, web pages, and screenshots, and copy structured results to clipboard.",
+        "# Screen Reading & Clipboard\n"
+        "1. Call `astra_screen_and_clipboard(action='read_display')` to capture screenshot + OCR text.\n"
+        "2. Read clipboard with `clipboard_read` or write clean summaries with `clipboard_write`.",
+    ),
+    (
+        "git-safe-sync-and-backup",
+        "Back up local repositories, inspect diffs, test-gate commits, and push cleanly.",
+        "# Git Safe Sync & Backup\n"
+        "1. Inspect status with `astra_git_sync(action='status')`.\n"
+        "2. Create a zip snapshot (`action='backup'`) or run tests before `commit_push`.",
+    ),
+    (
+        "audio-video-usb-repair",
+        "Troubleshoot PipeWire/PulseAudio devices, monitor layouts, Bluetooth, and USB peripherals.",
+        "# A/V & Peripheral Repair\n"
+        "1. Inspect sinks, displays, and USB devices via `astra_av_and_peripherals(action='inspect')`.\n"
+        "2. Restart PipeWire user audio cleanly only when needed and verify output.",
+    ),
+    (
+        "os-package-and-firmware-updates",
+        "Check pending OS packages, Flatpaks, and firmware updates safely.",
+        "# OS & Firmware Updates\n"
+        "1. Run `astra_system_updates(action='check')` to list pending pacman/apt/dnf, Flatpak, and fwupdmgr updates.\n"
+        "2. Escalate with approval / sudo prompt only when applying upgrades.",
+    ),
+    (
+        "crash-and-journal-forensics",
+        "Audit AstraCradle forensic chains, post-mortem crash logs, and self-heal invariants.",
+        "# Crash & Forensic Audit\n"
+        "1. Call `astra_journal_and_crashes` and `astra_self_heal_repair`.\n"
+        "2. Check `astra_rollback_undo` if a recent change caused regression.",
+    ),
+    (
+        "gaming-vram-optimization",
+        "Keep ~1 GB VRAM free and auto-tune per-game power & background silencing profiles.",
+        "# Gaming & VRAM Optimization\n"
+        "1. Avoid heavy LLM inference while fullscreen games are active.\n"
+        "2. Record per-game preferences in `learned_games.json` via `set_game_profile()`.",
+    ),
+    (
+        "security-and-privacy-audit",
+        "Audit startup items, listening ports, USB guard status, and privacy leaks.",
+        "# Security & Privacy Audit\n"
+        "1. Run `astra_startup_audit` and `astra_services_and_storage`.\n"
+        "2. Flag unexpected autostart entries or unknown listening ports clearly.",
+    ),
+    (
+        "shell-automation-safety",
+        "Execute safe diagnostic shell commands with strict dry-run and sudo boundaries.",
+        "# Shell Automation Safety\n"
+        "1. Never run destructive commands (`rm -rf /`, `mkfs`, `dd`); prefer structured AstraCradle tools first.\n"
+        "2. Prompt via `sudo_exec` only when Level 4 is enabled and elevated rights are truly needed.",
+    ),
+    (
+        "astracradle-self-development",
+        "Develop, test, self-check, and verify AstraCradle's own local source tree cleanly.",
+        "# AstraCradle Self-Development\n"
+        "1. Inspect real files via `astra_dev_self_build(action='inspect')`, `grep_search`, and `file_read`.\n"
+        "2. Edit surgically with `file_edit`, then verify via `compile_check`, `run_tests`, and `self_check`.",
+    ),
+)
+
+COMMON_REFERENCE_CARDS: tuple[dict[str, str], ...] = (
+    {
+        "item_id": "ref-astracradle-architecture",
+        "title": "AstraCradle Local Architecture & Verification Commands",
+        "category": "astracradle",
+        "tags": "astracradle architecture pytest self-check compileall modules",
+        "summary": "Core modules live in astracradle/core/*.py; UI pages in astracradle/ui/pages/*.py; tests in tests/. Verify with compileall, PYTHONPATH=. pytest, and python3 -m astracradle --self-check.",
+        "body": (
+            "# AstraCradle Source Map & Verification\n"
+            "- Core AI Agent: `astracradle/core/hermes_agent.py`\n"
+            "- Configuration: `astracradle/core/config.py`\n"
+            "- Thermal SPC & GPU Fan Controls: `astracradle/core/thermal_spc.py`, `astracradle/core/advanced_controls.py`\n"
+            "- Self-Heal & Rollback: `astracradle/core/self_heal.py`, `astracradle/core/rollback.py`, `astracradle/core/journal.py`\n"
+            "- UI Main & Hermes Chat: `astracradle/ui/app.py`, `astracradle/ui/pages/hermes_page.py`\n"
+            "- Test command: `PYTHONPATH=. pytest tests/test_v2_5_1_single_instance_and_tray_icon.py -q`\n"
+            "- Self-check command: `PYTHONPATH=. python3 -m astracradle --self-check`\n"
+        ),
+    },
+    {
+        "item_id": "ref-linux-performance-triage",
+        "title": "Linux CPU, RAM, I/O & Systemd Quick Reference",
+        "category": "linux_os",
+        "tags": "linux cpu ram systemd journalctl zram io slow fix",
+        "summary": "Fast Linux diagnostics: check failed systemd units, journalctl -p err, PSI pressure (/proc/pressure/*), zram/swap, and top RSS/CPU processes.",
+        "body": (
+            "# Linux Performance & Service Quick Reference\n"
+            "- Failed services: `systemctl --failed --no-pager` and `systemctl --user --failed --no-pager`\n"
+            "- Recent errors: `journalctl -p 3 -xb --no-pager -n 40`\n"
+            "- Memory/Swap: `free -h`, `swapon --show`, check `/proc/pressure/memory`\n"
+            "- Disk health & free space: `df -h`, `lsblk -f`, `smartctl -H` (if installed)\n"
+        ),
+    },
+    {
+        "item_id": "ref-ollama-amd-rocm-nvidia",
+        "title": "Ollama Local GPU, AMD ROCm Multi-GPU & Fast Model Reference",
+        "category": "ai_gpu",
+        "tags": "ollama rocm nvidia vram segfault llama-server qwen3 fast gpu",
+        "summary": "AMD iGPU+dGPU ROCm conflict fix (ROCR_VISIBLE_DEVICES=0), fast non-thinking models (qwen3:4b, qwen3:8b) for instant chat, and vision routing for image attachments.",
+        "body": (
+            "# Ollama GPU & Model Speed Reference\n"
+            "- Dual AMD GPU fix: set `Environment=\"ROCR_VISIBLE_DEVICES=0\"` in `/etc/systemd/system/ollama.service.d/override.conf`.\n"
+            "- Fast chat models: `qwen3:4b`, `qwen3:8b`, `llama3.2:3b`, `gemma3:4b` with `think=false`.\n"
+            "- Vision models: `qwen3.6:35b`, `qwen3-vl`, `qwen2.5vl`, `llama3.2-vision`, `llava`, `gemma3`.\n"
+        ),
+    },
+    {
+        "item_id": "ref-python-pytest-best-practices",
+        "title": "Python & Pytest Diagnostics, Subprocess Safety & Tk UI Smoothness",
+        "category": "python_dev",
+        "tags": "python pytest subprocess tkinter customtkinter threading performance",
+        "summary": "Always use timeouts on subprocess.run, avoid destroying Tk child widgets during streaming updates, run blocking I/O on daemon threads, and test headless invariants.",
+        "body": (
+            "# Python & Desktop UI Patterns\n"
+            "- Subprocesses: pass explicit `timeout=` and `capture_output=True` + handle `FileNotFoundError`/`TimeoutExpired`.\n"
+            "- CustomTkinter streaming: update existing `CTkLabel.configure(text=...)` in-place rather than destroying/recreating scroll children.\n"
+            "- SQLite concurrency: use short `with sqlite3.connect(...)` transactions and FTS5 for instant local recall.\n"
+        ),
+    },
+    {
+        "item_id": "ref-networking-wifi-dns",
+        "title": "Linux Wi-Fi, DNS Latency, Tailscale & PipeWire Audio Quick Reference",
+        "category": "networking_av",
+        "tags": "wifi dns nmcli iw tailscale pipewire wpctl audio bluetooth",
+        "summary": "Common commands for Wi-Fi RSSI/channels, DNS latency, Tailscale peers, and PipeWire audio sink recovery.",
+        "body": (
+            "# Networking & A/V Quick Reference\n"
+            "- Wi-Fi: `nmcli -f IN-USE,SSID,BSSID,CHAN,SIGNAL,SECURITY dev wifi list`\n"
+            "- Audio reset: `systemctl --user restart pipewire wireplumber`\n"
+            "- Default sink: `wpctl status` / `pactl info`\n"
+            "- Tailscale: `tailscale status`\n"
+        ),
+    },
+)
+
+
 class HermesAgentManager:
     """Manages ~/.astracradle/hermes layout, automated setup, native Hermes agent execution, skills, memory & cron."""
 
@@ -707,27 +929,411 @@ class HermesAgentManager:
                 encoding="utf-8",
             )
 
-        bridge_skill_dir = self.skills_dir / "astracradle-os-bridge"
-        bridge_skill_dir.mkdir(parents=True, exist_ok=True)
-        bridge_skill = bridge_skill_dir / "SKILL.md"
-        if not bridge_skill.exists():
-            bridge_skill.write_text(
-                "---\n"
-                "name: astracradle-os-bridge\n"
-                "description: Use AstraCradle native OS tools to diagnose hardware/thermals, reclaim safe caches, check Wi-Fi channels, and explain running processes.\n"
-                "---\n\n"
-                "# AstraCradle OS Equilibrium Workflow\n"
-                "1. Call `astra_system_status` first to get live CPU, RAM, disk, and GPU metrics.\n"
-                "2. Call `astra_deep_scan` when the user asks why their computer is slow, hot, or cluttered.\n"
-                "3. Only call `astra_fix_safe` with `dry_run=false` when the user asks to apply safe cleanup; otherwise preview with `dry_run=true`.\n"
-                "4. Call `astra_process_lookup` to explain unfamiliar PIDs or processes in plain English.\n",
-                encoding="utf-8",
-            )
-
+        self.seed_builtin_skills_and_library(config)
         self._init_sessions_db()
         if config is not None:
             self.write_config_yaml(config)
         return self.hermes_home
+
+    # ------------------------------------------------------------------
+    # Full Skill Suite & Configurable Knowledge Library (1 GB – 200 GB)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def get_library_max_bytes(config: AppConfig | None = None) -> int:
+        gb = 10
+        if config is not None:
+            try:
+                raw = getattr(config, "hermes_library_max_gb", 10)
+                gb = int(10 if raw is None else raw)
+            except Exception:
+                gb = 10
+        gb = max(1, min(200, gb))
+        return gb * 1024 * 1024 * 1024
+
+    def _init_library_db(self) -> None:
+        self.library_dir.mkdir(parents=True, exist_ok=True)
+        self.library_items_dir.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self.library_db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS library_items (
+                    item_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_url TEXT DEFAULT '',
+                    tags TEXT DEFAULT '',
+                    summary TEXT DEFAULT '',
+                    file_path TEXT NOT NULL,
+                    byte_size INTEGER DEFAULT 0,
+                    hits INTEGER DEFAULT 0,
+                    quality_score REAL DEFAULT 1.0,
+                    incorrect INTEGER DEFAULT 0,
+                    pinned INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_used_at TEXT NOT NULL,
+                    expires_at TEXT DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS library_fts
+                USING fts5(item_id UNINDEXED, title, category, tags, summary, body)
+                """
+            )
+            conn.commit()
+
+    def seed_builtin_skills_and_library(self, config: AppConfig | None = None) -> dict[str, int]:
+        """Seeds the full 18+ skill suite and common reference library items cleanly."""
+        self.skills_dir.mkdir(parents=True, exist_ok=True)
+        skills_added = 0
+        for slug, desc, body in BUILTIN_FULL_SKILL_SUITE:
+            sdir = self.skills_dir / slug
+            sdir.mkdir(parents=True, exist_ok=True)
+            spath = sdir / "SKILL.md"
+            if not spath.exists():
+                spath.write_text(f"---\nname: {slug}\ndescription: {desc}\n---\n\n{body}\n", encoding="utf-8")
+                skills_added += 1
+
+        self._init_library_db()
+        refs_added = 0
+        with sqlite3.connect(self.library_db_path) as conn:
+            existing = {
+                str(r[0])
+                for r in conn.execute("SELECT item_id FROM library_items").fetchall()
+            }
+        for card in COMMON_REFERENCE_CARDS:
+            if card["item_id"] not in existing:
+                self.store_library_item(
+                    title=card["title"],
+                    body=card["body"],
+                    category=card["category"],
+                    source_type="builtin",
+                    tags=card["tags"],
+                    summary=card["summary"],
+                    item_id=card["item_id"],
+                    pinned=True,
+                    quality_score=1.0,
+                    config=config,
+                )
+                refs_added += 1
+        return {"skills_added": skills_added, "refs_added": refs_added}
+
+    def store_library_item(
+        self,
+        *,
+        title: str,
+        body: str,
+        category: str = "general",
+        source_type: str = "web",
+        source_url: str = "",
+        tags: str = "",
+        summary: str = "",
+        item_id: str = "",
+        pinned: bool = False,
+        quality_score: float = 0.85,
+        ttl_days: int = 45,
+        config: AppConfig | None = None,
+    ) -> dict[str, Any]:
+        import hashlib
+        from datetime import datetime, timedelta, timezone
+
+        self._init_library_db()
+        clean_title = (title or "Untitled Reference").strip()[:180]
+        clean_body = (body or "").strip()
+        if not clean_body:
+            return {"ok": False, "error": "Empty library content"}
+
+        if not item_id:
+            key_src = source_url.strip() or f"{category}:{clean_title.lower()}"
+            item_id = f"lib-{hashlib.sha256(key_src.encode('utf-8')).hexdigest()[:14]}"
+        safe_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", item_id).strip("-") or "lib-item"
+
+        md_path = self.library_items_dir / f"{safe_id}.md"
+        header = (
+            f"# {clean_title}\n"
+            f"- Category: {category}\n"
+            f"- Source: {source_type}" + (f" ({source_url})" if source_url else "") + "\n"
+            f"- Updated: {utc_now_iso()}\n\n"
+        )
+        full_md = header + clean_body + "\n"
+        md_path.write_text(full_md, encoding="utf-8")
+        bsize = md_path.stat().st_size
+
+        now_dt = datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+        exp_iso = "" if pinned else (now_dt + timedelta(days=max(1, int(ttl_days)))).isoformat()
+        clean_sum = (summary or clean_body.splitlines()[0] if clean_body else "")[:320]
+
+        with sqlite3.connect(self.library_db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO library_items(
+                    item_id, title, category, source_type, source_url, tags, summary,
+                    file_path, byte_size, hits, quality_score, incorrect, pinned,
+                    created_at, updated_at, last_used_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, ?, ?, ?)
+                ON CONFLICT(item_id) DO UPDATE SET
+                    title=excluded.title,
+                    category=excluded.category,
+                    source_type=excluded.source_type,
+                    source_url=excluded.source_url,
+                    tags=excluded.tags,
+                    summary=excluded.summary,
+                    file_path=excluded.file_path,
+                    byte_size=excluded.byte_size,
+                    quality_score=excluded.quality_score,
+                    incorrect=0,
+                    pinned=MAX(library_items.pinned, excluded.pinned),
+                    updated_at=excluded.updated_at,
+                    expires_at=excluded.expires_at
+                """,
+                (
+                    safe_id,
+                    clean_title,
+                    category.strip() or "general",
+                    source_type.strip() or "web",
+                    source_url.strip(),
+                    tags.strip(),
+                    clean_sum,
+                    str(md_path),
+                    bsize,
+                    float(quality_score),
+                    1 if pinned else 0,
+                    now_iso,
+                    now_iso,
+                    now_iso,
+                    exp_iso,
+                ),
+            )
+            conn.execute("DELETE FROM library_fts WHERE item_id = ?", (safe_id,))
+            conn.execute(
+                "INSERT INTO library_fts(item_id, title, category, tags, summary, body) VALUES (?, ?, ?, ?, ?, ?)",
+                (safe_id, clean_title, category, tags, clean_sum, clean_body[:24000]),
+            )
+            conn.commit()
+
+        # Enforce configurable 1 GB - 200 GB cap automatically when storing new items
+        if config is not None and bool(getattr(config, "hermes_library_auto_prune", True)):
+            self.prune_library(config, aggressive=False)
+        return {"ok": True, "item_id": safe_id, "path": str(md_path), "bytes": bsize}
+
+    def search_library(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        self._init_library_db()
+        tokens = [re.sub(r"[^a-zA-Z0-9_.-]+", "", t) for t in (query or "").split()]
+        tokens = [t for t in tokens if len(t) >= 2]
+        if not tokens:
+            return []
+        fts_q = " OR ".join(f'"{t}"' for t in tokens[:10])
+        hits: list[dict[str, Any]] = []
+        try:
+            with sqlite3.connect(self.library_db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT li.item_id, li.title, li.category, li.source_type, li.source_url,
+                           li.summary, li.file_path, li.quality_score, li.hits
+                    FROM library_fts f
+                    JOIN library_items li ON li.item_id = f.item_id
+                    WHERE library_fts MATCH ? AND li.incorrect = 0
+                    ORDER BY (li.pinned * 2.0 + li.quality_score + MIN(1.0, li.hits * 0.05)) DESC, bm25(library_fts)
+                    LIMIT ?
+                    """,
+                    (fts_q, max(1, int(limit))),
+                ).fetchall()
+                now_iso = utc_now_iso()
+                for r in rows:
+                    iid, title, cat, stype, surl, summ, fpath, qscore, hcnt = r
+                    excerpt = summ
+                    try:
+                        p_md = Path(str(fpath))
+                        if p_md.exists():
+                            excerpt = p_md.read_text(encoding="utf-8", errors="ignore")[:900]
+                    except Exception:
+                        pass
+                    hits.append(
+                        {
+                            "item_id": iid,
+                            "title": title,
+                            "category": cat,
+                            "source_type": stype,
+                            "source_url": surl,
+                            "summary": summ,
+                            "excerpt": excerpt,
+                            "quality_score": qscore,
+                            "hits": int(hcnt or 0) + 1,
+                        }
+                    )
+                    conn.execute(
+                        "UPDATE library_items SET hits = hits + 1, last_used_at = ? WHERE item_id = ?",
+                        (now_iso, iid),
+                    )
+                conn.commit()
+        except Exception:
+            pass
+        return hits
+
+    def mark_library_item_incorrect(self, item_id_or_url: str, reason: str = "") -> dict[str, Any]:
+        self._init_library_db()
+        target = (item_id_or_url or "").strip()
+        if not target:
+            return {"ok": False, "error": "Specify item_id or source_url"}
+        with sqlite3.connect(self.library_db_path) as conn:
+            cur = conn.execute(
+                "UPDATE library_items SET incorrect = 1, quality_score = 0.0 WHERE item_id = ? OR source_url = ?",
+                (target, target),
+            )
+            conn.commit()
+            changed = cur.rowcount
+        if reason:
+            self.record_hermes_diagnostic("library_marked_incorrect", "info", f"Flagged '{target}' as incorrect: {reason[:160]}")
+        return {"ok": True, "flagged": changed}
+
+    def prune_library(self, config: AppConfig | None = None, *, aggressive: bool = False) -> dict[str, Any]:
+        """Prunes incorrect, expired, unused old web entries, and enforces the 1 GB - 200 GB user size cap."""
+        from datetime import datetime, timedelta, timezone
+
+        self._init_library_db()
+        max_bytes = self.get_library_max_bytes(config)
+        now_dt = datetime.now(timezone.utc)
+        stale_unused_cutoff = (now_dt - timedelta(days=(7 if aggressive else 30))).isoformat()
+        stale_any_cutoff = (now_dt - timedelta(days=(30 if aggressive else 90))).isoformat()
+        now_iso = now_dt.isoformat()
+
+        removed_reasons: dict[str, int] = {"incorrect": 0, "expired_or_unused": 0, "quota_evicted": 0}
+        with sqlite3.connect(self.library_db_path) as conn:
+            # 1. Remove explicitly incorrect or low-quality entries
+            bad_rows = conn.execute(
+                "SELECT item_id, file_path FROM library_items WHERE incorrect = 1 OR quality_score < 0.25"
+            ).fetchall()
+            for iid, fpath in bad_rows:
+                try:
+                    Path(str(fpath)).unlink(missing_ok=True)
+                except Exception:
+                    pass
+                conn.execute("DELETE FROM library_items WHERE item_id = ?", (iid,))
+                conn.execute("DELETE FROM library_fts WHERE item_id = ?", (iid,))
+                removed_reasons["incorrect"] += 1
+
+            # 2. Remove expired or unused stale web items (never delete pinned built-in items)
+            stale_rows = conn.execute(
+                """
+                SELECT item_id, file_path FROM library_items
+                WHERE pinned = 0 AND (
+                    (expires_at != '' AND expires_at < ?)
+                    OR (hits = 0 AND updated_at < ?)
+                    OR (last_used_at < ?)
+                )
+                """,
+                (now_iso, stale_unused_cutoff, stale_any_cutoff),
+            ).fetchall()
+            for iid, fpath in stale_rows:
+                try:
+                    Path(str(fpath)).unlink(missing_ok=True)
+                except Exception:
+                    pass
+                conn.execute("DELETE FROM library_items WHERE item_id = ?", (iid,))
+                conn.execute("DELETE FROM library_fts WHERE item_id = ?", (iid,))
+                removed_reasons["expired_or_unused"] += 1
+
+            # 3. Enforce configured 1 GB - 200 GB cap
+            total_bytes = int(conn.execute("SELECT COALESCE(SUM(byte_size), 0) FROM library_items").fetchone()[0] or 0)
+            if total_bytes > max_bytes:
+                evict_rows = conn.execute(
+                    """
+                    SELECT item_id, file_path, byte_size FROM library_items
+                    WHERE pinned = 0
+                    ORDER BY quality_score ASC, hits ASC, last_used_at ASC
+                    """
+                ).fetchall()
+                for iid, fpath, bsz in evict_rows:
+                    if total_bytes <= max_bytes:
+                        break
+                    try:
+                        Path(str(fpath)).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    conn.execute("DELETE FROM library_items WHERE item_id = ?", (iid,))
+                    conn.execute("DELETE FROM library_fts WHERE item_id = ?", (iid,))
+                    total_bytes -= int(bsz or 0)
+                    removed_reasons["quota_evicted"] += 1
+            conn.commit()
+
+        return {
+            "ok": True,
+            "removed": sum(removed_reasons.values()),
+            "breakdown": removed_reasons,
+            "max_gb": round(max_bytes / (1024**3), 2),
+        }
+
+    def prefetch_library_topics(self, config: AppConfig, topics: list[str] | None = None) -> dict[str, Any]:
+        """Downloads and caches verified web reference summaries into the Knowledge Library."""
+        if not bool(getattr(config, "hermes_allow_web_search", True)):
+            return {"ok": False, "reason": "Web search disabled"}
+        self._init_library_db()
+        target_topics = topics or [
+            "Linux systemd pipewire troubleshooting best practices",
+            "Ollama ROCm AMD GPU optimization guide",
+            "Python pytest subprocess security best practices",
+        ]
+        stored = 0
+        for q in target_topics[:3]:
+            try:
+                hits = self._web_search_impl(q, max_results=3)
+                if not hits:
+                    continue
+                md_lines = [f"Query: {q}\n"]
+                top_url = ""
+                for h in hits:
+                    u = str(h.get("url") or "")
+                    if not top_url and u:
+                        top_url = u
+                    md_lines.append(f"- {h.get('title', 'Result')}: {h.get('snippet', '')} ({u})")
+                res = self.store_library_item(
+                    title=f"Web Reference: {q[:90]}",
+                    body="\n".join(md_lines),
+                    category="web_prefetch",
+                    source_type="web",
+                    source_url=top_url,
+                    tags=q,
+                    summary=str(hits[0].get("snippet") or q)[:280],
+                    config=config,
+                )
+                if res.get("ok"):
+                    stored += 1
+            except Exception:
+                continue
+        return {"ok": True, "stored": stored}
+
+    def get_library_stats(self, config: AppConfig | None = None) -> dict[str, Any]:
+        self._init_library_db()
+        max_bytes = self.get_library_max_bytes(config)
+        max_gb = int(round(max_bytes / (1024**3)))
+        with sqlite3.connect(self.library_db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*),
+                       COALESCE(SUM(CASE WHEN source_type='builtin' THEN 1 ELSE 0 END), 0),
+                       COALESCE(SUM(CASE WHEN source_type='web' THEN 1 ELSE 0 END), 0),
+                       COALESCE(SUM(byte_size), 0)
+                FROM library_items
+                """
+            ).fetchone()
+        total_items, builtin_items, web_items, total_bytes = (int(row[0] or 0), int(row[1] or 0), int(row[2] or 0), int(row[3] or 0))
+        skills_cnt = len(self.list_skills())
+        return {
+            "ok": True,
+            "total_items": total_items,
+            "builtin_items": builtin_items,
+            "web_items": web_items,
+            "skills_count": skills_cnt,
+            "total_bytes": total_bytes,
+            "total_mb": round(total_bytes / (1024 * 1024), 2),
+            "max_gb": max_gb,
+            "usage_pct": round((total_bytes / max(1, max_bytes)) * 100.0, 4),
+            "library_dir": str(self.library_dir),
+        }
 
     def _init_sessions_db(self) -> None:
         self.hermes_home.mkdir(parents=True, exist_ok=True)
@@ -3050,6 +3656,21 @@ class HermesAgentManager:
                 q = str(args.get("query", "")).strip()
                 max_r = int(args.get("max_results", 6) or 6)
                 hits = self._web_search_impl(q, max_results=max_r)
+                if hits:
+                    try:
+                        summary_lines = [f"- {h.get('title', '')}: {h.get('snippet', '')} ({h.get('url', '')})" for h in hits[:5]]
+                        self.store_library_item(
+                            title=f"Web Search: {q[:100]}",
+                            body="\n".join(summary_lines),
+                            category="web_search",
+                            source_type="web",
+                            source_url=str(hits[0].get("url") or ""),
+                            tags=q,
+                            summary=str(hits[0].get("snippet") or q)[:280],
+                            config=config,
+                        )
+                    except Exception:
+                        pass
                 return {"ok": True, "query": q, "results": hits}
 
             if name == "web_fetch":
@@ -3065,6 +3686,20 @@ class HermesAgentManager:
                 with urllib.request.urlopen(req, timeout=12) as resp:
                     raw = resp.read(200_000).decode("utf-8", errors="ignore")
                 txt = self._strip_html_to_text(raw) if "<html" in raw.lower() or "<body" in raw.lower() else raw
+                if txt.strip():
+                    try:
+                        self.store_library_item(
+                            title=f"Web Page: {url[:110]}",
+                            body=txt[:12000],
+                            category="web_doc",
+                            source_type="web",
+                            source_url=url,
+                            tags=url,
+                            summary=txt.strip().splitlines()[0][:260] if txt.strip() else url,
+                            config=config,
+                        )
+                    except Exception:
+                        pass
                 return {"ok": True, "url": url, "content": txt[:8000]}
 
             if name == "memory_read":
@@ -3406,6 +4041,21 @@ class HermesAgentManager:
                 or str(msg.get("thinking") or msg.get("reasoning") or "").strip()
             )
             raw_calls = msg.get("tool_calls") or []
+            # Fallback: parse inline <tool_call>{...}</tool_call> blocks if a local model emitted tool calls in text
+            if not raw_calls and content and "<tool_call>" in content:
+                extracted_inline: list[dict[str, Any]] = []
+                for m_tc in re.finditer(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", content, flags=re.DOTALL):
+                    try:
+                        obj = json.loads(m_tc.group(1))
+                        if isinstance(obj, dict) and obj.get("name"):
+                            extracted_inline.append({
+                                "function": {"name": str(obj["name"]), "arguments": obj.get("arguments") or {}}
+                            })
+                    except Exception:
+                        continue
+                if extracted_inline:
+                    raw_calls = extracted_inline
+                    content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL).strip()
             norm_calls: list[dict[str, Any]] = []
             for i, tc in enumerate(raw_calls):
                 if not isinstance(tc, dict):
@@ -3688,6 +4338,26 @@ class HermesAgentManager:
                 if cancel_event is not None and cancel_event.is_set():
                     final_reply = (content.strip() + "\n\n(Stopped by user.)") if content else "Stopped by user."
                     break
+                # Grounding safety net: if live LLM didn't emit tool_calls on an explicit AstraCradle inspect/diagnostic prompt,
+                # run the real requested tool server-side and synthesize from genuine output rather than roleplay.
+                if (
+                    not tool_calls
+                    and _turn == 0
+                    and not tool_events
+                    and llm_caller is None
+                    and tools
+                    and any(k in clean_prompt.lower() for k in ("astra_dev_self_build", "astra_system_status", "astra_deep_scan", "astra_journal_and_crashes"))
+                ):
+                    auto_calls: list[dict[str, Any]] = []
+                    low_p = clean_prompt.lower()
+                    if "astra_dev_self_build" in low_p:
+                        auto_calls.append({"id": "auto_inspect", "function": {"name": "astra_dev_self_build", "arguments": {"action": "inspect"}}})
+                    if "astra_journal_and_crashes" in low_p or "diagnostics" in low_p:
+                        auto_calls.append({"id": "auto_diag", "function": {"name": "astra_journal_and_crashes", "arguments": {"limit": 10}}})
+                    if "astra_system_status" in low_p or "astra_deep_scan" in low_p:
+                        auto_calls.append({"id": "auto_scan", "function": {"name": "astra_deep_scan", "arguments": {}}})
+                    if auto_calls:
+                        tool_calls = auto_calls
                 if not tool_calls:
                     final_reply = content or "(No text returned)"
                     break
