@@ -295,6 +295,15 @@ class AstraCradleApp(ctk.CTk):
             wifi_optimizer=self.wifi_optimizer,
             proc_lookup=self.proc_lookup,
             elevation=self._hermes_elevation,
+            rollback_mgr=self.rollback_mgr,
+            self_heal=self.self_heal,
+            probalance=self.probalance,
+            autoruns_auditor=self.autoruns_auditor,
+            device_registry=self.device_registry,
+            mobile_companion=self.mobile_companion,
+            playbook_builder=self.playbook_builder,
+            ram_standby_mgr=self.ram_standby_mgr,
+            net_dns_inspector=self.net_dns_inspector,
         )
         self.i18n = Translator(self.config_obj.language)
         self._last_duplicate_groups: list[DuplicateGroup] = []
@@ -734,6 +743,7 @@ class AstraCradleApp(ctk.CTk):
         self.bind("<F1>", lambda _e: self.open_help_search())
         self.bind("<Control-f>", lambda _e: self.open_help_search())
         self.bind("<Control-r>", lambda _e: self.on_deep_scan())
+        self.bind("<Control-k>", lambda _e: self.open_ai_assistant_drawer())
         self.bind("<Control-Alt-a>", lambda _e: self.toggle_desktop_widget())
         self.bind("<Control-Alt-s>", lambda _e: self.on_fix_everything_safe())
         self.bind("<Control-Alt-w>", lambda _e: self._on_quick_wifi_optimize_from_widget())
@@ -1534,6 +1544,25 @@ class AstraCradleApp(ctk.CTk):
         )
         self.guide_btn.pack(side="right", padx=3)
         attach_tooltip(self.guide_btn, "Step-by-step beginner walkthrough for AstraCradle.", p)
+
+        self.ask_ai_btn = ctk.CTkButton(
+            self.topbar,
+            text="Ask AI Assistant",
+            height=30,
+            width=118,
+            corner_radius=8,
+            fg_color=p.accent_cyan,
+            hover_color=p.accent_cyan_hover,
+            text_color="#071216",
+            font=self.fonts["body_bold"],
+            command=self.open_ai_assistant_drawer,
+        )
+        self.ask_ai_btn.pack(side="right", padx=4)
+        attach_tooltip(
+            self.ask_ai_btn,
+            "Open the AstraCradle AI Action Assistant anywhere (Ctrl+K) — ask questions or tell it to safely fix PC & remote tasks.",
+            p,
+        )
 
         self.widget_btn = ctk.CTkButton(
             self.topbar,
@@ -5964,6 +5993,12 @@ class AstraCradleApp(ctk.CTk):
     def _render_hermes_page(self) -> None:
         render_hermes_page(self)
 
+    def open_ai_assistant_drawer(self) -> None:
+        """Opens a quick chatbot-style Action Assistant popup from any page in AstraCradle."""
+        from .pages.hermes_page import open_quick_assistant_modal
+
+        open_quick_assistant_modal(self)
+
     def _build_cmd_vault_page(self) -> None:
         self.cmd_vault_scroll = ctk.CTkScrollableFrame(self.pages["cmd_vault"], fg_color="transparent")
         self.cmd_vault_scroll.pack(fill="both", expand=True)
@@ -8733,6 +8768,8 @@ class AstraCradleApp(ctk.CTk):
                             focus_process=(focus_obj.process_name if focus_obj else ""),
                             is_fullscreen=bool(focus_obj.is_fullscreen if focus_obj else False),
                             gpu=gpu,
+                            cpu_percent=snap.cpu_percent,
+                            ram_percent=snap.mem_percent,
                         )
                     except Exception:
                         pass

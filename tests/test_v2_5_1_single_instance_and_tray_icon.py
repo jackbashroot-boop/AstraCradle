@@ -1457,6 +1457,98 @@ def test_hermes_auto_integrates_already_downloaded_gpu_model(monkeypatch) -> Non
         assert cfg_cloud.hermes_provider == "openrouter_free"
 
 
+def test_hermes_whole_pc_learning_and_integrated_fix_tools() -> None:
+    from types import SimpleNamespace
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.mobile_continuity import DeviceRegistryManager
+    from astracradle.core.probalance import ProBalanceEngine
+    from astracradle.core.rollback import RollbackManager
+    from astracradle.core.self_heal import SelfHealEngine
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=td)
+        cfg = AppConfig(hermes_permission_level="safe_user")
+        journal = ForensicJournal(cm)
+        rb = RollbackManager(cm)
+        sh = SelfHealEngine(cm, rb, journal)
+        pb = ProBalanceEngine(cm, journal)
+        reg = DeviceRegistryManager(cm, journal)
+        reg.register_device(
+            "My iPhone 16 Pro Max",
+            device_type="iPhone / iPad",
+            os_family="iOS",
+            network_host="100.77.1.2",
+            program_command="astrabeam",
+            auto_connect=False,
+        )
+
+        hm = HermesAgentManager(
+            cm,
+            journal,
+            rollback_mgr=rb,
+            self_heal=sh,
+            probalance=pb,
+            device_registry=reg,
+        )
+        hm.ensure_hermes_home(cfg)
+
+        # 1. Whole-PC & remote usage auto-learning
+        gpu = SimpleNamespace(available=True, name="RTX", utilization_percent=30.0, vram_used_mb=2100.0, vram_total_mb=8192.0)
+        hm.observe_running_workload(
+            [{"name": "code"}, {"name": "firefox"}, {"name": "sunshine"}, {"name": "tailscaled"}],
+            focus_process="code",
+            is_fullscreen=False,
+            gpu=gpu,
+            cpu_percent=42.5,
+            ram_percent=58.0,
+        )
+        hm.record_remote_task("My iPhone 16 Pro Max", "astrabeam_stream", True, "Connected over Tailscale")
+
+        summ = hm.execute_tool("astra_pc_usage_summary", {}, cfg)
+        assert summ["ok"] is True
+        assert summ["samples_recorded"] >= 1
+        assert summ["peak_cpu_pct"] == 42.5
+        assert "coding_dev" in summ["workflow_categories"]
+        assert "sunshine" in summ["remote_services_seen"]
+        assert len(summ["paired_devices"]) == 1
+        assert len(summ["recent_remote_tasks"]) == 1
+
+        sys_prompt = hm._build_system_prompt(cfg)
+        assert "Learned Whole-PC & Remote Usage Context" in sys_prompt
+        assert "Action Assistant Guidelines" in sys_prompt
+
+        # 2. Integrated safe PC-fixing tools
+        prof_res = hm.execute_tool(
+            "astra_probalance_and_profile",
+            {"action": "set_profile", "profile_name": "Gaming / Low-Latency"},
+            cfg,
+        )
+        assert prof_res["ok"] is True
+        assert cfg.active_profile == "Gaming / Low-Latency"
+
+        rem_res = hm.execute_tool("astra_remote_tasks", {"action": "status"}, cfg)
+        assert rem_res["ok"] is True
+        assert len(rem_res["paired_devices"]) == 1
+
+        heal_res = hm.execute_tool("astra_self_heal_repair", {}, cfg)
+        assert heal_res["ok"] is True
+        assert heal_res["checks_count"] >= 7
+
+        undo_res = hm.execute_tool("astra_rollback_undo", {"action": "list"}, cfg)
+        assert undo_res["ok"] is True
+
+        startup_res = hm.execute_tool("astra_startup_audit", {"action": "list"}, cfg)
+        assert startup_res["ok"] is True
+
+        # Read-only mode blocks mutating actions cleanly
+        cfg.hermes_permission_level = "read_only"
+        blocked = hm.execute_tool("astra_probalance_and_profile", {"action": "restrain_hogs"}, cfg)
+        assert blocked["ok"] is False and blocked.get("blocked") is True
+
+
+
 
 
 

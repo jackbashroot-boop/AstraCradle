@@ -413,6 +413,15 @@ class HermesAgentManager:
         wifi_optimizer=None,
         proc_lookup=None,
         elevation=None,
+        rollback_mgr=None,
+        self_heal=None,
+        probalance=None,
+        autoruns_auditor=None,
+        device_registry=None,
+        mobile_companion=None,
+        playbook_builder=None,
+        ram_standby_mgr=None,
+        net_dns_inspector=None,
     ) -> None:
         self.cfg_mgr = cfg_mgr
         self.journal = journal
@@ -423,6 +432,15 @@ class HermesAgentManager:
         self.wifi_optimizer = wifi_optimizer
         self.proc_lookup = proc_lookup
         self.elevation = elevation
+        self.rollback_mgr = rollback_mgr
+        self.self_heal = self_heal
+        self.probalance = probalance
+        self.autoruns_auditor = autoruns_auditor
+        self.device_registry = device_registry
+        self.mobile_companion = mobile_companion
+        self.playbook_builder = playbook_builder
+        self.ram_standby_mgr = ram_standby_mgr
+        self.net_dns_inspector = net_dns_inspector
 
         self.hermes_home = cfg_mgr.base_dir / "hermes"
         self.env_path = self.hermes_home / ".env"
@@ -434,6 +452,7 @@ class HermesAgentManager:
         self.sessions_db_path = self.hermes_home / "sessions.db"
         self.cron_path = self.hermes_home / "cron_jobs.json"
         self.learned_games_path = self.hermes_home / "learned_games.json"
+        self.pc_usage_path = self.hermes_home / "pc_usage_profile.json"
 
         self._gateway_proc: subprocess.Popen | None = None
         self._ollama_proc: subprocess.Popen | None = None
@@ -472,6 +491,29 @@ class HermesAgentManager:
             self.cron_path.write_text("[]\n", encoding="utf-8")
         if not self.learned_games_path.exists():
             self.learned_games_path.write_text("{}\n", encoding="utf-8")
+        if not self.pc_usage_path.exists():
+            self.pc_usage_path.write_text(
+                json.dumps(
+                    {
+                        "samples": 0,
+                        "apps": {},
+                        "categories": {},
+                        "avg_cpu_pct": 0.0,
+                        "peak_cpu_pct": 0.0,
+                        "avg_ram_pct": 0.0,
+                        "peak_ram_pct": 0.0,
+                        "peak_gpu_pct": 0.0,
+                        "peak_vram_mb": 0.0,
+                        "remote_services_seen": {},
+                        "remote_tasks": [],
+                        "paired_devices_snapshot": [],
+                        "last_updated": "",
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
         bridge_skill_dir = self.skills_dir / "astracradle-os-bridge"
         bridge_skill_dir.mkdir(parents=True, exist_ok=True)
@@ -1379,11 +1421,22 @@ class HermesAgentManager:
         focus_process: str = "",
         is_fullscreen: bool = False,
         gpu: Any = None,
+        cpu_percent: float | None = None,
+        ram_percent: float | None = None,
     ) -> dict[str, Any] | None:
-        """Detects active games or heavy fullscreen GPU apps and updates learned_games.json with VRAM & GPU usage."""
+        """Learns whole-PC usage patterns, remote tasks/services, and active games with VRAM & GPU usage."""
         gpu_obj = gpu if gpu is not None else GpuTelemetryCollector.collect()
         gpu_util = _parse_float_safe(getattr(gpu_obj, "utilization_percent", None)) or 0.0
         vram_used = _parse_float_safe(getattr(gpu_obj, "vram_used_mb", None)) or 0.0
+        self.observe_pc_and_remote_usage(
+            processes,
+            focus_process=focus_process,
+            is_fullscreen=is_fullscreen,
+            gpu_util=gpu_util,
+            vram_used_mb=vram_used,
+            cpu_percent=cpu_percent,
+            ram_percent=ram_percent,
+        )
         learned = self._load_learned_games()
 
         detected_name = ""
@@ -1423,6 +1476,144 @@ class HermesAgentManager:
             data[d_key] = rec
             self._save_learned_games(data)
             return rec
+
+    def get_pc_usage_profile(self) -> dict[str, Any]:
+        if not self.pc_usage_path.exists():
+            return {
+                "samples": 0,
+                "apps": {},
+                "categories": {},
+                "avg_cpu_pct": 0.0,
+                "peak_cpu_pct": 0.0,
+                "avg_ram_pct": 0.0,
+                "peak_ram_pct": 0.0,
+                "peak_gpu_pct": 0.0,
+                "peak_vram_mb": 0.0,
+                "remote_services_seen": {},
+                "remote_tasks": [],
+                "paired_devices_snapshot": [],
+                "last_updated": "",
+            }
+        try:
+            raw = json.loads(self.pc_usage_path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_pc_usage_profile(self, prof: dict[str, Any]) -> None:
+        self.hermes_home.mkdir(parents=True, exist_ok=True)
+        tmp = self.pc_usage_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(prof, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, self.pc_usage_path)
+
+    @staticmethod
+    def _classify_app_category(proc_key: str) -> str:
+        if any(k in proc_key for k in ("code", "pycharm", "cargo", "rustc", "gcc", "clang", "node", "python", "git", "nvim", "vim", "jetbrains")):
+            return "coding_dev"
+        if any(k in proc_key for k in ("blender", "obs", "kdenlive", "davinci", "gimp", "krita", "ffmpeg")):
+            return "creative_media"
+        if any(k in proc_key for k in ("firefox", "chrome", "chromium", "brave", "librewolf", "vivaldi", "edge")):
+            return "browser_web"
+        if any(k in proc_key for k in ("sunshine", "moonlight", "tailscale", "sshd", "adb", "scrcpy", "remmina", "rustdesk")):
+            return "remote_continuity"
+        if any(sig in proc_key for sig in _KNOWN_GAME_SIGNATURES):
+            return "gaming"
+        return "desktop_apps"
+
+    def observe_pc_and_remote_usage(
+        self,
+        processes: list[Any] | None = None,
+        *,
+        focus_process: str = "",
+        is_fullscreen: bool = False,
+        gpu_util: float = 0.0,
+        vram_used_mb: float = 0.0,
+        cpu_percent: float | None = None,
+        ram_percent: float | None = None,
+    ) -> dict[str, Any]:
+        """Auto-learns whole-PC usage patterns, frequent apps, resource baselines, and remote services/tasks."""
+        cpu_val = float(cpu_percent) if cpu_percent is not None else float(psutil.cpu_percent(interval=None))
+        ram_val = float(ram_percent) if ram_percent is not None else float(psutil.virtual_memory().percent)
+
+        with self._lock:
+            prof = self.get_pc_usage_profile()
+            n = int(prof.get("samples", 0) or 0) + 1
+            prof["samples"] = n
+            prev_cpu = float(prof.get("avg_cpu_pct", 0.0) or 0.0)
+            prev_ram = float(prof.get("avg_ram_pct", 0.0) or 0.0)
+            prof["avg_cpu_pct"] = round(((prev_cpu * (n - 1)) + cpu_val) / n, 1)
+            prof["peak_cpu_pct"] = round(max(float(prof.get("peak_cpu_pct", 0.0) or 0.0), cpu_val), 1)
+            prof["avg_ram_pct"] = round(((prev_ram * (n - 1)) + ram_val) / n, 1)
+            prof["peak_ram_pct"] = round(max(float(prof.get("peak_ram_pct", 0.0) or 0.0), ram_val), 1)
+            prof["peak_gpu_pct"] = round(max(float(prof.get("peak_gpu_pct", 0.0) or 0.0), float(gpu_util or 0.0)), 1)
+            prof["peak_vram_mb"] = round(max(float(prof.get("peak_vram_mb", 0.0) or 0.0), float(vram_used_mb or 0.0)), 1)
+
+            apps = dict(prof.get("apps") or {})
+            cats = dict(prof.get("categories") or {})
+            rem_svcs = dict(prof.get("remote_services_seen") or {})
+
+            seen_this_tick: set[str] = set()
+            if focus_process:
+                fk = self._normalize_proc_key(focus_process)
+                if fk and fk not in ("desktop", "headless", ""):
+                    seen_this_tick.add(fk)
+            if processes:
+                for pr in processes[:14]:
+                    pname = str(getattr(pr, "name", "") if not isinstance(pr, dict) else pr.get("name", ""))
+                    pk = self._normalize_proc_key(pname)
+                    if pk and pk not in ("systemd", "init", "kthread", "idle", "astracradle"):
+                        seen_this_tick.add(pk)
+
+            for pk in seen_this_tick:
+                rec = dict(apps.get(pk) or {})
+                rec["hits"] = int(rec.get("hits", 0)) + 1
+                rec["category"] = self._classify_app_category(pk)
+                rec["last_seen"] = utc_now_iso()
+                apps[pk] = rec
+                cat = rec["category"]
+                cats[cat] = int(cats.get(cat, 0)) + 1
+                if cat == "remote_continuity":
+                    rem_svcs[pk] = int(rem_svcs.get(pk, 0)) + 1
+
+            # Cap stored app dictionary to top 60 apps by hits
+            if len(apps) > 60:
+                sorted_apps = sorted(apps.items(), key=lambda kv: int(kv[1].get("hits", 0)), reverse=True)[:60]
+                apps = dict(sorted_apps)
+
+            if self.device_registry is not None:
+                try:
+                    devs = self.device_registry.load_devices()
+                    prof["paired_devices_snapshot"] = [
+                        {"id": d.device_id, "name": d.name, "kind": d.device_type, "host": getattr(d, "network_host", "")}
+                        for d in devs[:12]
+                    ]
+                except Exception:
+                    pass
+
+            prof["apps"] = apps
+            prof["categories"] = cats
+            prof["remote_services_seen"] = rem_svcs
+            prof["last_fullscreen"] = bool(is_fullscreen)
+            prof["last_updated"] = utc_now_iso()
+            self._save_pc_usage_profile(prof)
+            return prof
+
+    def record_remote_task(self, target: str, task: str, ok: bool, detail: str = "") -> dict[str, Any]:
+        with self._lock:
+            prof = self.get_pc_usage_profile()
+            hist = list(prof.get("remote_tasks") or [])
+            entry = {
+                "ts": utc_now_iso(),
+                "target": (target or "local").strip(),
+                "task": (task or "").strip()[:160],
+                "ok": bool(ok),
+                "detail": (detail or "").strip()[:200],
+            }
+            hist.append(entry)
+            prof["remote_tasks"] = hist[-40:]
+            prof["last_updated"] = utc_now_iso()
+            self._save_pc_usage_profile(prof)
+            return entry
 
     def compute_gpu_throttle_plan(
         self,
@@ -1644,6 +1835,111 @@ class HermesAgentManager:
                         "type": "object",
                         "properties": {"query": {"type": "string", "description": "PID number or process name"}},
                         "required": ["query"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_pc_usage_summary",
+                    "description": "Inspect what Hermes has automatically learned about how the user uses their PC as a whole (top apps, workflow mix, CPU/RAM/GPU peaks, learned games, and remote tasks/devices).",
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_wifi_optimize",
+                    "description": "Check Wi-Fi channels/power-save AND optionally apply the cleanest Wi-Fi channel when apply=true.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"apply": {"type": "boolean", "description": "True to actually apply the best channel, false to only check"}},
+                        "required": [],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_probalance_and_profile",
+                    "description": "Inspect or fix background CPU hogs and switch AstraCradle power/situation profiles (Balanced Daily, Gaming / Low-Latency, Silent / Battery, Workstation / Render).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["status", "restrain_hogs", "set_profile", "revert"]},
+                            "profile_name": {"type": "string", "description": "Used when action=set_profile"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_process_manage",
+                    "description": "Safely lower priority (renice) or close a non-protected runaway user process by PID (strictly blocks OS-critical processes).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "pid": {"type": "integer"},
+                            "action": {"type": "string", "enum": ["renice", "terminate"]},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["pid", "action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_startup_audit",
+                    "description": "List startup autorun programs or safely disable an unnecessary user startup entry (with rollback support).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["list", "disable"]},
+                            "entry_id": {"type": "string", "description": "Startup entry ID to disable when action=disable"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_remote_tasks",
+                    "description": "Inspect paired mobile/remote devices, Tailscale/Sunshine/ADB status, auto-connect proximity devices, or launch/record a remote task.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["status", "auto_connect", "launch_device", "adb_bridge"]},
+                            "device_id": {"type": "string"},
+                            "serial": {"type": "string"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_self_heal_repair",
+                    "description": "Run AstraCradle 14-invariant self-heal & integrity repair to fix config, SQLite, or certificate issues.",
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_rollback_undo",
+                    "description": "List recent AstraCradle rollback/quarantine entries or undo a specific entry_id safely.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["list", "undo"]},
+                            "entry_id": {"type": "string"},
+                        },
+                        "required": ["action"],
                     },
                 },
             },
@@ -1876,7 +2172,20 @@ class HermesAgentManager:
                     return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1). Preview with dry_run=true instead."}
                 if self.safe_fixer is not None:
                     ok_f, summary, notes = self.safe_fixer.run_fix_everything_safe(adapter, config, dry_run=dry)
-                    return {"ok": ok_f, "dry_run": dry, "summary": summary, "notes": notes[:8]}
+                    extra: list[str] = []
+                    if not dry and self.executor is not None:
+                        try:
+                            dns_res = self.executor.execute_action("flush_dns", adapter, config, dry_run=False)
+                            extra.append(dns_res.summary)
+                        except Exception:
+                            pass
+                        if self.ram_standby_mgr is not None:
+                            try:
+                                _, ram_msg = self.ram_standby_mgr.trim_standby(dry_run=False)
+                                extra.append(ram_msg)
+                            except Exception:
+                                pass
+                    return {"ok": ok_f, "dry_run": dry, "summary": summary, "notes": (notes + extra)[:10]}
                 return {"ok": False, "error": "SafeBeginnerFixer not attached in headless CLI."}
 
             if name == "astra_wifi_check":
@@ -1899,6 +2208,215 @@ class HermesAgentManager:
 
                 res = ProcessIntelligenceLookup(self.cfg_mgr).lookup(q, allow_web=False)
                 return {"ok": True, "name": res.name, "status": res.status, "description": res.brief_description}
+
+            if name == "astra_pc_usage_summary":
+                prof = self.get_pc_usage_profile()
+                top_apps = sorted(
+                    (prof.get("apps") or {}).items(),
+                    key=lambda kv: int(kv[1].get("hits", 0)),
+                    reverse=True,
+                )[:12]
+                return {
+                    "ok": True,
+                    "samples_recorded": prof.get("samples", 0),
+                    "avg_cpu_pct": prof.get("avg_cpu_pct", 0.0),
+                    "peak_cpu_pct": prof.get("peak_cpu_pct", 0.0),
+                    "avg_ram_pct": prof.get("avg_ram_pct", 0.0),
+                    "peak_ram_pct": prof.get("peak_ram_pct", 0.0),
+                    "peak_gpu_pct": prof.get("peak_gpu_pct", 0.0),
+                    "peak_vram_mb": prof.get("peak_vram_mb", 0.0),
+                    "workflow_categories": prof.get("categories", {}),
+                    "top_apps": [{"app": k, **v} for k, v in top_apps],
+                    "learned_games": self.list_learned_games()[:10],
+                    "remote_services_seen": prof.get("remote_services_seen", {}),
+                    "paired_devices": prof.get("paired_devices_snapshot", []),
+                    "recent_remote_tasks": (prof.get("remote_tasks") or [])[-8:],
+                }
+
+            if name == "astra_wifi_optimize":
+                apply_now = bool(args.get("apply", False))
+                if apply_now and perm == "read_only":
+                    return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1). Set apply=false to inspect."}
+                from .wifi_channel_optimizer import WifiChannelOptimizer
+
+                wo = self.wifi_optimizer or WifiChannelOptimizer(self.journal)
+                if not apply_now:
+                    rec = wo.recommend_channels(config)
+                    return {"ok": True, "applied": False, "summary": rec.get("summary"), "details": rec.get("details", [])[:6]}
+                res = wo.optimize_connection(config, dry_run=False)
+                return {"ok": res.ok, "applied": True, "summary": res.summary, "details": getattr(res, "details", [])[:6]}
+
+            if name == "astra_probalance_and_profile":
+                act = str(args.get("action", "status"))
+                if act != "status" and perm == "read_only":
+                    return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1)."}
+                from .probalance import ProBalanceEngine
+
+                pb = self.probalance or ProBalanceEngine(self.cfg_mgr, self.journal)
+                if act == "status":
+                    return {
+                        "ok": True,
+                        "active_profile": config.active_profile,
+                        "probalance_enabled": config.probalance_enabled,
+                        "restrained_count": len(pb.restrained),
+                        "recent_events": pb.recent_events[:6],
+                    }
+                if act == "set_profile":
+                    target_prof = str(args.get("profile_name") or "Balanced Daily")
+                    if target_prof not in ("Balanced Daily", "Gaming / Low-Latency", "Silent / Battery", "Workstation / Render"):
+                        return {"ok": False, "error": f"Unknown profile '{target_prof}'."}
+                    config.apply_profile(target_prof)
+                    self.cfg_mgr.save(config)
+                    return {"ok": True, "active_profile": config.active_profile}
+                if act == "restrain_hogs":
+                    tc = self.telemetry or TelemetryCollector(config.excluded_processes)
+                    snap = tc.collect(adapter, include_dns=False, include_process_details=False)
+                    prev_pb = config.probalance_enabled
+                    config.probalance_enabled = True
+                    notes = pb.evaluate_tick(snap.top_processes, "", config, dry_run=False)
+                    config.probalance_enabled = prev_pb
+                    return {"ok": True, "notes": notes[:8], "restrained_count": len(pb.restrained)}
+                if act == "revert":
+                    ok_r, msg_r = pb.revert_all(config, dry_run=False)
+                    return {"ok": ok_r, "message": msg_r}
+                return {"ok": False, "error": f"Unknown ProBalance action: {act}"}
+
+            if name == "astra_process_manage":
+                if perm == "read_only":
+                    return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1)."}
+                pid = int(args.get("pid", 0) or 0)
+                act = str(args.get("action", "renice"))
+                why = str(args.get("reason", "Hermes AI process management"))
+                if pid <= 0:
+                    return {"ok": False, "error": "Valid positive PID required."}
+                if self.executor is None:
+                    from .executor import GuardedExecutor
+                    from .rollback import RollbackManager
+
+                    ex = GuardedExecutor(self.cfg_mgr, self.rollback_mgr or RollbackManager(self.cfg_mgr), self.journal)
+                else:
+                    ex = self.executor
+                if act == "terminate":
+                    ok_p, msg_p = ex.safe_terminate_process(pid, config, why=why)
+                else:
+                    ok_p, msg_p = ex.safe_renice_process(pid, config)
+                return {"ok": ok_p, "pid": pid, "action": act, "message": msg_p}
+
+            if name == "astra_startup_audit":
+                act = str(args.get("action", "list"))
+                if act == "disable" and perm == "read_only":
+                    return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1)."}
+                from .autoruns_audit import AutorunsAndGhostAuditor
+                from .rollback import RollbackManager
+
+                aud = self.autoruns_auditor or AutorunsAndGhostAuditor(
+                    self.cfg_mgr, self.rollback_mgr or RollbackManager(self.cfg_mgr), self.journal, elevation=self.elevation
+                )
+                entries = aud.scan_autoruns(adapter, include_system=False)
+                if act == "list":
+                    return {
+                        "ok": True,
+                        "count": len(entries),
+                        "entries": [
+                            {
+                                "id": e.entry_id,
+                                "name": e.name,
+                                "enabled": e.enabled,
+                                "impact": e.impact,
+                                "explanation": getattr(e, "explanation", ""),
+                            }
+                            for e in entries[:15]
+                        ],
+                    }
+                eid = str(args.get("entry_id", "")).strip()
+                target_e = next((e for e in entries if e.entry_id == eid), None)
+                if target_e is None:
+                    return {"ok": False, "error": f"Startup entry '{eid}' not found among user entries."}
+                ok_t, msg_t = aud.toggle_autorun_entry(target_e, enable=False, dry_run=False)
+                return {"ok": ok_t, "entry_id": eid, "message": msg_t}
+
+            if name == "astra_remote_tasks":
+                act = str(args.get("action", "status"))
+                if act != "status" and perm == "read_only":
+                    return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1)."}
+                from .mobile_continuity import DeviceRegistryManager, MobileCompanionEngine
+
+                reg = self.device_registry or DeviceRegistryManager(self.cfg_mgr, self.journal)
+                comp = self.mobile_companion or MobileCompanionEngine(self.cfg_mgr, reg, self.journal)
+                if act == "status":
+                    devs = reg.load_devices()
+                    adb_devs = comp.scan_android_adb()
+                    prof = self.get_pc_usage_profile()
+                    return {
+                        "ok": True,
+                        "paired_devices": [
+                            {"id": d.device_id, "name": d.name, "type": d.device_type, "host": getattr(d, "network_host", "")}
+                            for d in devs
+                        ],
+                        "adb_devices": [{"serial": a.serial, "model": a.model, "state": a.state} for a in adb_devs],
+                        "remote_services_seen": prof.get("remote_services_seen", {}),
+                        "recent_remote_tasks": (prof.get("remote_tasks") or [])[-8:],
+                    }
+                if act == "auto_connect":
+                    outcomes = comp.auto_connect_proximity_devices(config)
+                    self.record_remote_task("proximity", "auto_connect", True, f"{len(outcomes)} target(s) checked")
+                    return {"ok": True, "outcomes": [str(o) for o in outcomes[:8]]}
+                if act == "launch_device":
+                    did = str(args.get("device_id", "")).strip()
+                    if not did:
+                        return {"ok": False, "error": "Missing device_id"}
+                    ok_l, msg_l = reg.launch_designated_program(did)
+                    self.record_remote_task(did, "launch_designated_program", ok_l, msg_l)
+                    return {"ok": ok_l, "message": msg_l}
+                if act == "adb_bridge":
+                    serial = str(args.get("serial", "")).strip()
+                    ok_a, msg_a = comp.setup_android_adb_bridge(serial, int(getattr(config, "astrabeam_port", 47992) or 47992))
+                    self.record_remote_task(serial or "android", "adb_bridge", ok_a, msg_a)
+                    return {"ok": ok_a, "message": msg_a}
+                return {"ok": False, "error": f"Unknown remote action: {act}"}
+
+            if name == "astra_self_heal_repair":
+                from .rollback import RollbackManager
+                from .self_heal import SelfHealEngine
+
+                rb = self.rollback_mgr or RollbackManager(self.cfg_mgr)
+                sh = self.self_heal or SelfHealEngine(self.cfg_mgr, rb, self.journal)
+                events, audit = sh.run_full_self_heal(
+                    adapter,
+                    config,
+                    device_registry=self.device_registry,
+                    companion=self.mobile_companion,
+                )
+                return {
+                    "ok": True,
+                    "checks_count": len(events),
+                    "repaired": [e.check_name for e in events if getattr(e, "repaired", False)],
+                    "warnings": [f"{e.check_name}: {e.details}" for e in events if e.status != "ok"][:8],
+                    "audit_findings": len(audit),
+                }
+
+            if name == "astra_rollback_undo":
+                act = str(args.get("action", "list"))
+                from .rollback import RollbackManager
+
+                rb = self.rollback_mgr or RollbackManager(self.cfg_mgr)
+                entries = rb.load_entries()
+                if act == "list":
+                    return {
+                        "ok": True,
+                        "count": len(entries),
+                        "entries": [
+                            {"id": e.entry_id, "action": e.action_type, "summary": e.summary, "status": e.status}
+                            for e in entries[-12:]
+                        ],
+                    }
+                if perm == "read_only":
+                    return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1)."}
+                eid = str(args.get("entry_id", "")).strip()
+                if not eid:
+                    return {"ok": False, "error": "Missing entry_id"}
+                ok_u, msg_u = rb.rollback_entry(eid)
+                return {"ok": ok_u, "message": msg_u}
 
             if name == "file_read":
                 p = Path(str(args.get("path", ""))).expanduser()
@@ -2018,13 +2536,32 @@ class HermesAgentManager:
         self.ensure_hermes_home(config)
         soul = self.soul_md_path.read_text(encoding="utf-8", errors="ignore")[:1800]
         user_txt = self.user_md_path.read_text(encoding="utf-8", errors="ignore")[:1500]
-        mem = self.memory_path.read_text(encoding="utf-8", errors="ignore")[:2500]
+        mem = self.memory_path.read_text(encoding="utf-8", errors="ignore")[:2200]
         skills = self.list_skills()
-        skill_summary = "\n".join(f"- {s['slug']}: {s['content'][:220].replace(chr(10), ' ')}" for s in skills[:8])
+        skill_summary = "\n".join(f"- {s['slug']}: {s['content'][:200].replace(chr(10), ' ')}" for s in skills[:8])
+
+        prof = self.get_pc_usage_profile()
+        top_apps = sorted((prof.get("apps") or {}).items(), key=lambda kv: int(kv[1].get("hits", 0)), reverse=True)[:8]
+        apps_txt = ", ".join(f"{k}({v.get('category', 'app')})" for k, v in top_apps) or "still learning"
+        games_txt = ", ".join(g.get("display_name", "") for g in self.list_learned_games()[:5]) or "none recorded yet"
+        rem_svcs = ", ".join(sorted((prof.get("remote_services_seen") or {}).keys())) or "none active yet"
+        perm_lbl = HERMES_PERMISSION_LEVELS.get(self._effective_permission_level(config), {}).get("label", "Safe")
+
         return (
             f"{soul}\n\n{user_txt}\n\n{mem}\n\n"
+            "# Learned Whole-PC & Remote Usage Context\n"
+            f"- Samples Observed: {prof.get('samples', 0)} (Avg CPU {prof.get('avg_cpu_pct', 0)}%, Avg RAM {prof.get('avg_ram_pct', 0)}%, Peak VRAM {prof.get('peak_vram_mb', 0)} MB)\n"
+            f"- Frequent Apps: {apps_txt}\n"
+            f"- Learned Games: {games_txt}\n"
+            f"- Remote Continuity Services: {rem_svcs}\n"
+            f"- Active Safety Tier: {perm_lbl}\n\n"
             f"# Available Learned Skills\n{skill_summary or '(none yet)'}\n\n"
-            "When solving multi-step requests, call the AstraCradle/Hermes tools accurately and save durable preferences with `memory_save`."
+            "# Action Assistant Guidelines\n"
+            "You are AstraCradle's integrated PC Action Assistant. Do NOT just give generic text advice when you have real tools that can inspect and safely fix the problem!\n"
+            "1. Inspect live telemetry (`astra_system_status`, `astra_deep_scan`, `astra_pc_usage_summary`) first.\n"
+            "2. Actually fix safe issues on the user's PC when asked (`astra_fix_safe`, `astra_probalance_and_profile`, `astra_wifi_optimize`, `astra_startup_audit`, `astra_process_manage`, `astra_self_heal_repair`, `astra_remote_tasks`).\n"
+            "3. Never risk breaking the OS: respect protected system processes/files, use dry-run/quarantine/rollback safeguards, and tell the user clearly what you checked, what you fixed, and that changes can be undone via `astra_rollback_undo`.\n"
+            "4. Save durable user preferences or PC facts with `memory_save`."
         )
 
     def _call_llm(

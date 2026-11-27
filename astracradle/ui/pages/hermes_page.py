@@ -39,6 +39,169 @@ def _build_provider_options() -> tuple[list[str], dict[str, tuple[str, str]]]:
     return labels, mapping
 
 
+def open_quick_assistant_modal(app: AstraCradleApp) -> None:
+    """Opens a persistent-session AI Action Assistant popup from any screen in AstraCradle (Ctrl+K)."""
+    existing = getattr(app, "_quick_ai_win", None)
+    if existing is not None:
+        try:
+            if existing.winfo_exists():
+                existing.lift()
+                existing.focus_force()
+                return
+        except Exception:
+            pass
+
+    p = app.palette
+    f = app.fonts
+    cfg = app.config_obj
+    hm = app.hermes_mgr
+
+    win = ctk.CTkToplevel(app)
+    app._quick_ai_win = win
+    win.title("AstraCradle AI Action Assistant")
+    win.geometry("760x560")
+    win.configure(fg_color=p.bg_canvas)
+    try:
+        win.transient(app)
+    except Exception:
+        pass
+
+    hdr = ctk.CTkFrame(win, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=10)
+    hdr.pack(fill="x", padx=12, pady=(12, 6))
+    ctk.CTkLabel(
+        hdr,
+        text="Ask AI Assistant · Diagnose, Fix & Automate Safely",
+        font=f["section"],
+        text_color=p.accent_cyan,
+    ).pack(side="left", padx=12, pady=10)
+
+    def _open_full_hub() -> None:
+        try:
+            win.destroy()
+        except Exception:
+            pass
+        app.switch_nav("hermes")
+
+    ctk.CTkButton(
+        hdr,
+        text="Open Full AI Hub ->",
+        height=28,
+        fg_color=p.bg_elevated,
+        hover_color=p.border_strong,
+        font=f["small"],
+        command=_open_full_hub,
+    ).pack(side="right", padx=10, pady=8)
+
+    spec = hm.resolve_provider_spec(cfg)
+    gpu_plan = hm.compute_gpu_throttle_plan(cfg)
+    ctk.CTkLabel(
+        win,
+        text=(
+            f"Model: {spec['model']} ({spec['provider']})  ·  "
+            f"GPU Budget: {gpu_plan['target_gpu_pct']}% (Reserve {gpu_plan['vram_reserve_mb']} MB VRAM)  ·  "
+            f"Learned Games: {gpu_plan['learned_games_count']}"
+        ),
+        font=f["caption"],
+        text_color=p.text_secondary,
+    ).pack(anchor="w", padx=16, pady=(0, 4))
+
+    session_id = str(getattr(app, "_hermes_session_id", "default"))
+    transcript = ctk.CTkTextbox(win, font=f["body"], fg_color=p.bg_elevated, wrap="word")
+    transcript.pack(fill="both", expand=True, padx=12, pady=4)
+
+    def _reload_transcript() -> None:
+        transcript.configure(state="normal")
+        transcript.delete("1.0", "end")
+        msgs = hm.get_session_messages(session_id, limit=30)
+        if not msgs:
+            transcript.insert(
+                "end",
+                "Tell me what you need fixed or checked on your PC!\n"
+                "Examples:\n"
+                "  • \"My PC feels sluggish — scan and safely clean caches & restrain background CPU hogs.\"\n"
+                "  • \"Check my Wi-Fi channels and optimize if congested.\"\n"
+                "  • \"Check my paired mobile/remote devices and AstraBeam status.\"\n"
+                "  • \"What have you learned about how I use my PC?\"\n",
+            )
+        else:
+            for m in msgs:
+                who = "You" if m["role"] == "user" else "Hermes AI"
+                transcript.insert("end", f"[{who}] {m['content']}\n")
+                if m.get("tool_trace"):
+                    transcript.insert("end", f"  └─ Actions/Tools: {m['tool_trace']}\n")
+                transcript.insert("end", "\n")
+        transcript.configure(state="disabled")
+        transcript.see("end")
+
+    _reload_transcript()
+
+    chips = ctk.CTkFrame(win, fg_color="transparent")
+    chips.pack(fill="x", padx=12, pady=(2, 4))
+    entry = ctk.CTkEntry(win, placeholder_text="Ask or tell AstraCradle AI to fix, check, or optimize something...")
+
+    def _send(override: str | None = None) -> None:
+        q = (override if override is not None else entry.get()).strip()
+        if not q:
+            return
+        if override is None:
+            entry.delete(0, "end")
+        transcript.configure(state="normal")
+        transcript.insert("end", f"[You] {q}\n[Hermes AI] Inspecting & running safe AstraCradle tools...\n")
+        transcript.configure(state="disabled")
+        transcript.see("end")
+
+        def _worker() -> None:
+            res = hm.run_prompt(q, cfg, session_id=session_id)
+
+            def _done() -> None:
+                app._hermes_status_cache = hm.get_status(cfg)
+                if win.winfo_exists():
+                    _reload_transcript()
+                if not res.ok:
+                    app.show_toast(f"Hermes AI: {res.error}")
+                elif app.current_nav == "hermes":
+                    render_hermes_page(app)
+
+            app.after(0, _done)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    for lbl_txt, q_txt in (
+        ("Fix Slow PC (Safe)", "Diagnose my PC, safely clean junk/caches with astra_fix_safe(dry_run=false), and restrain background CPU hogs if needed."),
+        ("Optimize Wi-Fi", "Check my Wi-Fi channels and apply optimization if a cleaner channel is available."),
+        ("Startup & Hogs", "Audit my startup entries and high-CPU processes, and suggest or safely trim unneeded bloat."),
+        ("Remote Tasks", "Check my paired mobile/remote devices, Tailscale/ADB/AstraBeam status, and recent remote tasks."),
+        ("What AI Learned", "Summarize what you have learned about my whole-PC usage, top apps, games, and remote tasks."),
+    ):
+        ctk.CTkButton(
+            chips,
+            text=lbl_txt,
+            height=26,
+            fg_color=p.bg_elevated,
+            hover_color=p.accent_cyan,
+            font=f["caption"],
+            command=lambda qt=q_txt: _send(qt),
+        ).pack(side="left", padx=(0, 6))
+
+    in_row = ctk.CTkFrame(win, fg_color="transparent")
+    in_row.pack(fill="x", padx=12, pady=(2, 12))
+    entry.pack_forget()
+    entry = ctk.CTkEntry(in_row, height=34, placeholder_text="Tell AstraCradle AI what to check, fix, or automate...")
+    entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+    entry.bind("<Return>", lambda _e: _send())
+    ctk.CTkButton(
+        in_row,
+        text="Send & Act",
+        width=120,
+        height=34,
+        fg_color=p.accent_cyan,
+        text_color="#071216",
+        font=f["body_bold"],
+        command=_send,
+    ).pack(side="right")
+    entry.focus_set()
+
+
 def render_hermes_page(app: AstraCradleApp) -> None:
     parent = app.hermes_scroll
     for child in parent.winfo_children():
@@ -94,57 +257,40 @@ def render_hermes_page(app: AstraCradleApp) -> None:
 
     if rec is not None and status is not None:
         status_col = p.accent_jade if status.ready else p.accent_amber
+        pc_prof = hm.get_pc_usage_profile()
         ctk.CTkLabel(
             hdr,
             text=(
-                f"Status: {status.summary}   ·   Home: {status.hermes_home}\n"
-                f"Detected Hardware: {rec.gpu_name} ({rec.gpu_vram_gb:.1f} GB VRAM, {rec.system_ram_gb:.0f} GB RAM) · Tier: {rec.tier_name}\n"
-                f"Best GPU-Local Pick: {rec.recommended_local_model} ({rec.recommended_context_tokens // 1024}K ctx)   ·   "
-                f"Best Free Cloud Pick: {rec.optimal_free_model} (0 GB VRAM)"
+                f"Status: {status.summary}   ·   Hardware: {rec.gpu_name} ({rec.gpu_vram_gb:.1f} GB VRAM, {rec.system_ram_gb:.0f} GB RAM)\n"
+                f"Learned PC Profile: {pc_prof.get('samples', 0)} ticks · {len(pc_prof.get('apps') or {})} apps · "
+                f"{len(hm.list_learned_games())} learned games · {len(pc_prof.get('remote_tasks') or [])} remote task(s)"
             ),
             font=f["small"],
             text_color=status_col,
             justify="left",
             wraplength=app._content_wrap(80),
-        ).pack(anchor="w", padx=14, pady=(0, 8))
+        ).pack(anchor="w", padx=14, pady=(0, 6))
 
-        # Quick 1-click recommendation cards
-        rec_row = ctk.CTkFrame(hdr, fg_color="transparent")
-        rec_row.pack(fill="x", padx=14, pady=(0, 12))
+        # Collapsible setup toggle so ready users land directly on the AI Action Assistant chat!
+        setup_open = getattr(app, "_hermes_setup_expanded", None)
+        if setup_open is None:
+            setup_open = not bool(status.ready)
+            app._hermes_setup_expanded = setup_open
 
-        local_card = ctk.CTkFrame(rec_row, fg_color=p.bg_elevated, corner_radius=9)
-        local_card.pack(side="left", fill="both", expand=True, padx=(0, 6))
-        ctk.CTkLabel(
-            local_card,
-            text=f"GPU-Optimized Local: {rec.recommended_local_model}",
-            font=f["body_bold"],
-            text_color=p.accent_cyan,
-        ).pack(anchor="w", padx=10, pady=(8, 2))
-        ctk.CTkLabel(
-            local_card,
-            text=rec.local_reason,
-            font=f["caption"],
-            text_color=p.text_secondary,
-            justify="left",
-            wraplength=360,
-        ).pack(anchor="w", padx=10, pady=(0, 8))
+        def _toggle_setup_card() -> None:
+            app._hermes_setup_expanded = not bool(getattr(app, "_hermes_setup_expanded", False))
+            render_hermes_page(app)
 
-        cloud_card = ctk.CTkFrame(rec_row, fg_color=p.bg_elevated, corner_radius=9)
-        cloud_card.pack(side="left", fill="both", expand=True, padx=(6, 0))
-        ctk.CTkLabel(
-            cloud_card,
-            text=f"Optimal Free Cloud: {rec.optimal_free_model}",
-            font=f["body_bold"],
-            text_color=p.accent_jade,
-        ).pack(anchor="w", padx=10, pady=(8, 2))
-        ctk.CTkLabel(
-            cloud_card,
-            text=rec.free_reason,
-            font=f["caption"],
-            text_color=p.text_secondary,
-            justify="left",
-            wraplength=360,
-        ).pack(anchor="w", padx=10, pady=(0, 8))
+        ctk.CTkButton(
+            top_row,
+            text=("Hide Setup & Models ▲" if setup_open else "Model, GPU & Setup ▾"),
+            height=28,
+            corner_radius=7,
+            fg_color=p.bg_elevated,
+            hover_color=p.border_strong,
+            font=f["small"],
+            command=_toggle_setup_card,
+        ).pack(side="right", padx=(0, 6))
     else:
         ctk.CTkLabel(
             hdr,
@@ -153,9 +299,11 @@ def render_hermes_page(app: AstraCradleApp) -> None:
             text_color=p.text_muted,
         ).pack(anchor="w", padx=14, pady=(0, 10))
 
-    # ── Automated 1-Click Setup & Provider Configuration ─────────────────────
+    # ── Automated 1-Click Setup & Provider Configuration (collapsible when ready) ─
+    setup_expanded = bool(getattr(app, "_hermes_setup_expanded", True if status is None else (not status.ready)))
     setup_card = ctk.CTkFrame(parent, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12)
-    setup_card.pack(fill="x", padx=4, pady=(0, 10))
+    if setup_expanded:
+        setup_card.pack(fill="x", padx=4, pady=(0, 10))
 
     ctk.CTkLabel(
         setup_card,
@@ -409,8 +557,8 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     # ── Native Workspace Tabs: Chat, Memory & Skills, Cron, Safety & Gateway ─
     tabs = ctk.CTkTabview(parent, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12)
     tabs.pack(fill="both", expand=True, padx=4, pady=(0, 6))
-    t_chat = tabs.add("Autonomous Chat & Tools")
-    t_mem = tabs.add("Memory & Learned Skills")
+    t_chat = tabs.add("Action Assistant Chat")
+    t_mem = tabs.add("Learned PC Usage & Memory")
     t_cron = tabs.add("Cron & Subagents")
     t_safe = tabs.add("Safety, GPU Budget & Gateways")
 
@@ -497,8 +645,11 @@ def render_hermes_page(app: AstraCradleApp) -> None:
 
     for label_txt, q_txt in (
         ("Diagnose PC", "Run a deep system scan and check live CPU/GPU/RAM status, then summarize in plain English."),
-        ("Wi-Fi & Temps", "Check my GPU temperature and Wi-Fi channels, and suggest safe improvements."),
-        ("Preview Safe Fix", "Preview safe cache cleanup with dry_run=true and show what can be safely reclaimed."),
+        ("Fix Slow PC (Safe)", "Diagnose bottlenecks, safely clean caches with astra_fix_safe(dry_run=false), and restrain background CPU hogs if needed."),
+        ("Optimize Wi-Fi", "Check my Wi-Fi channels and optimize if a cleaner channel is available."),
+        ("Startup & Hogs", "Audit my startup entries and high-CPU processes, and explain or trim safe bloat."),
+        ("Remote Tasks", "Check paired mobile/remote devices, Tailscale/ADB/AstraBeam status, and recent remote tasks."),
+        ("Self-Heal & Undo", "Run AstraCradle 14-invariant self-heal repair and list any recent rollback/undo items."),
     ):
         ctk.CTkButton(
             chips,
@@ -527,9 +678,30 @@ def render_hermes_page(app: AstraCradleApp) -> None:
         command=_send_prompt,
     ).pack(side="right")
 
-    # ── Tab 2: Memory & Learned Skills ───────────────────────────────────────
+    # ── Tab 2: Learned Whole-PC Usage, Memory & Skills ───────────────────────
     hm.ensure_hermes_home(cfg)
-    mem_box = ctk.CTkTextbox(t_mem, height=130, font=f["small"], fg_color=p.bg_elevated)
+    prof = hm.get_pc_usage_profile()
+    top_apps = sorted((prof.get("apps") or {}).items(), key=lambda kv: int(kv[1].get("hits", 0)), reverse=True)[:8]
+    top_apps_str = ", ".join(f"{k} ({v.get('category', 'app')}, {v.get('hits', 0)}x)" for k, v in top_apps) or "Still observing..."
+    rem_str = ", ".join(f"{k} ({v}x)" for k, v in (prof.get("remote_services_seen") or {}).items()) or "None active yet"
+    learned_summary_txt = (
+        f"Whole-PC Usage Learned ({prof.get('samples', 0)} telemetry ticks):\n"
+        f"  • CPU avg/peak: {prof.get('avg_cpu_pct', 0)}% / {prof.get('peak_cpu_pct', 0)}%  ·  "
+        f"RAM avg/peak: {prof.get('avg_ram_pct', 0)}% / {prof.get('peak_ram_pct', 0)}%  ·  "
+        f"Peak GPU/VRAM: {prof.get('peak_gpu_pct', 0)}% / {prof.get('peak_vram_mb', 0)} MB\n"
+        f"  • Top Frequent Apps: {top_apps_str}\n"
+        f"  • Remote Continuity & Tasks: {rem_str}  ·  {len(prof.get('paired_devices_snapshot') or [])} paired device(s), {len(prof.get('remote_tasks') or [])} remote task(s)"
+    )
+    ctk.CTkLabel(
+        t_mem,
+        text=learned_summary_txt,
+        font=f["caption"],
+        text_color=p.accent_cyan,
+        justify="left",
+        wraplength=760,
+    ).pack(anchor="w", padx=8, pady=(6, 6))
+
+    mem_box = ctk.CTkTextbox(t_mem, height=110, font=f["small"], fg_color=p.bg_elevated)
     ctk.CTkLabel(t_mem, text="Persistent Memory (MEMORY.md):", font=f["body_bold"]).pack(anchor="w", padx=8, pady=(6, 2))
     mem_box.pack(fill="x", padx=8, pady=(0, 6))
     mem_box.insert("1.0", hm.memory_path.read_text(encoding="utf-8", errors="ignore"))
