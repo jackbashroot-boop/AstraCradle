@@ -33,7 +33,7 @@ _QUICK_ACTION_CHIPS: tuple[tuple[str, str], ...] = (
     ("Remote Tasks", "Check paired mobile/remote devices, Tailscale/ADB/AstraBeam status, and recent remote tasks."),
     ("Self-Heal & Undo", "Run AstraCradle 14-invariant self-heal repair and list any recent rollback/undo items."),
     ("What AI Learned", "Summarize what you have learned about my whole-PC usage, top apps, games, and remote tasks."),
-    ("Research & Improve Astra", "Search the web or inspect AstraCradle's local build to propose safe improvements, tests, or new skills."),
+    ("Research & Improve Astra", "Run astra_dev_self_build(action='inspect') and check recent diagnostics, plus search the web if useful, then propose 3-5 concrete, file-specific code improvements, regression tests, or reusable skills for AstraCradle."),
 )
 
 

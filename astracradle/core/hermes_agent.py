@@ -183,8 +183,8 @@ HERMES_PERSONAS: dict[str, dict[str, str]] = {
         "greeting": "Telemetry channel open. State the symptom or module and I will trace it to root cause.",
         "prompt_directive": (
             "Adopt the persona of a calm, razor-sharp Principal Systems Architect. "
-            "Think in invariants, dependency chains, and measurable signals. Structure multi-step technical answers with crisp labels "
-            "('Signal:', 'Root Cause:', 'Action Taken:', 'Verified State:'), cite exact numbers and paths, and never guess."
+            "Think in invariants, dependency chains, and measurable signals. Use crisp labels ('Signal:', 'Root Cause:', 'Action Taken:', 'Verified State:') "
+            "when diagnosing faults, or crisp numbered engineering proposals when asked for improvements/design; cite only exact observed numbers and file paths, and never guess."
         ),
     },
     "atlas_mentor": {
@@ -2317,13 +2317,13 @@ class HermesAgentManager:
                 "type": "function",
                 "function": {
                     "name": "astra_dev_self_build",
-                    "description": "Inspect, compile-check, test, diff, or locally reinstall AstraCradle's local source build to help write and verify its next updates natively.",
+                    "description": "Inspect AstraCradle's real local modules/pages/tests/commits, compile-check, run tests, diff, or locally reinstall AstraCradle's source build.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["locate", "compile_check", "run_tests", "self_check", "git_status", "git_diff", "reinstall_local"],
+                                "enum": ["inspect", "locate", "compile_check", "run_tests", "self_check", "git_status", "git_diff", "reinstall_local"],
                             },
                         },
                         "required": ["action"],
@@ -3002,7 +3002,8 @@ class HermesAgentManager:
                 return {"ok": True, "path": str(p), "backup": str(bak_path), **({"post_verify": post_verify} if post_verify else {})}
 
             if name == "list_dir":
-                d = Path(str(args.get("path", ""))).expanduser().resolve()
+                raw_path = str(args.get("path", "") or "").strip()
+                d = self.get_local_source_root() if raw_path in ("", ".") else Path(raw_path).expanduser().resolve()
                 if not d.exists() or not d.is_dir():
                     return {"ok": False, "error": f"Directory not found: {d}"}
                 pat = str(args.get("pattern", "*") or "*")
@@ -3095,15 +3096,51 @@ class HermesAgentManager:
                 return {"ok": True, "skill_path": str(sp)}
 
             if name == "astra_dev_self_build":
-                act = str(args.get("action", "locate"))
+                act = str(args.get("action", "inspect") or "inspect").strip().lower()
                 root = self.get_local_source_root()
-                if act == "locate":
+                if act in ("locate", "inspect", "overview", "status", "list") or act not in (
+                    "compile_check", "run_tests", "self_check", "git_status", "git_diff", "reinstall_local"
+                ):
+                    core_dir = root / "astracradle" / "core"
+                    ui_dir = root / "astracradle" / "ui" / "pages"
+                    tests_dir = root / "tests"
+                    core_mods = [
+                        {"file": f"astracradle/core/{fp.name}", "lines": sum(1 for _ in fp.open(encoding="utf-8", errors="ignore"))}
+                        for fp in sorted(core_dir.glob("*.py"))
+                    ] if core_dir.exists() else []
+                    ui_pages = [
+                        {"file": f"astracradle/ui/pages/{fp.name}", "lines": sum(1 for _ in fp.open(encoding="utf-8", errors="ignore"))}
+                        for fp in sorted(ui_dir.glob("*.py"))
+                    ] if ui_dir.exists() else []
+                    test_files = [fp.name for fp in sorted(tests_dir.glob("test_*.py"))] if tests_dir.exists() else []
+                    recent_commits: list[str] = []
+                    if (root / ".git").exists():
+                        try:
+                            gl = subprocess.run(
+                                ["git", "log", "-n", "5", "--oneline"],
+                                cwd=str(root),
+                                capture_output=True,
+                                text=True,
+                                timeout=8,
+                                creationflags=_WIN_NO_WINDOW,
+                            )
+                            if gl.returncode == 0:
+                                recent_commits = [ln.strip() for ln in gl.stdout.splitlines() if ln.strip()]
+                        except Exception:
+                            pass
                     return {
                         "ok": True,
+                        "action": "inspect",
                         "source_root": str(root),
                         "python": sys.executable,
                         "python_version": platform.python_version(),
                         "has_git": (root / ".git").exists(),
+                        "recent_commits": recent_commits,
+                        "core_modules": core_mods[:45],
+                        "ui_pages": ui_pages[:25],
+                        "test_files": test_files[:30],
+                        "installed_skills": [s["slug"] for s in self.list_skills()[:15]],
+                        "recent_diagnostics": self.get_recent_diagnostics(limit=5),
                     }
                 if act == "compile_check":
                     pr = subprocess.run(
@@ -3299,7 +3336,8 @@ class HermesAgentManager:
             f"Learned Whole-PC & Remote Usage Context: Source={src_root} | WebSearch={'ON' if web_ok else 'OFF'} | Safety={perm_lbl} | "
             f"TopApps={apps_txt} | Games={games_txt} | Skills={skill_summary}\n"
             f"User Notes: {user_txt}\nMemory: {mem}\n"
-            "Action & Self-Development Assistant Guidelines: Use tools to inspect, read displays/clipboard, search memory/web, fix safe PC issues, or edit/test AstraCradle source cleanly. "
+            "Action & Self-Development Assistant Guidelines: Answer the user's exact request directly—if they ask for improvements, tests, or skills, propose concrete file-specific additions instead of saying no action is needed. "
+            "Ground EVERY file path, module name, metric, and error in real tool output from this turn; NEVER invent fictional modules, packages, or bridges (such as non-existent bridges). "
             "Respect protected OS processes/files, verify code changes, and answer clearly without raw markdown clutter."
         )
 
