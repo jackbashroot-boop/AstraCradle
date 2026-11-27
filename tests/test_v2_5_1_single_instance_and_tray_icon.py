@@ -2900,7 +2900,22 @@ def test_hermes_lan_smart_tv_youtube_detection_and_sinkhole_aim(monkeypatch) -> 
         assert aim_res["target_tv"]["ip"] == "192.168.0.55"
         assert aim_res["dns_primary"] == "192.168.0.193"
         assert aim_res["dns_secondary_failsafe"] == "192.168.0.1"
+        assert cfg.astrashield_lan_tv_mode is True and cfg.astrashield_tv_auto_failsafe is True
         assert lan_tv.load_failsafe_state()["tv_ip"] == "192.168.0.55"
+        assert "TizenBrew" in aim_res["plan"]["companion_mode"]
+
+        # 3. YouTube playback domains stay unblocked while external YouTube & Samsung ad domains are blocked
+        for safe_dom in ("rr3---sn-test.googlevideo.com", "youtubei.googleapis.com", "jnn-pa.googleapis.com", "i.ytimg.com"):
+            blk, _ = shield.is_domain_blocked(safe_dom)
+            assert blk is False, f"{safe_dom} must not be blocked!"
+        for ad_dom in ("googleads.g.doubleclick.net", "ads.youtube.com", "samsungads.com", "config.samsungads.com"):
+            blk, _ = shield.is_domain_blocked(ad_dom)
+            assert blk is True, f"{ad_dom} should be blocked!"
+
+        # 4. Auto-revert / restore_tv marks failsafe inactive cleanly
+        rest_res = hm.execute_tool("astra_lan_and_sinkhole", {"action": "restore_tv"}, cfg)
+        assert rest_res["ok"] is True
+        assert lan_tv.load_failsafe_state()["active"] is False
 
 
 

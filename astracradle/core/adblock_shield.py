@@ -83,15 +83,22 @@ YOUTUBE_PLAYBACK_ALLOWLIST: frozenset[str] = frozenset(
         "music.youtube.com",
         "youtu.be",
         "s.youtube.com",
+        "ytimg.com",
         "i.ytimg.com",
         "i9.ytimg.com",
         "s.ytimg.com",
+        "ggpht.com",
         "yt3.ggpht.com",
+        "yt4.ggpht.com",
         "yt3.googleusercontent.com",
         "youtubei.googleapis.com",
+        "youtube.googleapis.com",
+        "youtubeembeddedplayer.googleapis.com",
+        "jnn-pa.googleapis.com",
         "googlevideo.com",
         "manifest.googlevideo.com",
         "redirector.googlevideo.com",
+        "video-stats.l.google.com",
     }
 )
 
@@ -494,6 +501,7 @@ class AstraShieldManager:
         self._listen_addr = ""
         self._upstream_dns = "1.1.1.1"
         self._nat_redirect_port: int | None = None
+        self._nat_backend: str = ""
         self._cached_pihole_domains: set[str] | None = None
         self._paused_until: float = 0.0
         self.doh_enabled: bool = False
@@ -1047,26 +1055,39 @@ youtube.com##ytd-ad-slot-renderer, ytd-banner-promo-renderer, ytd-in-feed-ad-lay
 
     def cleanup_lan_nat_redirect(self) -> None:
         port = self._nat_redirect_port
+        backend = getattr(self, "_nat_backend", "")
         self._nat_redirect_port = None
-        if port and platform.system() == "Linux" and self.elevation is not None and shutil.which("iptables"):
+        self._nat_backend = ""
+        if not port or platform.system() != "Linux" or self.elevation is None:
+            return
+        if (not backend or backend == "iptables") and shutil.which("iptables"):
+            for proto in ("udp", "tcp"):
+                try:
+                    self.elevation.run_privileged(
+                        [
+                            "iptables",
+                            "-t",
+                            "nat",
+                            "-D",
+                            "PREROUTING",
+                            "-p",
+                            proto,
+                            "--dport",
+                            "53",
+                            "-j",
+                            "REDIRECT",
+                            "--to-ports",
+                            str(port),
+                        ],
+                        reason=f"Remove AstraShield LAN DNS {proto.upper()} port 53 -> {port} redirect",
+                    )
+                except Exception:
+                    pass
+        if (not backend or backend == "nft") and shutil.which("nft"):
             try:
                 self.elevation.run_privileged(
-                    [
-                        "iptables",
-                        "-t",
-                        "nat",
-                        "-D",
-                        "PREROUTING",
-                        "-p",
-                        "udp",
-                        "--dport",
-                        "53",
-                        "-j",
-                        "REDIRECT",
-                        "--to-ports",
-                        str(port),
-                    ],
-                    reason=f"Remove AstraShield LAN DNS port 53 -> {port} redirect",
+                    ["nft", "delete", "table", "ip", "astrashield_nat"],
+                    reason="Remove AstraShield nftables LAN DNS port 53 redirect",
                 )
             except Exception:
                 pass
@@ -1259,27 +1280,39 @@ youtube.com##ytd-ad-slot-renderer, ytd-banner-promo-renderer, ytd-in-feed-ad-lay
             return False, msg_fb
         if allow_elevation and platform.system() == "Linux" and self.elevation is not None and port == 53 and fallback_port != 53:
             if shutil.which("iptables"):
-                res = self.elevation.run_privileged(
+                res_u = self.elevation.run_privileged(
                     [
-                        "iptables",
-                        "-t",
-                        "nat",
-                        "-A",
-                        "PREROUTING",
-                        "-p",
-                        "udp",
-                        "--dport",
-                        "53",
-                        "-j",
-                        "REDIRECT",
-                        "--to-ports",
-                        str(fallback_port),
+                        "iptables", "-t", "nat", "-A", "PREROUTING",
+                        "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", str(fallback_port),
                     ],
-                    reason=f"Forward LAN DNS port 53 to AstraShield on {lan_ip}:{fallback_port} for Smart TVs",
+                    reason=f"Forward LAN DNS UDP port 53 to AstraShield on {lan_ip}:{fallback_port} for Smart TVs",
                 )
-                if res.ok:
+                if res_u.ok:
+                    self.elevation.run_privileged(
+                        [
+                            "iptables", "-t", "nat", "-A", "PREROUTING",
+                            "-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", str(fallback_port),
+                        ],
+                        reason=f"Forward LAN DNS TCP port 53 to AstraShield on {lan_ip}:{fallback_port}",
+                    )
                     self._nat_redirect_port = int(fallback_port)
-                    return True, f"LAN AstraShield DNS active on {lan_ip}:53 (forwarded -> :{fallback_port})! Set TV DNS to {lan_ip}."
+                    self._nat_backend = "iptables"
+                    return True, f"LAN AstraShield DNS active on {lan_ip}:53 (forwarded -> :{fallback_port})! Set TV Primary DNS={lan_ip}."
+            if shutil.which("nft"):
+                nft_script = (
+                    f"add table ip astrashield_nat; "
+                    f"add chain ip astrashield_nat prerouting {{ type nat hook prerouting priority dstnat ; policy accept ; }}; "
+                    f"add rule ip astrashield_nat prerouting udp dport 53 redirect to :{int(fallback_port)}; "
+                    f"add rule ip astrashield_nat prerouting tcp dport 53 redirect to :{int(fallback_port)}"
+                )
+                res_nft = self.elevation.run_privileged(
+                    ["nft", nft_script],
+                    reason=f"Forward LAN DNS port 53 to AstraShield :{fallback_port} via nftables for Smart TVs",
+                )
+                if res_nft.ok:
+                    self._nat_redirect_port = int(fallback_port)
+                    self._nat_backend = "nft"
+                    return True, f"LAN AstraShield DNS active on {lan_ip}:53 (nftables -> :{fallback_port})! Set TV Primary DNS={lan_ip}."
         return True, (
             f"LAN AstraShield DNS listening on 0.0.0.0:{fallback_port} (LAN IP {lan_ip}). "
             f"For TVs that require port 53, run elevated or forward UDP 53 -> {fallback_port}."

@@ -5881,6 +5881,13 @@ class HermesAgentManager:
                             upstream=str(getattr(config, "astrashield_doh_upstream", "1.1.1.1") or "1.1.1.1"),
                             allow_elevation=True,
                         )
+                    # Arm persistent LAN TV watchdog + auto-revert on shutdown/stop
+                    try:
+                        config.astrashield_lan_tv_mode = True
+                        config.astrashield_tv_auto_failsafe = True
+                        self.cfg_mgr.save(config)
+                    except Exception:
+                        pass
                     st_now = shield.status()
                     listen_port = 53
                     if ":5353" in str(st_now.dns_listen_addr) and getattr(shield, "_nat_redirect_port", None) is None:

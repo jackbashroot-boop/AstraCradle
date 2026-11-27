@@ -640,6 +640,13 @@ class LanTvAdShield:
                 "4. For 100% in-stream YouTube ad removal on LG webOS: install youtube-webos via LG Developer Mode / Homebrew Channel alongside AstraShield TV DNS."
             )
             app_companion = "youtube-webos (LG Homebrew)"
+        elif "samsung" in brand_low or "tizen" in brand_low:
+            steps.append(
+                "4. YouTube Playback Guarantee: AstraShield shields *.googlevideo.com, youtubei.googleapis.com, jnn-pa.googleapis.com, i.ytimg.com & s.youtube.com so videos NEVER stall or break. "
+                "Samsung's built-in YouTube app serves some in-stream pre-roll ads from the same *.googlevideo.com CDN as real videos (which no DNS-only filter can separate); "
+                "for 100% ad-free in-stream YouTube on Samsung Tizen, install TizenBrew / TizenTube alongside AstraShield TV DNS."
+            )
+            app_companion = "AstraShield DNS + TizenBrew / TizenTube (Samsung Tizen)"
         else:
             steps.append(
                 "4. AstraShield keeps all YouTube streams smooth & unbroken while blocking TV OS ads; if AstraCradle is closed or fails, the Failsafe Secondary DNS + automatic restore immediately returns your TV to stock routing."
