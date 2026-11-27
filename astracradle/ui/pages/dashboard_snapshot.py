@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 import customtkinter as ctk
 
-from ...core.advanced_controls import GpuPowerAndFanController
 from ...core.telemetry import format_bytes
 
 if TYPE_CHECKING:

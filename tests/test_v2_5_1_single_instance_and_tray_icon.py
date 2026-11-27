@@ -3053,6 +3053,26 @@ def test_hermes_delete_chat_session_and_ui_button() -> None:
         assert "Delete Chat" in hp and "_delete_session" in hp
 
 
+def test_samsung_tv_ad_domains_blocked_and_essential_apps_allowed() -> None:
+    import tempfile
+    from pathlib import Path
+    from astracradle.core.adblock_shield import AstraShieldManager
+    from astracradle.core.config import ConfigManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.rollback import RollbackManager
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td))
+        shield = AstraShieldManager(cm, RollbackManager(cm), ForensicJournal(cm))
+        for ad_dom in ("ads.samsungads.com", "acr-us-prd.samsungcloud.tv", "samsungtvads.com", "log-config.samsungacr.com"):
+            blocked, reason = shield.is_domain_blocked(ad_dom)
+            assert blocked is True, f"Expected {ad_dom} to be blocked, got {reason}"
+        for safe_dom in ("time.samsungcloudsolution.com", "lcprd1.samsungcloudsolution.net", "imasdk.googleapis.com", "r3---sn-test.googlevideo.com"):
+            blocked, reason = shield.is_domain_blocked(safe_dom)
+            assert blocked is False, f"Expected {safe_dom} to remain allowed, got {reason}"
+
+
+
 
 
 

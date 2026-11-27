@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import html as _html
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -3704,9 +3705,8 @@ class HermesAgentManager:
     def install_upstream_hermes_package(self, progress_cb: Callable[[str], None] | None = None) -> tuple[bool, str]:
         """Installs upstream `hermes-agent` into AstraCradle's Python environment when network/pip is available."""
         try:
-            import hermes_agent  # type: ignore  # noqa: F401
-
-            return True, "Upstream hermes-agent package already installed."
+            if importlib.util.find_spec("hermes_agent") is not None:
+                return True, "Upstream hermes-agent package already installed."
         except Exception:
             pass
         if progress_cb:
@@ -3865,8 +3865,7 @@ class HermesAgentManager:
         ol_running, pulled = self.find_all_local_ollama_models(spec["base_url"]) if (obin or self.scan_ollama_disk_manifests()) else (False, [])
         cli_inst = bool(shutil.which("hermes"))
         try:
-            import hermes_agent  # type: ignore  # noqa: F401
-            pkg_inst = True
+            pkg_inst = importlib.util.find_spec("hermes_agent") is not None
         except Exception:
             pkg_inst = False
 

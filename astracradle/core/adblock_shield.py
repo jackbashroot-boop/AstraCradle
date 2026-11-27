@@ -102,6 +102,19 @@ YOUTUBE_PLAYBACK_ALLOWLIST: frozenset[str] = frozenset(
     }
 )
 
+# Samsung / Smart TV essential domains that must stay unblocked so native TV apps, store & clock keep working
+SMART_TV_ESSENTIAL_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "time.samsungcloudsolution.com",
+        "time.samsungcloudsolution.net",
+        "lcprd1.samsungcloudsolution.net",
+        "cdn.samsungcloudsolution.com",
+        "auth.samsungosp.com",
+        "osb-ussvc.samsungqbe.com",
+        "imasdk.googleapis.com",
+    }
+)
+
 _VALID_DOMAIN_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$")
 
 DEFAULT_BLOCK_CATEGORIES: dict[str, list[str]] = {
@@ -219,11 +232,24 @@ DEFAULT_BLOCK_CATEGORIES: dict[str, list[str]] = {
     ],
     "smart_tv_ads": [
         "samsungads.com",
+        "ads.samsungads.com",
+        "events.samsungads.com",
+        "samsungtvads.com",
         "ads.samsung.com",
         "samsungacr.com",
+        "log-config.samsungacr.com",
+        "acr-us-prd.samsungcloud.tv",
+        "acr-eu-prd.samsungcloud.tv",
+        "acr0.samsungcloudsolution.com",
         "config.samsungads.com",
+        "samsungadhub.com",
+        "ad.samsungadhub.com",
+        "samsungqbe.com",
         "gpm.samsungqbe.com",
         "osb-apps.samsungqbe.com",
+        "api-hub.samsungyosemite.com",
+        "d179kwmlpc4o47.cloudfront.net",
+        "d1jwpcr0q4pcq0.cloudfront.net",
         "ad.lgappstv.com",
         "us.info.lgsmartad.com",
         "lgad.cjpowercast.com",
@@ -597,7 +623,7 @@ class AstraShieldManager:
         """Downloads official Pi-hole community blocklists + YouTube safe ignore/whitelists."""
         keys = source_keys or list(PIHOLE_STANDARD_SOURCES.keys())
         blocked_all: set[str] = set()
-        allow_all: set[str] = set(YOUTUBE_PLAYBACK_ALLOWLIST)
+        allow_all: set[str] = set(YOUTUBE_PLAYBACK_ALLOWLIST) | set(SMART_TV_ESSENTIAL_ALLOWLIST)
         fetched_sources: list[str] = []
         failed_sources: list[str] = []
 
@@ -802,6 +828,7 @@ youtube.com##ytd-ad-slot-renderer, ytd-banner-promo-renderer, ytd-in-feed-ad-lay
         allowed = {str(d).lower().strip() for d in rules.get("custom_allow", []) if str(d).strip()}
         if rules.get("youtube_safe_prune", True):
             allowed.update(YOUTUBE_PLAYBACK_ALLOWLIST)
+            allowed.update(SMART_TV_ESSENTIAL_ALLOWLIST)
         blocked -= allowed
         return blocked, allowed
 
