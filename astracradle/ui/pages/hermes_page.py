@@ -82,6 +82,34 @@ def _render_chat_bubbles(
     thinking_text: str = "",
     error_text: str = "",
 ) -> None:
+    msg_sig = (
+        len(msgs),
+        tuple((str(m.get("ts") or ""), str(m.get("role") or ""), len(str(m.get("content") or ""))) for m in msgs),
+        str(persona.get("name") or ""),
+        int(chat_font_pt),
+        str(error_text or ""),
+    )
+    prev_sig = getattr(container, "_hermes_render_sig", None)
+    prev_th_lbl = getattr(container, "_hermes_thinking_lbl", None)
+    if (
+        prev_sig == msg_sig
+        and thinking_text
+        and not error_text
+        and prev_th_lbl is not None
+    ):
+        try:
+            if prev_th_lbl.winfo_exists():
+                prev_th_lbl.configure(text=thinking_text)
+                try:
+                    container._parent_canvas.yview_moveto(1.0)
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
+
+    container._hermes_render_sig = msg_sig  # type: ignore[attr-defined]
+    container._hermes_thinking_lbl = None  # type: ignore[attr-defined]
     for child in container.winfo_children():
         child.destroy()
 
@@ -356,7 +384,9 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
     )
     chat_scroll.pack(fill="both", expand=True, padx=12, pady=4)
 
-    def _reload_transcript(thinking: str = "", err: str = "") -> None:
+    stream_msgs_cache: list[list[dict[str, Any]] | None] = [None]
+
+    def _reload_transcript(thinking: str = "", err: str = "", *, use_cache: bool = False) -> None:
         persona_now = hm.get_active_persona(cfg)
         msgs = hm.get_session_messages(session_id, limit=30)
         _render_chat_bubbles(
@@ -410,14 +440,17 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
         def _on_stream(partial: str) -> None:
             import time as _t
 
+            txt = _clean_bubble_markdown(partial)
+            if not txt.strip():
+                return
             now_t = _t.monotonic()
-            if (now_t - last_stream_ts[0]) < 0.12:
+            if (now_t - last_stream_ts[0]) < 0.14:
                 return
             last_stream_ts[0] = now_t
 
             def _upd() -> None:
                 if win.winfo_exists():
-                    _reload_transcript(thinking=_clean_bubble_markdown(partial))
+                    _reload_transcript(thinking=txt, use_cache=True)
 
             app.after(0, _upd)
 
@@ -428,7 +461,7 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
         def _on_step(step_txt: str) -> None:
             steps_seen.append(step_txt)
             joined = "  |  ".join(steps_seen[-5:])
-            app.after(0, lambda j=joined: _reload_transcript(thinking=f"Steps: {j}") if win.winfo_exists() else None)
+            app.after(0, lambda j=joined: _reload_transcript(thinking=f"Steps: {j}", use_cache=True) if win.winfo_exists() else None)
 
         def _worker() -> None:
             res = hm.run_prompt(
@@ -558,7 +591,9 @@ def _build_chat_workspace(
     )
     chat_scroll.pack(fill="both", expand=True, padx=8, pady=4)
 
-    def _reload_chat(thinking: str = "", err: str = "") -> None:
+    stream_msgs_cache: list[list[dict[str, Any]] | None] = [None]
+
+    def _reload_chat(thinking: str = "", err: str = "", *, use_cache: bool = False) -> None:
         persona_now = hm.get_active_persona(cfg)
         msgs = hm.get_session_messages(session_id, limit=40)
         _render_chat_bubbles(
@@ -637,16 +672,19 @@ def _build_chat_workspace(
         def _on_stream(partial: str) -> None:
             import time as _t
 
+            txt = _clean_bubble_markdown(partial)
+            if not txt.strip():
+                return
             now_t = _t.monotonic()
-            if (now_t - last_stream_ts[0]) < 0.12:
+            if (now_t - last_stream_ts[0]) < 0.14:
                 return
             last_stream_ts[0] = now_t
-            app.after(0, lambda txt=_clean_bubble_markdown(partial): _reload_chat(thinking=txt))
+            app.after(0, lambda t=txt: _reload_chat(thinking=t, use_cache=True))
 
         def _on_step(step_txt: str) -> None:
             steps_seen.append(step_txt)
             joined = "  |  ".join(steps_seen[-5:])
-            app.after(0, lambda j=joined: _reload_chat(thinking=f"Steps: {j}"))
+            app.after(0, lambda j=joined: _reload_chat(thinking=f"Steps: {j}", use_cache=True))
 
         def _worker() -> None:
             res = hm.run_prompt(
