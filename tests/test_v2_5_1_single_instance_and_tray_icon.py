@@ -2975,6 +2975,55 @@ def test_hourly_github_update_check_and_prompt_dedup() -> None:
     assert len(asked) == 2
 
 
+def test_github_pull_updates_git_clone_directly(monkeypatch) -> None:
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.updater import ModuleAndUpdateManager, UpdateCheckResult
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td) / "AstraCradle"
+        (repo / ".git").mkdir(parents=True)
+        (repo / "astracradle").mkdir(parents=True)
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        upd = ModuleAndUpdateManager(cm, ForensicJournal(cm))
+        cfg = AppConfig()
+
+        monkeypatch.setattr(
+            upd,
+            "check_for_updates",
+            lambda *_a, **_kw: UpdateCheckResult(
+                current_version="2.5.1 (c085bea)",
+                latest_version="2.5.1 (deadbee)",
+                update_available=True,
+                channel="stable",
+                release_notes="https://github.com/jackbashroot-boop/AstraCradle/archive/deadbeef.zip",
+                status_message="Newer GitHub push ready",
+            ),
+        )
+        calls: list[list[str]] = []
+
+        def _fake_run(cmd, **_kw):
+            calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="Updating c085bea..deadbee", stderr="")
+
+        monkeypatch.setattr("astracradle.core.updater.subprocess.run", _fake_run)
+        monkeypatch.setattr(
+            upd,
+            "get_local_build_info",
+            lambda **_kw: {"version": "2.5.1", "short_sha": "deadbee", "display_version": "2.5.1 (deadbee)"},
+        )
+
+        ok, msg = upd.pull_from_github_and_update(cfg, repo_dir=repo, run_pip=True)
+        assert ok is True and "deadbee" in msg
+        assert any(c[:4] == ["git", "-C", str(repo), "fetch"] for c in calls)
+        assert any(c[:4] == ["git", "-C", str(repo), "pull"] for c in calls)
+        assert any("-e" in c and str(repo) in c for c in calls)
+
+
+
 
 
 

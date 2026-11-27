@@ -706,8 +706,63 @@ class ModuleAndUpdateManager:
         repo_dir: Path | None = None,
         run_pip: bool = True,
     ) -> tuple[bool, str]:
-        """Pulls update from the configured GitHub repo first, then falls back to local bundles."""
+        """Pulls update from the configured GitHub repo first (updating git clone directly if present), then falls back to zip/local bundles."""
         res = self.check_for_updates(config, check_remote=True, repo_dir=repo_dir)
+        base_dir = repo_dir or Path(__file__).resolve().parents[2]
+
+        # 1. If running from a git clone with an upstream remote, pull directly so HEAD & editable .venv stay in sync
+        if res.update_available and (base_dir / ".git").exists() and shutil.which("git"):
+            try:
+                subprocess.run(
+                    ["git", "-C", str(base_dir), "fetch", "origin"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+                pull = subprocess.run(
+                    ["git", "-C", str(base_dir), "pull", "--ff-only"],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                    check=False,
+                )
+                if pull.returncode != 0:
+                    pull = subprocess.run(
+                        ["git", "-C", str(base_dir), "pull", "--rebase", "--autostash"],
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                        check=False,
+                    )
+                if pull.returncode == 0:
+                    info = self.get_local_build_info(repo_dir=base_dir)
+                    self.write_build_info_file(base_dir / "astracradle", info)
+                    if run_pip:
+                        subprocess.run(
+                            [sys.executable, "-m", "pip", "install", "--quiet", "--no-deps", "-e", str(base_dir)],
+                            capture_output=True,
+                            text=True,
+                            timeout=120,
+                            check=False,
+                        )
+                    self.record_install_memory(
+                        install_dir=base_dir,
+                        install_method="github_pull",
+                        step_note=f"Updated from GitHub to {info['display_version']}",
+                        config=config,
+                    )
+                    return True, f"Updated from GitHub to {info['display_version']}! Restart AstraCradle to load changes."
+            except Exception as exc:
+                self.journal.log_event(
+                    "Updater",
+                    "pull_github",
+                    f"Git pull failed ({exc}); falling back to GitHub zip download",
+                    "Graceful fallback from git pull to GitHub archive bundle",
+                    "warn",
+                )
+
+        # 2. Zip-bundle download fallback (for non-git installs or when git pull fails)
         if res.update_available and res.release_notes.startswith("https://"):
             dl_url = res.release_notes
             try:
@@ -739,38 +794,6 @@ class ModuleAndUpdateManager:
                     "Graceful fallback from remote GitHub repo to local update sources",
                     "warn",
                 )
-
-        # If running from a git clone with an upstream remote, try fast-forward git pull
-        base_dir = repo_dir or Path(__file__).resolve().parents[2]
-        if (base_dir / ".git").exists() and shutil.which("git"):
-            try:
-                pull = subprocess.run(
-                    ["git", "-C", str(base_dir), "pull", "--ff-only"],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=False,
-                )
-                if pull.returncode == 0 and "Already up to date." not in (pull.stdout or ""):
-                    info = self.get_local_build_info(repo_dir=base_dir)
-                    self.write_build_info_file(base_dir / "astracradle", info)
-                    if run_pip:
-                        subprocess.run(
-                            [sys.executable, "-m", "pip", "install", "--quiet", "--force-reinstall", "--no-deps", str(base_dir)],
-                            capture_output=True,
-                            text=True,
-                            timeout=120,
-                            check=False,
-                        )
-                    self.record_install_memory(
-                        install_dir=base_dir,
-                        install_method="github_pull",
-                        step_note=f"Updated from GitHub to {info['display_version']}",
-                        config=config,
-                    )
-                    return True, f"Updated from GitHub to {info['display_version']}! Restart AstraCradle to load changes."
-            except Exception:
-                pass
 
         # Fallback to local staged manifest or local bundle
         if (self.cfg_mgr.updates_dir / "manifest.json").exists():
