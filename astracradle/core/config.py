@@ -462,6 +462,8 @@ class AppConfig:
     hermes_require_approval: bool = True
     hermes_permission_level: str = "safe_user"  # read_only | safe_user | standard_user | sudo_with_prompt
     hermes_allow_shell: bool = False
+    hermes_gpu_limit_mode: str = "game_adaptive"  # 100 | 75 | 50 | 25 | game_adaptive
+    hermes_vram_reserve_mb: int = 1024  # Keep ~1 GB VRAM below max usage for games & desktop
     hermes_cron_enabled: bool = False
     hermes_gateway_auto_start: bool = False
     excluded_processes: list[str] = field(default_factory=lambda: list(DEFAULT_PROTECTED_PROCESSES))
@@ -612,6 +614,8 @@ class AppConfig:
             "hermes_require_approval",
             "hermes_permission_level",
             "hermes_allow_shell",
+            "hermes_gpu_limit_mode",
+            "hermes_vram_reserve_mb",
             "hermes_cron_enabled",
             "hermes_gateway_auto_start",
         )

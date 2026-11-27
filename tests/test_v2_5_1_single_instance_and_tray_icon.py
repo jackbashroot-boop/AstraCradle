@@ -1266,6 +1266,12 @@ def test_native_hermes_os_ai_gpu_recommendation_setup_tools_and_uninstall() -> N
         hm.elevation = None
         cfg.hermes_permission_level = "safe_user"
 
+        # 6. Regression check: no unescaped '%' in argparse help strings (Python 3.14 ValueError guard)
+        import re as _re
+        main_txt = (Path(__file__).resolve().parents[1] / "astracradle" / "__main__.py").read_text(encoding="utf-8")
+        for m in _re.finditer(r'help="([^"]*)"', main_txt):
+            assert not _re.search(r"%(?![%(])", m.group(1)), f"Unescaped % in argparse help: {m.group(1)}"
+
         # 4. Multi-step tool-calling loop executes native AstraCradle tools and auto-crystallizes a SKILL.md
         calls = {"n": 0}
 
@@ -1304,6 +1310,153 @@ def test_native_hermes_os_ai_gpu_recommendation_setup_tools_and_uninstall() -> N
             )
         assert summary.deleted_data_dir is True
         assert not hm.hermes_home.exists()
+
+
+def test_hermes_gpu_budgets_and_optimized_game_mode() -> None:
+    from types import SimpleNamespace
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HERMES_GPU_MODES, HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    assert set(HERMES_GPU_MODES.keys()) == {"game_adaptive", "100", "75", "50", "25"}
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=td)
+        cfg = AppConfig()
+        assert cfg.hermes_gpu_limit_mode == "game_adaptive"
+        assert cfg.hermes_vram_reserve_mb == 1024
+
+        journal = ForensicJournal(cm)
+        hm = HermesAgentManager(cm, journal)
+        hm.ensure_hermes_home(cfg)
+
+        # 1. Fixed GPU percentage budgets (100%, 75%, 50%, 25%)
+        idle_gpu = SimpleNamespace(available=True, name="RTX Test", utilization_percent=5.0, vram_used_mb=500.0, vram_total_mb=8192.0)
+        for mode, expected_pct in (("100", 100), ("75", 75), ("50", 50), ("25", 25)):
+            cfg.hermes_gpu_limit_mode = mode
+            p = hm.compute_gpu_throttle_plan(cfg, gpu=idle_gpu, processes=[])
+            assert p["target_gpu_pct"] == expected_pct
+            if expected_pct == 100:
+                assert p["num_gpu_layers"] is None
+            else:
+                assert p["num_gpu_layers"] is not None and p["num_gpu_layers"] < 36
+
+        # 2. Optimized Game Mode: never uses 100% GPU even when idle, learns fullscreen games, and preserves ~1 GB VRAM headroom
+        cfg.hermes_gpu_limit_mode = "game_adaptive"
+        idle_plan = hm.compute_gpu_throttle_plan(cfg, gpu=idle_gpu, processes=[])
+        assert idle_plan["target_gpu_pct"] < 100
+        assert idle_plan["vram_reserve_mb"] == 1024
+
+        # Learn a custom game while running fullscreen with heavy GPU/VRAM usage
+        game_gpu = SimpleNamespace(available=True, name="RTX Test", utilization_percent=88.0, vram_used_mb=6800.0, vram_total_mb=8192.0)
+        learned = hm.observe_running_workload(
+            [{"name": "eldenring.exe"}],
+            focus_process="eldenring.exe",
+            is_fullscreen=True,
+            gpu=game_gpu,
+        )
+        assert learned is not None
+        assert learned["key"] == "eldenring"
+        assert learned["peak_vram_mb"] == 6800.0
+        assert len(hm.list_learned_games()) == 1
+
+        # With 6800/8192 MB used, headroom above 1024 MB reserve is only 368 MB -> forces CPU/RAM offload + cron deferral
+        tight_plan = hm.compute_gpu_throttle_plan(cfg, gpu=game_gpu, processes=[{"name": "eldenring.exe"}], focus_process="eldenring.exe", is_fullscreen=True)
+        assert tight_plan["active_game"] == "eldenring.exe"
+        assert tight_plan["vram_headroom_mb"] == 368.0
+        assert tight_plan["num_gpu_layers"] == 0
+        assert tight_plan["defer_background_cron"] is True
+
+        # With roomy VRAM (3200/8192 MB used -> 3968 MB above 1 GB reserve), still throttles GPU <= 35% while game runs
+        roomy_game_gpu = SimpleNamespace(available=True, name="RTX Test", utilization_percent=52.0, vram_used_mb=3200.0, vram_total_mb=8192.0)
+        roomy_plan = hm.compute_gpu_throttle_plan(cfg, gpu=roomy_game_gpu, processes=[{"name": "eldenring.exe"}])
+        assert roomy_plan["target_gpu_pct"] <= 35
+        assert roomy_plan["num_gpu_layers"] is not None and roomy_plan["num_gpu_layers"] > 0
+
+        # config.yaml persists GPU budget & reserve
+        yaml_txt = hm.write_config_yaml(cfg).read_text(encoding="utf-8")
+        assert 'limit_mode: "game_adaptive"' in yaml_txt
+        assert "vram_reserve_mb: 1024" in yaml_txt
+
+
+def test_hermes_auto_integrates_already_downloaded_gpu_model(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        # Simulate Ollama manifest already downloaded on disk (even while Ollama daemon is stopped)
+        fake_manifests = Path(td) / "ollama_models" / "manifests" / "registry.ollama.ai" / "library" / "qwen3.5"
+        fake_manifests.mkdir(parents=True, exist_ok=True)
+        (fake_manifests / "9b").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("OLLAMA_MODELS", str(Path(td) / "ollama_models"))
+
+        disk_models = HermesAgentManager.scan_ollama_disk_manifests()
+        assert "qwen3.5:9b" in disk_models
+
+        cm = ConfigManager(base_dir=Path(td) / "astra")
+        cfg = AppConfig()  # Default unconfigured state (free_cloud, hermes_enabled=False, no API key)
+        journal = ForensicJournal(cm)
+        hm = HermesAgentManager(cm, journal)
+
+        # Mock hardware recommender to pick qwen3.5:9b for 8GB GPU
+        fake_rec = SimpleNamespace(
+            gpu_name="NVIDIA RTX 4060",
+            gpu_vram_gb=8.0,
+            system_ram_gb=16.0,
+            is_apple_silicon=False,
+            tier_name="Mainstream GPU (8GB VRAM)",
+            recommended_local_model="qwen3.5:9b",
+            local_alternatives=["qwen3.5:9b", "qwen3:8b"],
+            recommended_context_tokens=32768,
+            local_reason="8GB VRAM",
+            local_viable=True,
+            optimal_free_provider="openrouter_free",
+            optimal_free_model="qwen/qwen3-coder:free",
+            free_reason="Free",
+        )
+        monkeypatch.setattr("astracradle.core.hermes_agent.recommend_hermes_models", lambda: fake_rec)
+        monkeypatch.setattr(HermesAgentManager, "list_ollama_models", staticmethod(lambda *_a, **_kw: (False, [])))
+        monkeypatch.setattr(HermesAgentManager, "find_ollama_bin", staticmethod(lambda: "/usr/bin/ollama"))
+        monkeypatch.setattr(hm, "ensure_ollama_running", lambda: (True, "Started local Ollama"))
+
+        # 1. Auto-integration switches unconfigured Hermes directly to the already-downloaded GPU model
+        info = hm.auto_integrate_downloaded_gpu_model(cfg, start_runtime=True)
+        assert info["integrated"] is True
+        assert info["model"] == "qwen3.5:9b"
+        assert cfg.hermes_enabled is True
+        assert cfg.hermes_local_only is True
+        assert cfg.hermes_mode == "local_gpu"
+        assert cfg.hermes_provider == "ollama"
+        assert cfg.hermes_model == "qwen3.5:9b"
+        assert hm.config_yaml_path.exists()
+
+        # 2. Running setup again must NOT invoke `ollama pull` / re-download
+        pull_called = {"called": False}
+        orig_popen = subprocess.Popen
+
+        def _fail_if_pull(cmd, *a, **kw):
+            if isinstance(cmd, (list, tuple)) and "pull" in cmd:
+                pull_called["called"] = True
+                raise AssertionError("Should never re-download an already-downloaded model!")
+            return orig_popen(cmd, *a, **kw)
+
+        monkeypatch.setattr("astracradle.core.hermes_agent.subprocess.Popen", _fail_if_pull)
+        ok_s, msg_s, st_s = hm.install_and_setup_hermes(cfg, install_upstream_pkg=False, pull_local_model=True)
+        assert ok_s is True
+        assert pull_called["called"] is False
+        assert "skipped re-download" in msg_s.lower() or "already downloaded" in msg_s.lower()
+        assert st_s.active_model == "qwen3.5:9b"
+
+        # 3. If user explicitly configured a working cloud provider with an API key, respect it
+        cfg_cloud = AppConfig(hermes_mode="free_cloud", hermes_provider="openrouter_free", hermes_local_only=False)
+        hm.save_env_vars({"OPENROUTER_API_KEY": "sk-or-test-key"})
+        info_cloud = hm.auto_integrate_downloaded_gpu_model(cfg_cloud, start_runtime=False)
+        assert info_cloud["integrated"] is False
+        assert cfg_cloud.hermes_provider == "openrouter_free"
+
+
 
 
 

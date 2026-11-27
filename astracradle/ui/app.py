@@ -507,6 +507,8 @@ class AstraCradleApp(ctk.CTk):
                 fs_msg = self.lan_tv_shield.check_and_run_startup_failsafe(self.adblock_shield)
                 if fs_msg:
                     self.after(600, lambda m=fs_msg: self.show_toast(m))
+            if self.config_obj.is_module_enabled("hermes_ai"):
+                self.after(700, self._auto_integrate_hermes_gpu_async)
             if self.config_obj.is_module_enabled("wifi_failover_mesh") and getattr(self.config_obj, "wifi_auto_optimize", True):
                 self.after(900, self._auto_wifi_optimize_async)
             if start_widget or getattr(self.config_obj, "desktop_widget_enabled", False):
@@ -5941,6 +5943,24 @@ class AstraCradleApp(ctk.CTk):
         self.hermes_scroll = ctk.CTkScrollableFrame(self.pages["hermes"], fg_color="transparent")
         self.hermes_scroll.pack(fill="both", expand=True)
 
+    def _auto_integrate_hermes_gpu_async(self) -> None:
+        def _worker() -> None:
+            try:
+                res = self.hermes_mgr.auto_integrate_downloaded_gpu_model(self.config_obj, start_runtime=True)
+                self._hermes_status_cache = self.hermes_mgr.get_status(self.config_obj)
+                if res.get("integrated"):
+                    self.after(
+                        0,
+                        lambda m=res.get("model", ""): (
+                            self.show_toast(f"Hermes AI auto-integrated local GPU model ({m}) — ready offline with zero re-download."),
+                            render_hermes_page(self) if self.current_nav == "hermes" else None,
+                        ),
+                    )
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _render_hermes_page(self) -> None:
         render_hermes_page(self)
 
@@ -8705,6 +8725,17 @@ class AstraCradleApp(ctk.CTk):
                     if run_heavy or getattr(self, "_latest_gpu", None) is None
                     else self._latest_gpu
                 )
+                if run_heavy and self.config_obj.is_module_enabled("hermes_ai"):
+                    try:
+                        focus_obj = getattr(self, "_bg_focus_state", None)
+                        self.hermes_mgr.observe_running_workload(
+                            snap.top_processes,
+                            focus_process=(focus_obj.process_name if focus_obj else ""),
+                            is_fullscreen=bool(focus_obj.is_fullscreen if focus_obj else False),
+                            gpu=gpu,
+                        )
+                    except Exception:
+                        pass
                 sensors = (
                     TelemetryCollector.collect_detailed_sensors()
                     if (self.config_obj.consent_telemetry and (run_heavy or not self._latest_sensors))

@@ -11,6 +11,7 @@ import customtkinter as ctk
 from ...core.hermes_agent import (
     CUSTOM_API_PROVIDERS,
     FREE_CLOUD_PROVIDERS,
+    HERMES_GPU_MODES,
     HERMES_PERMISSION_LEVELS,
     HermesHardwareRecommendation,
     HermesSetupStatus,
@@ -54,6 +55,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     if rec is None or status is None:
         def _bg_probe() -> None:
             r = recommend_hermes_models()
+            hm.auto_integrate_downloaded_gpu_model(cfg, start_runtime=True)
             s = hm.get_status(cfg)
             app._hermes_rec_cache = r
             app._hermes_status_cache = s
@@ -268,6 +270,31 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     ctk.CTkLabel(perm_row, text="AI Access Level:", font=f["small"], width=130, anchor="w").pack(side="left")
     ctk.CTkOptionMenu(perm_row, values=perm_labels, variable=perm_var, width=480).pack(side="left", padx=(4, 0))
 
+    gpu_labels = [spec["label"] for spec in HERMES_GPU_MODES.values()]
+    gpu_key_by_lbl = {spec["label"]: k for k, spec in HERMES_GPU_MODES.items()}
+    cur_gpu_key = str(getattr(cfg, "hermes_gpu_limit_mode", "game_adaptive") or "game_adaptive")
+    if cur_gpu_key not in HERMES_GPU_MODES:
+        cur_gpu_key = "game_adaptive"
+    gpu_var = tk.StringVar(value=HERMES_GPU_MODES[cur_gpu_key]["label"])
+
+    gpu_row = ctk.CTkFrame(setup_card, fg_color="transparent")
+    gpu_row.pack(fill="x", padx=14, pady=(4, 2))
+    ctk.CTkLabel(gpu_row, text="AI GPU Budget:", font=f["small"], width=130, anchor="w").pack(side="left")
+    ctk.CTkOptionMenu(gpu_row, values=gpu_labels, variable=gpu_var, width=480).pack(side="left", padx=(4, 0))
+
+    gpu_plan = hm.compute_gpu_throttle_plan(cfg)
+    ctk.CTkLabel(
+        setup_card,
+        text=(
+            f"GPU Throttle State: {gpu_plan['reason']}  "
+            f"(Learned games: {gpu_plan['learned_games_count']} · VRAM reserve: {gpu_plan['vram_reserve_mb']} MB)"
+        ),
+        font=f["caption"],
+        text_color=p.accent_cyan,
+        wraplength=app._content_wrap(80),
+        justify="left",
+    ).pack(anchor="w", padx=14, pady=(2, 2))
+
     prog_lbl = ctk.CTkLabel(setup_card, text="", font=f["caption"], text_color=p.text_muted)
     prog_lbl.pack(anchor="w", padx=14, pady=(4, 0))
     prog_bar = ctk.CTkProgressBar(setup_card, height=8)
@@ -290,6 +317,8 @@ def render_hermes_page(app: AstraCradleApp) -> None:
         sel_perm = perm_key_by_lbl.get(perm_var.get(), "safe_user")
         cfg.hermes_permission_level = sel_perm
         cfg.hermes_allow_shell = sel_perm in ("standard_user", "sudo_with_prompt")
+        cfg.hermes_gpu_limit_mode = gpu_key_by_lbl.get(gpu_var.get(), "game_adaptive")
+        cfg.hermes_vram_reserve_mb = max(512, int(getattr(cfg, "hermes_vram_reserve_mb", 1024) or 1024))
         try:
             cfg.hermes_context_tokens = int(ctx_var.get())
         except Exception:
@@ -383,7 +412,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     t_chat = tabs.add("Autonomous Chat & Tools")
     t_mem = tabs.add("Memory & Learned Skills")
     t_cron = tabs.add("Cron & Subagents")
-    t_safe = tabs.add("Safety & Messaging Gateways")
+    t_safe = tabs.add("Safety, GPU Budget & Gateways")
 
     # ── Tab 1: Chat & Tool Execution ─────────────────────────────────────────
     session_id = str(getattr(app, "_hermes_session_id", "default"))
@@ -589,6 +618,91 @@ def render_hermes_page(app: AstraCradleApp) -> None:
 
     ctk.CTkSwitch(t_safe, text="Require explicit approval / dry-run before risky changes (Recommended)", variable=req_app_var, command=_save_safety).pack(anchor="w", padx=10, pady=6)
     ctk.CTkSwitch(t_safe, text="Enable scheduled Hermes Cron tasks while AstraCradle runs", variable=cron_en_var, command=_save_safety).pack(anchor="w", padx=10, pady=6)
+
+    # GPU Usage Limit & Learned Games Manager
+    gpu_card = ctk.CTkFrame(t_safe, fg_color=p.bg_elevated, corner_radius=9)
+    gpu_card.pack(fill="x", padx=10, pady=8)
+    ctk.CTkLabel(
+        gpu_card,
+        text="AI GPU Usage Cap & Learned Game Mode (~1 GB VRAM Reserve)",
+        font=f["body_bold"],
+        text_color=p.accent_jade,
+    ).pack(anchor="w", padx=10, pady=(8, 4))
+
+    safe_gpu_var = tk.StringVar(value=HERMES_GPU_MODES[cur_gpu_key]["label"])
+    gpu_desc_lbl = ctk.CTkLabel(
+        gpu_card,
+        text=HERMES_GPU_MODES[cur_gpu_key]["summary"],
+        font=f["caption"],
+        text_color=p.text_secondary,
+        wraplength=680,
+        justify="left",
+    )
+
+    def _save_gpu_mode(_choice=None) -> None:
+        sel_g = gpu_key_by_lbl.get(safe_gpu_var.get(), "game_adaptive")
+        cfg.hermes_gpu_limit_mode = sel_g
+        gpu_var.set(safe_gpu_var.get())
+        gpu_desc_lbl.configure(text=HERMES_GPU_MODES[sel_g]["summary"])
+        app.cfg_mgr.save(cfg)
+        hm.write_config_yaml(cfg)
+        app.show_toast(f"AI GPU budget updated: {sel_g}")
+        render_hermes_page(app)
+
+    ctk.CTkOptionMenu(gpu_card, values=gpu_labels, variable=safe_gpu_var, width=540, command=_save_gpu_mode).pack(anchor="w", padx=10, pady=(0, 4))
+    gpu_desc_lbl.pack(anchor="w", padx=12, pady=(0, 6))
+
+    learned_list = hm.list_learned_games()
+    learned_summary = (
+        "Learned Games & Peak VRAM: "
+        + (", ".join(f"{g.get('display_name')} ({g.get('peak_vram_mb', 0):.0f} MB, {g.get('launch_count', 1)}x)" for g in learned_list[:8]))
+        if learned_list
+        else "Learned Games: None recorded yet — Optimized Game Mode learns your games automatically whenever you launch them, or you can add a process below."
+    )
+    ctk.CTkLabel(
+        gpu_card,
+        text=learned_summary,
+        font=f["caption"],
+        text_color=p.text_primary,
+        wraplength=680,
+        justify="left",
+    ).pack(anchor="w", padx=12, pady=(0, 6))
+
+    add_g_row = ctk.CTkFrame(gpu_card, fg_color="transparent")
+    add_g_row.pack(fill="x", padx=10, pady=(0, 8))
+    add_g_ent = ctk.CTkEntry(add_g_row, width=260, placeholder_text="Optional: add game process (e.g. cs2, cyberpunk, javaw)")
+    add_g_ent.pack(side="left", padx=(0, 8))
+
+    def _add_learned_game_ui() -> None:
+        val = add_g_ent.get().strip()
+        if not val:
+            return
+        hm.add_learned_game(val, user_pinned=True)
+        app.show_toast(f"Added '{val}' to Hermes learned games.")
+        render_hermes_page(app)
+
+    ctk.CTkButton(
+        add_g_row,
+        text="+ Learn Game",
+        width=110,
+        height=28,
+        fg_color=p.accent_cyan,
+        text_color="#071216",
+        command=_add_learned_game_ui,
+    ).pack(side="left", padx=(0, 8))
+    if learned_list:
+        def _clear_last_game() -> None:
+            hm.remove_learned_game(str(learned_list[0].get("key", "")))
+            render_hermes_page(app)
+
+        ctk.CTkButton(
+            add_g_row,
+            text=f"Remove '{learned_list[0].get('display_name', '')[:16]}'",
+            width=140,
+            height=28,
+            fg_color=p.bg_card,
+            command=_clear_last_game,
+        ).pack(side="left")
 
     gw_row = ctk.CTkFrame(t_safe, fg_color=p.bg_elevated, corner_radius=9)
     gw_row.pack(fill="x", padx=10, pady=10)

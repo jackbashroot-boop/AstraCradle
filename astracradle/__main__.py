@@ -200,6 +200,9 @@ def run_cli(args: argparse.Namespace) -> int:
         if args.hermes_permission:
             cfg.hermes_permission_level = args.hermes_permission
             cfg.hermes_allow_shell = args.hermes_permission in ("standard_user", "sudo_with_prompt")
+        if args.hermes_gpu_limit:
+            cfg.hermes_gpu_limit_mode = args.hermes_gpu_limit
+            cfg.hermes_vram_reserve_mb = max(512, int(getattr(cfg, "hermes_vram_reserve_mb", 1024) or 1024))
 
         if args.hermes_setup:
             ok_h, msg_h, st_h = hm.install_and_setup_hermes(
@@ -213,6 +216,7 @@ def run_cli(args: argparse.Namespace) -> int:
             return 0 if ok_h else 1
 
         if args.hermes_ask:
+            hm.auto_integrate_downloaded_gpu_model(cfg, start_runtime=True)
             res = hm.run_prompt(args.hermes_ask, cfg)
             if res.ok:
                 print(res.reply)
@@ -222,11 +226,16 @@ def run_cli(args: argparse.Namespace) -> int:
             print(f"Hermes Error: {res.error}")
             return 1
 
+        auto_info = hm.auto_integrate_downloaded_gpu_model(cfg, start_runtime=False)
         rec = recommend_hermes_models()
         st = hm.get_status(cfg)
+        gpu_plan = hm.compute_gpu_throttle_plan(cfg)
         print(f"Hermes OS AI Status : {st.summary}")
+        if auto_info.get("integrated"):
+            print(f"Auto-Integrated     : {auto_info.get('message')}")
         print(f"Hermes Home         : {st.hermes_home}")
         print(f"Detected GPU        : {rec.gpu_name} ({rec.gpu_vram_gb:.1f} GB VRAM, {rec.system_ram_gb:.0f} GB RAM)")
+        print(f"AI GPU Budget       : {gpu_plan['label']} -> target {gpu_plan['target_gpu_pct']}% | reserve {gpu_plan['vram_reserve_mb']} MB VRAM | learned games: {gpu_plan['learned_games_count']}")
         print(f"Recommended Local   : {rec.recommended_local_model} ({rec.recommended_context_tokens // 1024}K ctx)")
         print(f"Recommended Free    : {rec.optimal_free_provider} -> {rec.optimal_free_model} (0 GB VRAM)")
         print(f"Skills / Cron / Sess: {st.skills_count} skill(s) | {st.cron_count} cron job(s) | {st.sessions_count} session(s)")
@@ -1178,6 +1187,13 @@ def main(argv: list[str] | None = None) -> int:
         choices=["read_only", "safe_user", "standard_user", "sudo_with_prompt"],
         default=None,
         help="Hermes AI system permission level (up to just below sudo, or sudo when password typed).",
+    )
+    parser.add_argument(
+        "--hermes-gpu-limit",
+        type=str,
+        choices=["100", "75", "50", "25", "game_adaptive"],
+        default=None,
+        help="Hermes local AI GPU budget: 100, 75, 50, 25 percent, or game_adaptive (learns games and reserves about 1 GB VRAM).",
     )
     parser.add_argument("--hermes-api-key", type=str, default=None, help="API key to save in ~/.astracradle/hermes/.env during --hermes-setup.")
     parser.add_argument("--export-md", action="store_true", help="Export generated playbook Markdown.")

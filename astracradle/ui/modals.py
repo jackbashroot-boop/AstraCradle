@@ -2398,12 +2398,19 @@ class SetupWizardDialog(ctk.CTkToplevel):
         self.v_start_beam_now = tk.BooleanVar(value=False)
         self.v_run_initial_fix = tk.BooleanVar(value=False)
 
-        # Hermes OS AI Wizard options (non-blocking recommendation probe)
+        # Hermes OS AI Wizard options (non-blocking recommendation & local-model check)
         self._hermes_rec = None
+        self._hermes_downloaded_match = ""
         try:
-            from ..core.hermes_agent import recommend_hermes_models
+            from ..core.hermes_agent import HermesAgentManager, recommend_hermes_models
 
             self._hermes_rec = recommend_hermes_models()
+            _, local_pulled = HermesAgentManager.find_all_local_ollama_models()
+            for cand in [self._hermes_rec.recommended_local_model, *self._hermes_rec.local_alternatives]:
+                m_hit = HermesAgentManager._model_tag_matches(cand, local_pulled)
+                if m_hit:
+                    self._hermes_downloaded_match = m_hit
+                    break
         except Exception:
             self._hermes_rec = None
         self._hermes_choices = [
@@ -2415,7 +2422,9 @@ class SetupWizardDialog(ctk.CTkToplevel):
             "Set Up Later",
         ]
         self.v_hermes_choice = tk.StringVar(
-            value=self._hermes_choices[0] if getattr(config, "hermes_local_only", False) else self._hermes_choices[1]
+            value=self._hermes_choices[0]
+            if (getattr(config, "hermes_local_only", False) or bool(self._hermes_downloaded_match))
+            else self._hermes_choices[1]
         )
         self._hermes_perm_map = {
             "Level 1 · Observe & Explain Only (Read-Only)": "read_only",
@@ -2428,6 +2437,20 @@ class SetupWizardDialog(ctk.CTkToplevel):
             value=inv_hperm.get(
                 str(getattr(config, "hermes_permission_level", "safe_user")),
                 "Level 2 · Safe Tune-Ups & Memory Only (Recommended)",
+            )
+        )
+        self._hermes_gpu_map = {
+            "Optimized Game Mode · Auto-Learn Games & Keep ~1 GB VRAM Free (Recommended)": "game_adaptive",
+            "100% GPU · Full Unthrottled Speed": "100",
+            "75% GPU · High Speed + Desktop Headroom": "75",
+            "50% GPU · Balanced Multitasking": "50",
+            "25% GPU · Light Background Mode": "25",
+        }
+        inv_hgpu = {v: k for k, v in self._hermes_gpu_map.items()}
+        self.v_hermes_gpu = tk.StringVar(
+            value=inv_hgpu.get(
+                str(getattr(config, "hermes_gpu_limit_mode", "game_adaptive")),
+                "Optimized Game Mode · Auto-Learn Games & Keep ~1 GB VRAM Free (Recommended)",
             )
         )
         self.v_hermes_auto_setup = tk.BooleanVar(value=False)
@@ -3062,6 +3085,11 @@ class SetupWizardDialog(ctk.CTkToplevel):
                         f"Detected GPU: {r.gpu_name} ({r.gpu_vram_gb:.1f} GB VRAM, {r.system_ram_gb:.0f} GB RAM)\n"
                         f"Best Local Pick: {r.recommended_local_model}  ·  Best Free Cloud Pick: {r.optimal_free_model}"
                     )
+                    if getattr(self, "_hermes_downloaded_match", ""):
+                        hw_line += (
+                            f"\n✓ Already Downloaded on This PC: '{self._hermes_downloaded_match}' "
+                            "(will integrate automatically with zero re-download)"
+                        )
                 else:
                     hw_line = "Supports GPU-matched local Ollama models AND 0-VRAM free cloud tiers."
                 ctk.CTkLabel(
@@ -3083,6 +3111,15 @@ class SetupWizardDialog(ctk.CTkToplevel):
                 ).pack(anchor="w", padx=12, pady=(2, 2))
                 ctk.CTkOptionMenu(
                     h_card, values=list(self._hermes_perm_map.keys()), variable=self.v_hermes_perm, width=460
+                ).pack(anchor="w", padx=12, pady=(0, 6))
+                ctk.CTkLabel(
+                    h_card,
+                    text="How much GPU should local Hermes AI use?",
+                    font=f["small"],
+                    text_color=p.text_primary,
+                ).pack(anchor="w", padx=12, pady=(2, 2))
+                ctk.CTkOptionMenu(
+                    h_card, values=list(self._hermes_gpu_map.keys()), variable=self.v_hermes_gpu, width=460
                 ).pack(anchor="w", padx=12, pady=(0, 6))
                 self._hermes_key_entry = ctk.CTkEntry(
                     h_card,
@@ -3250,6 +3287,8 @@ class SetupWizardDialog(ctk.CTkToplevel):
             "hermes_model": h_model,
             "hermes_permission_level": self._hermes_perm_map.get(self.v_hermes_perm.get(), "safe_user"),
             "hermes_allow_shell": self._hermes_perm_map.get(self.v_hermes_perm.get(), "safe_user") in ("standard_user", "sudo_with_prompt"),
+            "hermes_gpu_limit_mode": self._hermes_gpu_map.get(self.v_hermes_gpu.get(), "game_adaptive"),
+            "hermes_vram_reserve_mb": 1024,
             "hermes_api_key": h_key_val,
             "hermes_auto_setup_now": h_auto,
         }

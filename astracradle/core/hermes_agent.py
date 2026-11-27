@@ -118,6 +118,122 @@ HERMES_PERMISSION_LEVELS: dict[str, dict[str, str]] = {
     },
 }
 
+HERMES_GPU_MODES: dict[str, dict[str, Any]] = {
+    "game_adaptive": {
+        "label": "Optimized Game Mode · Auto-Learn Games & Reserve ~1 GB VRAM (Recommended)",
+        "pct": 75,
+        "summary": (
+            "Learns the games you play & their VRAM footprint, never lets AI take 100% GPU, "
+            "throttles automatically when games or other GPU apps run, and keeps ~1 GB VRAM below max."
+        ),
+    },
+    "100": {
+        "label": "100% GPU · Full Unthrottled Speed",
+        "pct": 100,
+        "summary": "Allows local AI inference to use up to 100% of available GPU & VRAM for maximum speed.",
+    },
+    "75": {
+        "label": "75% GPU · High Speed + Desktop Headroom",
+        "pct": 75,
+        "summary": "Caps local AI GPU layer offload around 75% so browsing, video & desktop apps stay smooth.",
+    },
+    "50": {
+        "label": "50% GPU · Balanced Multitasking",
+        "pct": 50,
+        "summary": "Splits GPU capacity ~50/50 between Hermes AI and your other open GPU workloads.",
+    },
+    "25": {
+        "label": "25% GPU · Light Background Mode",
+        "pct": 25,
+        "summary": "Caps local AI to ~25% GPU (offloading most layers to RAM/CPU) so the GPU stays open for games & apps.",
+    },
+}
+
+_KNOWN_GAME_SIGNATURES: tuple[str, ...] = (
+    "steam_app_",
+    "gamescope",
+    "wine64-preloader",
+    "wine-preloader",
+    "proton",
+    "dxvk",
+    "vkd3d",
+    "lutris",
+    "heroic",
+    "retroarch",
+    "rpcs3",
+    "yuzu",
+    "ryujinx",
+    "dolphin-emu",
+    "pcsx2",
+    "minecraft",
+    "javaw",
+    "cs2",
+    "dota2",
+    "tf_linux64",
+    "apex",
+    "valorant",
+    "fortnite",
+    "cyberpunk",
+    "eldenring",
+    "bg3",
+    "baldurs",
+    "helldivers",
+    "overwatch",
+    "rocketleague",
+    "warframe",
+    "destiny2",
+    "pathofexile",
+    "poe2",
+    "factorio",
+    "satisfactory",
+    "terraria",
+    "stardew",
+    "palworld",
+    "witcher3",
+    "gta5",
+    "rdr2",
+    "hl2_linux",
+)
+
+_NON_GAME_SYSTEM_PROCS: frozenset[str] = frozenset(
+    {
+        "systemd",
+        "init",
+        "kwin_wayland",
+        "kwin_x11",
+        "plasmashell",
+        "gnome-shell",
+        "xorg",
+        "xwayland",
+        "mutter",
+        "sway",
+        "hyprland",
+        "pipewire",
+        "wireplumber",
+        "pulseaudio",
+        "dbus-daemon",
+        "ollama",
+        "astracradle",
+        "python",
+        "python3",
+        "bash",
+        "fish",
+        "zsh",
+        "sh",
+        "steamwebhelper",
+        "chrome",
+        "chromium",
+        "firefox",
+        "brave",
+        "code",
+        "electron",
+        "discord",
+        "obs",
+        "sunshine",
+        "moonlight",
+    }
+)
+
 
 @dataclass
 class HermesHardwareRecommendation:
@@ -317,6 +433,7 @@ class HermesAgentManager:
         self.skills_dir = self.hermes_home / "skills"
         self.sessions_db_path = self.hermes_home / "sessions.db"
         self.cron_path = self.hermes_home / "cron_jobs.json"
+        self.learned_games_path = self.hermes_home / "learned_games.json"
 
         self._gateway_proc: subprocess.Popen | None = None
         self._ollama_proc: subprocess.Popen | None = None
@@ -353,6 +470,8 @@ class HermesAgentManager:
             )
         if not self.cron_path.exists():
             self.cron_path.write_text("[]\n", encoding="utf-8")
+        if not self.learned_games_path.exists():
+            self.learned_games_path.write_text("{}\n", encoding="utf-8")
 
         bridge_skill_dir = self.skills_dir / "astracradle-os-bridge"
         bridge_skill_dir.mkdir(parents=True, exist_ok=True)
@@ -513,6 +632,9 @@ class HermesAgentManager:
             f"  permission_level: {json.dumps(str(getattr(config, 'hermes_permission_level', 'safe_user')))}\n"
             f"  require_approval: {'true' if getattr(config, 'hermes_require_approval', True) else 'false'}\n"
             f"  allow_shell: {'true' if getattr(config, 'hermes_allow_shell', False) else 'false'}\n"
+            "gpu:\n"
+            f"  limit_mode: {json.dumps(str(getattr(config, 'hermes_gpu_limit_mode', 'game_adaptive')))}\n"
+            f"  vram_reserve_mb: {int(getattr(config, 'hermes_vram_reserve_mb', 1024) or 1024)}\n"
         )
         tmp = self.config_yaml_path.with_suffix(".tmp")
         tmp.write_text(body, encoding="utf-8")
@@ -540,6 +662,190 @@ class HermesAgentManager:
                 if c.exists():
                     return str(c)
         return None
+
+    @staticmethod
+    def _model_tag_matches(candidate: str, existing: list[str]) -> str | None:
+        """Returns the exact installed model tag if `candidate` (e.g. 'qwen3.5:9b') is already present locally."""
+        want = (candidate or "").strip().lower()
+        if not want:
+            return None
+        for prefix in ("registry.ollama.ai/library/", "library/"):
+            if want.startswith(prefix):
+                want = want[len(prefix) :]
+        for raw in existing:
+            cur = (raw or "").strip()
+            low = cur.lower()
+            for prefix in ("registry.ollama.ai/library/", "library/"):
+                if low.startswith(prefix):
+                    low = low[len(prefix) :]
+            if (
+                low == want
+                or low == f"{want}:latest"
+                or (":" not in want and low.split(":", 1)[0] == want)
+                or low.startswith(want + "-")
+                or low.startswith(want + ":")
+            ):
+                return cur
+        return None
+
+    @staticmethod
+    def scan_ollama_disk_manifests() -> list[str]:
+        """Scans Ollama manifest directories on disk so downloaded models are detected even if Ollama isn't running."""
+        roots: list[Path] = []
+        env_models = os.environ.get("OLLAMA_MODELS", "").strip()
+        if env_models:
+            roots.append(Path(env_models).expanduser() / "manifests")
+        roots.extend(
+            [
+                Path.home() / ".ollama" / "models" / "manifests",
+                Path("/var/lib/ollama/models/manifests"),
+                Path("/usr/share/ollama/.ollama/models/manifests"),
+            ]
+        )
+        found: list[str] = []
+        seen: set[str] = set()
+        for root in roots:
+            if not root.exists() or not root.is_dir():
+                continue
+            try:
+                for tag_file in root.rglob("*"):
+                    if not tag_file.is_file():
+                        continue
+                    rel = tag_file.relative_to(root).parts
+                    # Standard layout: <registry>/<namespace>/<model>/<tag>
+                    if len(rel) >= 2:
+                        model_name = rel[-2]
+                        tag_name = rel[-1]
+                        full_tag = f"{model_name}:{tag_name}" if tag_name != "latest" else f"{model_name}:latest"
+                        if rel[0] not in ("registry.ollama.ai",) and len(rel) >= 3:
+                            pass
+                        if len(rel) >= 4 and rel[-3] != "library":
+                            full_tag = f"{rel[-3]}/{full_tag}"
+                        if full_tag not in seen:
+                            seen.add(full_tag)
+                            found.append(full_tag)
+            except Exception:
+                continue
+        return found
+
+    @classmethod
+    def find_all_local_ollama_models(cls, base_url: str = "http://127.0.0.1:11434") -> tuple[bool, list[str]]:
+        """Returns (ollama_running, deduplicated_downloaded_models) via API, CLI, and disk manifest scan."""
+        running, api_models = cls.list_ollama_models(base_url)
+        merged: list[str] = list(api_models)
+        seen = {m.lower() for m in merged}
+        if not running:
+            obin = cls.find_ollama_bin()
+            if obin:
+                try:
+                    p = subprocess.run(
+                        [obin, "list"],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        creationflags=_WIN_NO_WINDOW,
+                    )
+                    if p.returncode == 0:
+                        for ln in p.stdout.splitlines()[1:]:
+                            tok = (ln.strip().split() or [""])[0]
+                            if tok and tok.lower() not in seen:
+                                seen.add(tok.lower())
+                                merged.append(tok)
+                except Exception:
+                    pass
+        for dm in cls.scan_ollama_disk_manifests():
+            if dm.lower() not in seen:
+                seen.add(dm.lower())
+                merged.append(dm)
+        return running, merged
+
+    def auto_integrate_downloaded_gpu_model(
+        self,
+        config: AppConfig,
+        *,
+        start_runtime: bool = False,
+        save_config: bool = True,
+    ) -> dict[str, Any]:
+        """Auto-detects if the GPU-recommended AI model is already downloaded and integrates it with zero re-download."""
+        rec = recommend_hermes_models()
+        spec_cur = self.resolve_provider_spec(config)
+        running, pulled = self.find_all_local_ollama_models(spec_cur["base_url"])
+
+        candidates: list[str] = []
+        if getattr(config, "hermes_model", "") and (
+            getattr(config, "hermes_local_only", False) or getattr(config, "hermes_mode", "") == "local_gpu"
+        ):
+            candidates.append(str(config.hermes_model))
+        candidates.append(rec.recommended_local_model)
+        candidates.extend(rec.local_alternatives)
+
+        matched_tag = None
+        for cand in candidates:
+            matched_tag = self._model_tag_matches(cand, pulled)
+            if matched_tag:
+                break
+
+        if not matched_tag:
+            return {
+                "integrated": False,
+                "model": "",
+                "recommended_model": rec.recommended_local_model,
+                "pulled_models": pulled,
+                "ollama_running": running,
+                "message": f"Recommended GPU model '{rec.recommended_local_model}' is not downloaded yet.",
+            }
+
+        # Preserve explicit cloud choice ONLY if the user actually configured a cloud key and did NOT pick local_only
+        env_map = self.load_env()
+        has_cloud_key = bool(
+            spec_cur["mode"] != "local_gpu"
+            and (env_map.get(spec_cur["env_var"]) or os.environ.get(spec_cur["env_var"]))
+        )
+        if has_cloud_key and not bool(getattr(config, "hermes_local_only", False)):
+            return {
+                "integrated": False,
+                "model": matched_tag,
+                "recommended_model": rec.recommended_local_model,
+                "pulled_models": pulled,
+                "ollama_running": running,
+                "message": f"Local model '{matched_tag}' is downloaded, keeping active cloud provider ({spec_cur['provider']}).",
+            }
+
+        changed = (
+            not getattr(config, "hermes_enabled", False)
+            or not getattr(config, "hermes_local_only", False)
+            or getattr(config, "hermes_mode", "") != "local_gpu"
+            or getattr(config, "hermes_provider", "") != "ollama"
+            or getattr(config, "hermes_model", "") != matched_tag
+        )
+        config.hermes_enabled = True
+        config.hermes_local_only = True
+        config.hermes_mode = "local_gpu"
+        config.hermes_provider = "ollama"
+        config.hermes_model = matched_tag
+        if not getattr(config, "hermes_base_url", ""):
+            config.hermes_base_url = "http://127.0.0.1:11434/v1"
+        self.ensure_hermes_home(config)
+        if start_runtime and not running and self.find_ollama_bin():
+            ok_srv, _ = self.ensure_ollama_running()
+            running = ok_srv
+        if save_config and changed:
+            self.cfg_mgr.save(config)
+            self.journal.log_event(
+                "HermesOS",
+                "auto_integrate_gpu_model",
+                f"Auto-integrated already-downloaded GPU model '{matched_tag}' (Ollama running={running})",
+                "Avoided re-downloading recommended GPU AI already present on disk",
+                "ok",
+            )
+        return {
+            "integrated": True,
+            "model": matched_tag,
+            "recommended_model": rec.recommended_local_model,
+            "pulled_models": pulled,
+            "ollama_running": running,
+            "message": f"Auto-integrated already-downloaded GPU model '{matched_tag}' (no re-download needed).",
+        }
 
     @staticmethod
     def list_ollama_models(base_url: str = "http://127.0.0.1:11434") -> tuple[bool, list[str]]:
@@ -659,15 +965,20 @@ class HermesAgentManager:
         model: str,
         progress_cb: Callable[[str], None] | None = None,
     ) -> tuple[bool, str]:
+        _, disk_existing = self.find_all_local_ollama_models()
+        matched_disk = self._model_tag_matches(model, disk_existing)
         obin = self.find_ollama_bin()
         if not obin:
+            if matched_disk:
+                return True, f"Model '{matched_disk}' is already downloaded on disk."
             return False, "Ollama binary not found."
         ok_srv, msg_srv = self.ensure_ollama_running()
         if not ok_srv:
             return False, msg_srv
-        _, existing = self.list_ollama_models()
-        if any(m == model or m.startswith(model + ":") for m in existing):
-            return True, f"Model '{model}' is already downloaded."
+        _, existing = self.find_all_local_ollama_models()
+        matched = self._model_tag_matches(model, existing)
+        if matched:
+            return True, f"Model '{matched}' is already downloaded — integrated directly without re-downloading."
         if progress_cb:
             progress_cb(f"Downloading GPU-optimized model '{model}' via Ollama (this may take a few minutes)...")
         try:
@@ -725,6 +1036,11 @@ class HermesAgentManager:
 
         ok_overall = True
         if spec["mode"] == "local_gpu":
+            _, pre_pulled = self.find_all_local_ollama_models(spec["base_url"])
+            pre_match = self._model_tag_matches(spec["model"], pre_pulled)
+            if pre_match:
+                config.hermes_model = pre_match
+                spec["model"] = pre_match
             _emit("Installing Local GPU Engine", 0.55, "Checking Ollama local inference runtime...")
             if not self.find_ollama_bin():
                 ok_ol, msg_ol = self.install_ollama_runtime(
@@ -738,7 +1054,10 @@ class HermesAgentManager:
                 notes.append(msg_srv)
                 if not ok_srv:
                     ok_overall = False
-            if ok_overall and pull_local_model:
+            if ok_overall and pre_match:
+                _emit("Integrating Local GPU Model", 0.85, f"Found '{pre_match}' already downloaded — integrating without re-download...")
+                notes.append(f"Auto-integrated already-downloaded model '{pre_match}' (skipped re-download).")
+            elif ok_overall and pull_local_model:
                 _emit("Downloading GPU Model", 0.75, f"Pulling {spec['model']}...")
                 ok_pull, msg_pull = self.pull_ollama_model(
                     spec["model"],
@@ -778,7 +1097,7 @@ class HermesAgentManager:
         env_map = self.load_env()
         has_key = bool(env_map.get(spec["env_var"]) or os.environ.get(spec["env_var"]))
         obin = self.find_ollama_bin()
-        ol_running, pulled = self.list_ollama_models(spec["base_url"]) if obin else (False, [])
+        ol_running, pulled = self.find_all_local_ollama_models(spec["base_url"]) if (obin or self.scan_ollama_disk_manifests()) else (False, [])
         cli_inst = bool(shutil.which("hermes"))
         try:
             import hermes_agent  # type: ignore  # noqa: F401
@@ -799,13 +1118,14 @@ class HermesAgentManager:
         gw_running = self._gateway_proc is not None and self._gateway_proc.poll() is None
 
         if spec["mode"] == "local_gpu":
-            model_pulled = any(m == spec["model"] or m.startswith(spec["model"] + ":") for m in pulled)
+            model_pulled = bool(self._model_tag_matches(spec["model"], pulled))
             ready = bool(self.hermes_home.exists() and ol_running and model_pulled)
-            summary = (
-                f"READY (Local GPU · {spec['model']})"
-                if ready
-                else f"Needs setup ({'start Ollama' if obin else 'install Ollama'} & pull {spec['model']})"
-            )
+            if model_pulled and not ol_running:
+                summary = f"DOWNLOADED ({spec['model']} ready on disk — click or ask anything to auto-start Ollama)"
+            elif ready:
+                summary = f"READY (Local GPU · {spec['model']})"
+            else:
+                summary = f"Needs setup ({'start Ollama' if obin else 'install Ollama'} & pull {spec['model']})"
         else:
             ready = bool(self.hermes_home.exists() and (has_key or not spec["requires_key"]))
             summary = (
@@ -969,6 +1289,9 @@ class HermesAgentManager:
         now = time.time()
         ran: list[dict[str, Any]] = []
         changed = False
+        plan = self.compute_gpu_throttle_plan(config)
+        if plan.get("defer_background_cron"):
+            return []
         for job in jobs:
             if not job.get("enabled"):
                 continue
@@ -982,6 +1305,294 @@ class HermesAgentManager:
         if changed:
             self.cron_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
         return ran
+
+    # ------------------------------------------------------------------
+    # Game Learning & Live GPU / ~1 GB VRAM Headroom Throttling
+    # ------------------------------------------------------------------
+    def _load_learned_games(self) -> dict[str, dict[str, Any]]:
+        if not self.learned_games_path.exists():
+            return {}
+        try:
+            raw = json.loads(self.learned_games_path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_learned_games(self, data: dict[str, dict[str, Any]]) -> None:
+        self.hermes_home.mkdir(parents=True, exist_ok=True)
+        tmp = self.learned_games_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, self.learned_games_path)
+
+    def list_learned_games(self) -> list[dict[str, Any]]:
+        data = self._load_learned_games()
+        items = list(data.values())
+        items.sort(key=lambda x: (int(x.get("launch_count", 0)), str(x.get("last_seen", ""))), reverse=True)
+        return items
+
+    def add_learned_game(self, process_name: str, *, peak_vram_mb: float = 0.0, user_pinned: bool = True) -> dict[str, Any]:
+        key = re.sub(r"\.(exe|bin|x86_64)$", "", (process_name or "").strip().lower())
+        if not key:
+            return {}
+        with self._lock:
+            data = self._load_learned_games()
+            rec = dict(data.get(key) or {})
+            rec["key"] = key
+            rec["display_name"] = process_name.strip()
+            rec["launch_count"] = max(1, int(rec.get("launch_count", 0)) + (0 if key in data else 1))
+            rec["peak_vram_mb"] = round(max(float(rec.get("peak_vram_mb", 0.0) or 0.0), float(peak_vram_mb or 0.0)), 1)
+            rec["peak_gpu_util_pct"] = float(rec.get("peak_gpu_util_pct", 0.0) or 0.0)
+            rec["user_pinned"] = bool(rec.get("user_pinned", False) or user_pinned)
+            rec["last_seen"] = utc_now_iso()
+            data[key] = rec
+            self._save_learned_games(data)
+            return rec
+
+    def remove_learned_game(self, process_key: str) -> bool:
+        key = re.sub(r"\.(exe|bin|x86_64)$", "", (process_key or "").strip().lower())
+        with self._lock:
+            data = self._load_learned_games()
+            if key in data:
+                data.pop(key, None)
+                self._save_learned_games(data)
+                return True
+            return False
+
+    @staticmethod
+    def _normalize_proc_key(name: str) -> str:
+        clean = (name or "").strip().lower()
+        clean = re.sub(r"\.(exe|bin|x86_64)$", "", clean)
+        return clean
+
+    def _is_known_or_learned_game(self, proc_name: str, learned: dict[str, dict[str, Any]]) -> bool:
+        key = self._normalize_proc_key(proc_name)
+        if not key or key in _NON_GAME_SYSTEM_PROCS:
+            return False
+        if key in learned:
+            return True
+        return any(sig in key for sig in _KNOWN_GAME_SIGNATURES)
+
+    def observe_running_workload(
+        self,
+        processes: list[Any] | None = None,
+        *,
+        focus_process: str = "",
+        is_fullscreen: bool = False,
+        gpu: Any = None,
+    ) -> dict[str, Any] | None:
+        """Detects active games or heavy fullscreen GPU apps and updates learned_games.json with VRAM & GPU usage."""
+        gpu_obj = gpu if gpu is not None else GpuTelemetryCollector.collect()
+        gpu_util = _parse_float_safe(getattr(gpu_obj, "utilization_percent", None)) or 0.0
+        vram_used = _parse_float_safe(getattr(gpu_obj, "vram_used_mb", None)) or 0.0
+        learned = self._load_learned_games()
+
+        detected_name = ""
+        # 1. Check focused fullscreen app (excluding desktop shells/browsers/ollama)
+        f_key = self._normalize_proc_key(focus_process)
+        if f_key and f_key not in _NON_GAME_SYSTEM_PROCS:
+            if is_fullscreen or self._is_known_or_learned_game(f_key, learned):
+                detected_name = focus_process.strip()
+
+        # 2. Scan running process list for known/learned games
+        if not detected_name and processes:
+            for proc in processes:
+                pname = str(getattr(proc, "name", "") if not isinstance(proc, dict) else proc.get("name", ""))
+                if self._is_known_or_learned_game(pname, learned):
+                    detected_name = pname
+                    break
+
+        if not detected_name:
+            return None
+
+        d_key = self._normalize_proc_key(detected_name)
+        with self._lock:
+            data = self._load_learned_games()
+            prev = dict(data.get(d_key) or {})
+            prev_last = str(prev.get("last_seen", ""))
+            # Only increment launch_count if not seen in the last 3 minutes
+            bump_launch = 1 if (not prev_last or prev_last[:15] != utc_now_iso()[:15]) else 0
+            rec = {
+                "key": d_key,
+                "display_name": prev.get("display_name") or detected_name,
+                "launch_count": int(prev.get("launch_count", 0)) + bump_launch or 1,
+                "peak_vram_mb": round(max(float(prev.get("peak_vram_mb", 0.0) or 0.0), vram_used), 1),
+                "peak_gpu_util_pct": round(max(float(prev.get("peak_gpu_util_pct", 0.0) or 0.0), gpu_util), 1),
+                "user_pinned": bool(prev.get("user_pinned", False)),
+                "last_seen": utc_now_iso(),
+            }
+            data[d_key] = rec
+            self._save_learned_games(data)
+            return rec
+
+    def compute_gpu_throttle_plan(
+        self,
+        config: AppConfig,
+        *,
+        gpu: Any = None,
+        processes: list[Any] | None = None,
+        focus_process: str = "",
+        is_fullscreen: bool = False,
+    ) -> dict[str, Any]:
+        """Computes dynamic GPU offload %, ~1 GB VRAM headroom cap, and throttle pacing for Hermes local AI."""
+        mode = str(getattr(config, "hermes_gpu_limit_mode", "game_adaptive") or "game_adaptive")
+        if mode not in HERMES_GPU_MODES:
+            mode = "game_adaptive"
+
+        reserve_mb = max(512, int(getattr(config, "hermes_vram_reserve_mb", 1024) or 1024))
+        base_ctx = int(getattr(config, "hermes_context_tokens", 32768) or 32768)
+
+        gpu_obj = gpu if gpu is not None else GpuTelemetryCollector.collect()
+        vram_total = _parse_float_safe(getattr(gpu_obj, "vram_total_mb", None))
+        vram_used = _parse_float_safe(getattr(gpu_obj, "vram_used_mb", None))
+        gpu_util = _parse_float_safe(getattr(gpu_obj, "utilization_percent", None))
+
+        learned = self._load_learned_games()
+        active_game: dict[str, Any] | None = None
+
+        # Detect active game from focus or process list (or live psutil if processes not supplied)
+        f_key = self._normalize_proc_key(focus_process)
+        if f_key and (self._is_known_or_learned_game(f_key, learned) or (is_fullscreen and f_key not in _NON_GAME_SYSTEM_PROCS)):
+            active_game = learned.get(f_key) or {"key": f_key, "display_name": focus_process, "peak_vram_mb": 0.0}
+
+        if active_game is None:
+            proc_names: list[str] = []
+            if processes is not None:
+                proc_names = [
+                    str(getattr(pr, "name", "") if not isinstance(pr, dict) else pr.get("name", ""))
+                    for pr in processes
+                ]
+            else:
+                try:
+                    proc_names = [p.info.get("name") or "" for p in psutil.process_iter(["name"])]
+                except Exception:
+                    proc_names = []
+            for pname in proc_names:
+                if self._is_known_or_learned_game(pname, learned):
+                    pk = self._normalize_proc_key(pname)
+                    active_game = learned.get(pk) or {"key": pk, "display_name": pname, "peak_vram_mb": 0.0}
+                    break
+
+        vram_headroom_mb: float | None = None
+        if vram_total is not None and vram_total > 0 and vram_used is not None:
+            # Strictly keep `reserve_mb` (~1024 MB) below max VRAM
+            safe_ceiling = max(0.0, vram_total - float(reserve_mb))
+            vram_headroom_mb = round(max(0.0, safe_ceiling - vram_used), 1)
+
+        # Determine target GPU % and throttle parameters
+        num_gpu_layers: int | None = None
+        num_ctx = base_ctx
+        num_batch = 512
+        keep_alive = "5m"
+        throttle_delay_sec = 0.0
+        defer_cron = False
+        baseline_layers = 36
+
+        if mode in ("100", "75", "50", "25"):
+            target_pct = int(mode)
+            if target_pct < 100:
+                num_gpu_layers = max(1, round(baseline_layers * (target_pct / 100.0)))
+                num_batch = 256 if target_pct >= 50 else 128
+                num_ctx = min(base_ctx, 24576 if target_pct >= 75 else (16384 if target_pct >= 50 else 8192))
+                throttle_delay_sec = 0.0 if target_pct >= 75 else (0.25 if target_pct == 50 else 0.55)
+            reason = f"Fixed GPU budget at {target_pct}%."
+        else:
+            # Optimized Game Mode: never 100% GPU, learns games, enforces ~1 GB VRAM headroom below max
+            other_gpu_busy = (gpu_util is not None and gpu_util >= 25.0) or (
+                vram_used is not None and vram_used >= 900.0 and vram_total is not None and (vram_used / max(1.0, vram_total)) >= 0.18
+            )
+            if active_game is not None:
+                # Active game detected — strong throttle + guarantee ~1 GB VRAM headroom
+                est_game_vram = float(active_game.get("peak_vram_mb", 0.0) or 0.0)
+                if vram_headroom_mb is not None and vram_headroom_mb < 512.0:
+                    target_pct = 15
+                    num_gpu_layers = 0  # Fallback to CPU/RAM so game keeps full VRAM + 1 GB margin
+                    num_ctx = min(base_ctx, 8192)
+                    num_batch = 64
+                    throttle_delay_sec = 1.2
+                    keep_alive = "15s"
+                    defer_cron = True
+                    reason = (
+                        f"Game '{active_game.get('display_name')}' active & VRAM tight "
+                        f"({vram_headroom_mb:.0f} MB above 1 GB reserve) — offloading AI to CPU/RAM."
+                    )
+                elif vram_headroom_mb is not None and vram_headroom_mb < 2048.0:
+                    target_pct = 25
+                    num_gpu_layers = max(4, round(baseline_layers * 0.25))
+                    num_ctx = min(base_ctx, 8192)
+                    num_batch = 128
+                    throttle_delay_sec = 0.85
+                    keep_alive = "30s"
+                    defer_cron = bool(gpu_util is not None and gpu_util >= 80.0)
+                    reason = (
+                        f"Game '{active_game.get('display_name')}' active — capped AI to 25% GPU, "
+                        f"preserving {reserve_mb} MB (~1 GB) VRAM safety margin."
+                    )
+                else:
+                    # Even if VRAM is roomy, cap GPU below 40% during active game (or respect learned peak VRAM)
+                    target_pct = 35
+                    if vram_total and est_game_vram > 0 and (vram_total - est_game_vram - reserve_mb) < 2048:
+                        target_pct = 25
+                    num_gpu_layers = max(6, round(baseline_layers * (target_pct / 100.0)))
+                    num_ctx = min(base_ctx, 16384)
+                    num_batch = 128
+                    throttle_delay_sec = 0.6
+                    keep_alive = "45s"
+                    defer_cron = bool(gpu_util is not None and gpu_util >= 85.0)
+                    reason = (
+                        f"Learned game '{active_game.get('display_name')}' active — throttled AI to {target_pct}% GPU "
+                        f"with {reserve_mb} MB (~1 GB) VRAM headroom."
+                    )
+            elif other_gpu_busy:
+                target_pct = 50 if (gpu_util or 0.0) < 65.0 else 35
+                if vram_headroom_mb is not None and vram_headroom_mb < 600.0:
+                    target_pct = 20
+                    num_gpu_layers = 0
+                    num_ctx = min(base_ctx, 8192)
+                else:
+                    num_gpu_layers = max(6, round(baseline_layers * (target_pct / 100.0)))
+                    num_ctx = min(base_ctx, 16384)
+                num_batch = 192
+                throttle_delay_sec = 0.4
+                keep_alive = "1m"
+                reason = (
+                    f"Other GPU workload detected ({(gpu_util or 0.0):.0f}% util) — "
+                    f"throttled AI to {target_pct}% while reserving {reserve_mb} MB (~1 GB) VRAM."
+                )
+            else:
+                # Idle desktop: never take 100% GPU so desktop compositing & app launches stay instant
+                target_pct = 80
+                if vram_headroom_mb is not None and vram_headroom_mb < 1024.0:
+                    target_pct = 45
+                    num_gpu_layers = max(8, round(baseline_layers * 0.45))
+                    num_ctx = min(base_ctx, 16384)
+                else:
+                    num_gpu_layers = round(baseline_layers * 0.80)
+                num_batch = 256
+                keep_alive = "3m"
+                reason = (
+                    f"Optimized Game Mode active (idle cap {target_pct}% GPU, never 100%; "
+                    f"reserves {reserve_mb} MB / ~1 GB VRAM below max)."
+                )
+
+        return {
+            "mode": mode,
+            "label": HERMES_GPU_MODES[mode]["label"],
+            "target_gpu_pct": target_pct,
+            "active_game": active_game.get("display_name") if active_game else "",
+            "learned_games_count": len(learned),
+            "vram_total_mb": vram_total,
+            "vram_used_mb": vram_used,
+            "vram_reserve_mb": reserve_mb,
+            "vram_headroom_mb": vram_headroom_mb,
+            "gpu_util_pct": gpu_util,
+            "num_gpu_layers": num_gpu_layers,
+            "num_ctx": num_ctx,
+            "num_batch": num_batch,
+            "keep_alive": keep_alive,
+            "throttle_delay_sec": throttle_delay_sec,
+            "defer_background_cron": defer_cron,
+            "reason": reason,
+        }
 
     # ------------------------------------------------------------------
     # Native Tool Registry + Safety Guard + Autonomous Loop
@@ -1467,7 +2078,20 @@ class HermesAgentManager:
             "tools": tools,
         }
         if spec["provider"] == "ollama":
-            payload["options"] = {"num_ctx": int(spec.get("context_tokens", 32768))}
+            gpu_plan = spec.get("gpu_plan") or {}
+            delay_s = float(gpu_plan.get("throttle_delay_sec", 0.0) or 0.0)
+            if delay_s > 0.0:
+                time.sleep(min(2.0, delay_s))
+            opts: dict[str, Any] = {
+                "num_ctx": int(gpu_plan.get("num_ctx") or spec.get("context_tokens", 32768)),
+            }
+            if gpu_plan.get("num_batch"):
+                opts["num_batch"] = int(gpu_plan["num_batch"])
+            if gpu_plan.get("num_gpu_layers") is not None:
+                opts["num_gpu"] = int(gpu_plan["num_gpu_layers"])
+            payload["options"] = opts
+            if gpu_plan.get("keep_alive"):
+                payload["keep_alive"] = str(gpu_plan["keep_alive"])
 
         req = urllib.request.Request(
             f"{base_url}/chat/completions",
@@ -1499,6 +2123,9 @@ class HermesAgentManager:
 
         self.ensure_hermes_home(config)
         spec = self.resolve_provider_spec(config)
+        if llm_caller is None and spec["mode"] == "local_gpu":
+            self.ensure_ollama_running()
+        spec["gpu_plan"] = self.compute_gpu_throttle_plan(config)
         env_map = self.load_env()
         api_key = env_map.get(spec["env_var"]) or os.environ.get(spec["env_var"], "")
 
