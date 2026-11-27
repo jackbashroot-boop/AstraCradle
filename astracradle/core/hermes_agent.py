@@ -3608,7 +3608,8 @@ class HermesAgentManager:
                 error=f"Missing API key ({spec['env_var']}). Add your free/own key in Hermes AI Setup or switch to Local GPU mode.",
             )
 
-        att_note = f" [Attached {len(attachments)} image(s)]" if attachments else ""
+        encoded_imgs, attachment_context, att_names = self.prepare_attachments(attachments)
+        att_note = f" [Attached: {', '.join(att_names)}]" if att_names else ""
         self._append_session_message(session_id, "user", clean_prompt + att_note, title_hint=clean_prompt)
 
         history = self.get_session_messages(session_id, limit=24)

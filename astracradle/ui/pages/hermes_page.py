@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import threading
 import tkinter as tk
-from typing import TYPE_CHECKING, Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable
 
 import customtkinter as ctk
 
@@ -49,9 +50,144 @@ def _clean_bubble_markdown(raw: str) -> str:
     txt = str(raw or "")
     txt = _re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", txt)
     txt = _re.sub(r"\*\*(.+?)\*\*", r"\1", txt)
+    txt = _re.sub(r"\*{2,}", "", txt)
     txt = _re.sub(r"__(.+?)__", r"\1", txt)
     txt = _re.sub(r"`([^`\n]+)`", r"\1", txt)
     return txt
+
+
+def _capture_clipboard_attachments(hm, tk_widget=None) -> tuple[list[str], str]:
+    """Reads pasted images or file paths/URIs from the system clipboard (Wayland, X11, Pillow, or Tk)."""
+    import shutil
+    import subprocess
+    import time as _t
+    import urllib.parse
+
+    found: list[str] = []
+    hm.captures_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Try PIL ImageGrab (supports images AND copied file lists on some platforms)
+    try:
+        from PIL import ImageGrab  # type: ignore
+
+        grabbed = ImageGrab.grabclipboard()
+        if isinstance(grabbed, list):
+            for item in grabbed:
+                p_item = Path(str(item)).expanduser()
+                if p_item.exists() and p_item.is_file():
+                    found.append(str(p_item))
+            if found:
+                return found[:8], f"Pasted {len(found)} file(s) from clipboard!"
+        elif grabbed is not None and hasattr(grabbed, "save"):
+            out = hm.captures_dir / f"paste_{int(_t.time() * 1000)}.png"
+            grabbed.save(str(out), format="PNG")
+            return [str(out)], f"Pasted image attached ({out.name})!"
+    except Exception:
+        pass
+
+    # 2. Wayland / X11 binary image paste (wl-paste / xclip)
+    img_cmds = []
+    if shutil.which("wl-paste"):
+        img_cmds.append(["wl-paste", "--no-newline", "--type", "image/png"])
+    if shutil.which("xclip"):
+        img_cmds.append(["xclip", "-selection", "clipboard", "-t", "image/png", "-o"])
+    for cmd in img_cmds:
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=3)
+            if r.returncode == 0 and r.stdout and r.stdout[:4] == b"\x89PNG":
+                out = hm.captures_dir / f"paste_{int(_t.time() * 1000)}.png"
+                out.write_bytes(r.stdout)
+                return [str(out)], f"Pasted screenshot attached ({out.name})!"
+        except Exception:
+            continue
+
+    # 3. Wayland / X11 file URI list (files copied in Dolphin / Nautilus / Thunar)
+    uri_cmds = []
+    if shutil.which("wl-paste"):
+        uri_cmds.append(["wl-paste", "--no-newline", "--type", "text/uri-list"])
+    if shutil.which("xclip"):
+        uri_cmds.append(["xclip", "-selection", "clipboard", "-t", "text/uri-list", "-o"])
+    for cmd in uri_cmds:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            if r.returncode == 0 and r.stdout.strip():
+                for line in r.stdout.splitlines():
+                    ln = line.strip()
+                    if ln.startswith("file://"):
+                        local = Path(urllib.parse.unquote(urllib.parse.urlparse(ln).path))
+                        if local.exists() and local.is_file():
+                            found.append(str(local))
+                if found:
+                    return found[:8], f"Pasted {len(found)} file(s) attached!"
+        except Exception:
+            continue
+
+    # 4. Plain text clipboard containing file:// URI or existing file path(s)
+    clip_txt = ""
+    if tk_widget is not None:
+        try:
+            clip_txt = str(tk_widget.clipboard_get() or "").strip()
+        except Exception:
+            clip_txt = ""
+    if not clip_txt:
+        _ok_c, clip_txt = hm.clipboard_read()
+        clip_txt = str(clip_txt or "").strip()
+    if clip_txt:
+        for line in clip_txt.splitlines():
+            ln = line.strip().strip('"').strip("'")
+            if not ln:
+                continue
+            if ln.startswith("file://"):
+                ln = urllib.parse.unquote(urllib.parse.urlparse(ln).path)
+            if ln.startswith("/") or ln.startswith("~/"):
+                cand = Path(ln).expanduser()
+                if cand.exists() and cand.is_file():
+                    found.append(str(cand))
+        if found:
+            return found[:8], f"Pasted {len(found)} file path(s) attached!"
+
+    return [], ""
+
+
+def _refresh_attachment_strip(
+    strip: ctk.CTkFrame,
+    att_list: list[str],
+    p,
+    f,
+    *,
+    before_widget=None,
+) -> None:
+    for ch in strip.winfo_children():
+        ch.destroy()
+    if not att_list:
+        strip.pack_forget()
+        return
+    if not strip.winfo_manager():
+        if before_widget is not None and before_widget.winfo_manager():
+            strip.pack(fill="x", padx=8, pady=(0, 4), before=before_widget)
+        else:
+            strip.pack(fill="x", padx=8, pady=(0, 4))
+    ctk.CTkLabel(strip, text="Attached:", font=f["small_bold"], text_color=p.accent_cyan).pack(side="left", padx=(2, 6))
+    for idx, ap in enumerate(list(att_list)):
+        name = Path(ap).name
+        is_img = Path(ap).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+        ico = "🖼" if is_img else "📄"
+
+        def _rm(i: int = idx) -> None:
+            if 0 <= i < len(att_list):
+                att_list.pop(i)
+                _refresh_attachment_strip(strip, att_list, p, f, before_widget=before_widget)
+
+        ctk.CTkButton(
+            strip,
+            text=f"{ico} {name[:22]}  ✕",
+            height=24,
+            fg_color=p.bg_card,
+            border_width=1,
+            border_color=p.border_subtle,
+            font=f["caption"],
+            command=_rm,
+        ).pack(side="left", padx=3, pady=2)
 
 
 def _format_tool_trace(raw_trace: str) -> str:
@@ -419,20 +555,25 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
     chips = ctk.CTkFrame(win, fg_color="transparent")
     chips.pack(fill="x", padx=10, pady=(4, 4))
 
+    popup_att_strip = ctk.CTkFrame(win, fg_color="transparent")
     in_row = ctk.CTkFrame(win, fg_color="transparent")
     in_row.pack(fill="x", padx=12, pady=(2, 12))
     entry = ctk.CTkEntry(in_row, height=36, placeholder_text="Ask or tell AstraCradle AI to inspect, fix, research, or update...")
     entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+    entry.bind("<Control-v>", _paste_popup_item)
+    entry.bind("<Control-V>", _paste_popup_item)
 
     def _send(override: str | None = None) -> None:
         q = (override if override is not None else entry.get()).strip()
+        if not q and popup_attachments:
+            q = "Please inspect the attached image/file(s) and help me with what I am working on."
         if not q:
             return
         if override is None:
             entry.delete(0, "end")
         att_now = list(popup_attachments)
         popup_attachments.clear()
-        att_btn_p.configure(text="🖼 Image")
+        _refresh_attachment_strip(popup_att_strip, popup_attachments, p, f, before_widget=in_row)
         _reload_transcript(thinking=f"Prompt: \"{q[:140]}\"\nInspecting & streaming response via {spec['model']}...")
 
         last_stream_ts = [0.0]
@@ -626,6 +767,7 @@ def _build_chat_workspace(
     chips = ctk.CTkFrame(container, fg_color="transparent")
     chips.pack(fill="x", padx=6, pady=(4, 4))
 
+    page_att_strip = ctk.CTkFrame(container, fg_color="transparent")
     in_row = ctk.CTkFrame(container, fg_color="transparent")
     in_row.pack(fill="x", padx=8, pady=(2, 8))
     prompt_entry = ctk.CTkEntry(
@@ -634,6 +776,8 @@ def _build_chat_workspace(
         placeholder_text="Ask Hermes OS AI to inspect, fix, research online, or help build AstraCradle updates...",
     )
     prompt_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+    prompt_entry.bind("<Control-v>", _paste_page_item)
+    prompt_entry.bind("<Control-V>", _paste_page_item)
 
     active_cancel: list[threading.Event | None] = [None]
 
@@ -654,13 +798,15 @@ def _build_chat_workspace(
 
     def _send_prompt(override: str | None = None) -> None:
         q = (override if override is not None else prompt_entry.get()).strip()
+        if not q and page_attachments:
+            q = "Please inspect the attached image/file(s) and help me with what I am working on."
         if not q:
             return
         if override is None:
             prompt_entry.delete(0, "end")
         att_now = list(page_attachments)
         page_attachments.clear()
-        att_btn.configure(text="🖼 Image")
+        _refresh_attachment_strip(page_att_strip, page_attachments, p, f, before_widget=in_row)
         spec = hm.resolve_provider_spec(cfg)
         _reload_chat(thinking=f"Prompt: \"{q[:160]}\"\nInspecting & streaming response via {spec['model']}...")
 
