@@ -930,6 +930,7 @@ class HermesAgentManager:
             )
 
         self.seed_builtin_skills_and_library(config)
+        self._init_custom_tools_dir()
         self._init_sessions_db()
         if config is not None:
             self.write_config_yaml(config)
@@ -1334,6 +1335,454 @@ class HermesAgentManager:
             "usage_pct": round((total_bytes / max(1, max_bytes)) * 100.0, 4),
             "library_dir": str(self.library_dir),
         }
+
+    # ------------------------------------------------------------------
+    # Custom Tool Forge & Adaptive Tool Evolution Engine
+    # ------------------------------------------------------------------
+    def _init_custom_tools_dir(self) -> None:
+        self.custom_tools_dir.mkdir(parents=True, exist_ok=True)
+        self.custom_tools_scripts_dir.mkdir(parents=True, exist_ok=True)
+        self.custom_tools_versions_dir.mkdir(parents=True, exist_ok=True)
+        if not self.custom_tools_registry_path.exists():
+            self.custom_tools_registry_path.write_text("{}\n", encoding="utf-8")
+
+    def _load_custom_tools_registry(self) -> dict[str, dict[str, Any]]:
+        self._init_custom_tools_dir()
+        try:
+            raw = json.loads(self.custom_tools_registry_path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_custom_tools_registry(self, reg: dict[str, dict[str, Any]]) -> None:
+        self._init_custom_tools_dir()
+        self.custom_tools_registry_path.write_text(json.dumps(reg, indent=2) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _sanitize_custom_tool_name(raw_name: str) -> str:
+        slug = re.sub(r"[^a-z0-9_]+", "_", (raw_name or "").strip().lower()).strip("_")
+        if not slug:
+            slug = "helper"
+        if not slug.startswith("custom_"):
+            slug = f"custom_{slug}"
+        return slug[:48]
+
+    def list_custom_tools(self, *, include_disabled: bool = True) -> list[dict[str, Any]]:
+        reg = self._load_custom_tools_registry()
+        items = []
+        for k in sorted(reg.keys()):
+            rec = dict(reg[k] or {})
+            rec["name"] = k
+            if not include_disabled and not rec.get("enabled", True):
+                continue
+            items.append(rec)
+        return items
+
+    @staticmethod
+    def _validate_custom_python(code: str) -> tuple[bool, str]:
+        import ast
+
+        src = (code or "").strip()
+        if not src:
+            return False, "Python custom tool code cannot be empty."
+        try:
+            tree = ast.parse(src)
+        except SyntaxError as exc:
+            return False, f"Syntax error in custom tool code (line {exc.lineno}): {exc.msg}"
+
+        has_run = any(isinstance(n, ast.FunctionDef) and n.name == "run" for n in tree.body)
+        if not has_run:
+            return False, "Python custom tool must define `def run(args: dict) -> dict:` at module top level."
+
+        low = src.lower()
+        blocked_patterns = ("rm -rf /", "mkfs", "dd if=", "shutil.rmtree('/'", 'shutil.rmtree("/"', "os.system(", "sudo ", "pkexec ")
+        for pat in blocked_patterns:
+            if pat in low:
+                return False, f"Blocked unsafe pattern '{pat}' inside custom Python tool."
+        return True, "Validated AST & safety rules."
+
+    def create_composite_custom_tool(
+        self,
+        *,
+        name: str,
+        description: str,
+        steps: list[dict[str, Any]],
+        parameters: dict[str, Any] | None = None,
+        auto_learned: bool = False,
+        config: AppConfig | None = None,
+    ) -> dict[str, Any]:
+        tname = self._sanitize_custom_tool_name(name)
+        clean_steps: list[dict[str, Any]] = []
+        for st in (steps or []):
+            if not isinstance(st, dict) or not st.get("tool"):
+                continue
+            target_tool = str(st["tool"]).strip()
+            if target_tool == tname:
+                continue
+            clean_steps.append(
+                {
+                    "tool": target_tool,
+                    "args": dict(st.get("args") or {}),
+                    "continue_on_error": bool(st.get("continue_on_error", True)),
+                }
+            )
+        if not clean_steps:
+            return {"ok": False, "error": "Composite custom tool requires at least one valid tool step."}
+
+        schema = parameters if isinstance(parameters, dict) and parameters.get("type") == "object" else {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
+        now_iso = utc_now_iso()
+        with self._lock:
+            reg = self._load_custom_tools_registry()
+            prev = dict(reg.get(tname) or {})
+            ver = int(prev.get("version", 0) or 0) + 1
+            rec = {
+                "name": tname,
+                "kind": "composite",
+                "description": (description or f"Composite workflow combining {len(clean_steps)} tools").strip()[:280],
+                "parameters": schema,
+                "steps": clean_steps,
+                "source_tools": [s["tool"] for s in clean_steps],
+                "version": ver,
+                "enabled": True,
+                "auto_learned": bool(auto_learned),
+                "runs": int(prev.get("runs", 0) or 0),
+                "successes": int(prev.get("successes", 0) or 0),
+                "failures": int(prev.get("failures", 0) or 0),
+                "last_error": "",
+                "created_at": prev.get("created_at") or now_iso,
+                "updated_at": now_iso,
+            }
+            reg[tname] = rec
+            self._save_custom_tools_registry(reg)
+        try:
+            self.store_library_item(
+                title=f"Custom Tool: {tname} (v{rec['version']})",
+                body=f"{rec['description']}\nSteps: {', '.join(rec['source_tools'])}",
+                category="custom_tools",
+                source_type="learned",
+                tags=f"custom tool {tname} {' '.join(rec['source_tools'])}",
+                summary=rec["description"],
+                item_id=f"tool-{tname}",
+                pinned=False,
+                config=config,
+            )
+        except Exception:
+            pass
+        return {"ok": True, "tool": rec}
+
+    def create_python_custom_tool(
+        self,
+        *,
+        name: str,
+        description: str,
+        code: str,
+        parameters: dict[str, Any] | None = None,
+        config: AppConfig | None = None,
+    ) -> dict[str, Any]:
+        perm = self._effective_permission_level(config) if config is not None else "safe_user"
+        if perm in ("read_only", "safe_user"):
+            return {
+                "ok": False,
+                "blocked": True,
+                "error": "Creating executable Python custom tools requires Level 3 (Up to Just Below Sudo) or Level 4. Use create_composite for safe Level 2 macro tools.",
+            }
+        ok_v, msg_v = self._validate_custom_python(code)
+        if not ok_v:
+            return {"ok": False, "error": msg_v}
+
+        tname = self._sanitize_custom_tool_name(name)
+        if config is not None:
+            ok_ap, msg_ap = self._request_mutation_approval(
+                f"Save Custom Python Tool '{tname}'",
+                f"Hermes wants to save custom Python tool `{tname}`:\n{description[:180]}\n\nCode preview:\n{code[:320]}",
+                config,
+            )
+            if not ok_ap:
+                return {"ok": False, "blocked": True, "error": msg_ap}
+
+        self._init_custom_tools_dir()
+        script_path = self.custom_tools_scripts_dir / f"{tname}.py"
+        if script_path.exists():
+            bak = self.custom_tools_versions_dir / f"{tname}.{int(time.time())}.py.bak"
+            bak.write_text(script_path.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+        script_path.write_text(code.rstrip() + "\n", encoding="utf-8")
+
+        schema = parameters if isinstance(parameters, dict) and parameters.get("type") == "object" else {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
+        now_iso = utc_now_iso()
+        with self._lock:
+            reg = self._load_custom_tools_registry()
+            prev = dict(reg.get(tname) or {})
+            ver = int(prev.get("version", 0) or 0) + 1
+            rec = {
+                "name": tname,
+                "kind": "python",
+                "description": (description or f"Custom Python tool {tname}").strip()[:280],
+                "parameters": schema,
+                "code_path": str(script_path),
+                "source_tools": [],
+                "version": ver,
+                "enabled": True,
+                "auto_learned": False,
+                "runs": int(prev.get("runs", 0) or 0),
+                "successes": int(prev.get("successes", 0) or 0),
+                "failures": int(prev.get("failures", 0) or 0),
+                "last_error": "",
+                "created_at": prev.get("created_at") or now_iso,
+                "updated_at": now_iso,
+            }
+            reg[tname] = rec
+            self._save_custom_tools_registry(reg)
+        self.journal.log_event("HermesOS", "custom_tool_save", f"Saved custom Python tool {tname} v{ver}", "Custom Tool Forge", "ok")
+        return {"ok": True, "tool": rec}
+
+    def combine_tools_into_custom(
+        self,
+        *,
+        name: str,
+        description: str,
+        source_tools: list[str],
+        step_args: dict[str, dict[str, Any]] | None = None,
+        config: AppConfig | None = None,
+    ) -> dict[str, Any]:
+        """Combines 2+ built-in or existing custom tools into a unified composite tool (flattening sub-composites)."""
+        reg = self._load_custom_tools_registry()
+        expanded_steps: list[dict[str, Any]] = []
+        for raw_t in (source_tools or []):
+            t = str(raw_t).strip()
+            if not t:
+                continue
+            if t in reg and reg[t].get("kind") == "composite":
+                for sub in (reg[t].get("steps") or []):
+                    expanded_steps.append(dict(sub))
+            else:
+                expanded_steps.append(
+                    {
+                        "tool": t,
+                        "args": dict((step_args or {}).get(t) or {}),
+                        "continue_on_error": True,
+                    }
+                )
+        if len(expanded_steps) < 2:
+            return {"ok": False, "error": "Combining tools requires at least 2 tool steps."}
+        return self.create_composite_custom_tool(
+            name=name,
+            description=description or f"Combined pipeline: {', '.join(source_tools[:6])}",
+            steps=expanded_steps,
+            config=config,
+        )
+
+    def improve_custom_tool(
+        self,
+        *,
+        name: str,
+        description: str = "",
+        steps: list[dict[str, Any]] | None = None,
+        code: str = "",
+        improvement_note: str = "",
+        config: AppConfig | None = None,
+    ) -> dict[str, Any]:
+        """Archives the prior version and upgrades an existing custom tool's logic, steps, or description."""
+        tname = self._sanitize_custom_tool_name(name)
+        reg = self._load_custom_tools_registry()
+        if tname not in reg:
+            return {"ok": False, "error": f"Custom tool '{tname}' not found."}
+        cur = dict(reg[tname])
+        ver_old = int(cur.get("version", 1) or 1)
+        self._init_custom_tools_dir()
+        snap_path = self.custom_tools_versions_dir / f"{tname}.v{ver_old}.json"
+        snap_path.write_text(json.dumps(cur, indent=2), encoding="utf-8")
+
+        new_desc = (description or cur.get("description") or "").strip()[:280]
+        if cur.get("kind") == "python" and code.strip():
+            res = self.create_python_custom_tool(
+                name=tname,
+                description=new_desc,
+                code=code,
+                parameters=cur.get("parameters"),
+                config=config,
+            )
+            if res.get("ok") and improvement_note:
+                reg2 = self._load_custom_tools_registry()
+                if tname in reg2:
+                    reg2[tname]["last_improvement"] = improvement_note[:200]
+                    self._save_custom_tools_registry(reg2)
+            return res
+
+        new_steps = steps if steps else list(cur.get("steps") or [])
+        res = self.create_composite_custom_tool(
+            name=tname,
+            description=new_desc,
+            steps=new_steps,
+            parameters=cur.get("parameters"),
+            auto_learned=bool(cur.get("auto_learned", False)),
+            config=config,
+        )
+        if res.get("ok") and improvement_note:
+            reg2 = self._load_custom_tools_registry()
+            if tname in reg2:
+                reg2[tname]["last_improvement"] = improvement_note[:200]
+                self._save_custom_tools_registry(reg2)
+        return res
+
+    def toggle_custom_tool(self, name: str, enabled: bool) -> dict[str, Any]:
+        tname = self._sanitize_custom_tool_name(name)
+        with self._lock:
+            reg = self._load_custom_tools_registry()
+            if tname not in reg:
+                return {"ok": False, "error": f"Custom tool '{tname}' not found."}
+            reg[tname]["enabled"] = bool(enabled)
+            reg[tname]["updated_at"] = utc_now_iso()
+            self._save_custom_tools_registry(reg)
+        return {"ok": True, "name": tname, "enabled": bool(enabled)}
+
+    def delete_custom_tool(self, name: str) -> dict[str, Any]:
+        tname = self._sanitize_custom_tool_name(name)
+        with self._lock:
+            reg = self._load_custom_tools_registry()
+            if tname not in reg:
+                return {"ok": False, "error": f"Custom tool '{tname}' not found."}
+            rec = reg.pop(tname)
+            self._save_custom_tools_registry(reg)
+        cp = rec.get("code_path")
+        if cp:
+            try:
+                Path(str(cp)).unlink(missing_ok=True)
+            except Exception:
+                pass
+        return {"ok": True, "deleted": tname}
+
+    @staticmethod
+    def _substitute_template_args(obj: Any, call_args: dict[str, Any], prev_out: dict[str, Any]) -> Any:
+        if isinstance(obj, dict):
+            return {k: HermesAgentManager._substitute_template_args(v, call_args, prev_out) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [HermesAgentManager._substitute_template_args(v, call_args, prev_out) for v in obj]
+        if isinstance(obj, str) and "{{" in obj:
+            def _rep(m: re.Match[str]) -> str:
+                key = m.group(1).strip()
+                if key.startswith("prev."):
+                    return str(prev_out.get(key[5:], ""))
+                return str(call_args.get(key, ""))
+
+            return re.sub(r"\{\{([^}]+)\}\}", _rep, obj)
+        return obj
+
+    def execute_custom_tool(
+        self,
+        name: str,
+        args: dict[str, Any],
+        config: AppConfig,
+        *,
+        allow_subagent: bool = True,
+        _call_stack: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        tname = self._sanitize_custom_tool_name(name)
+        if tname in _call_stack:
+            return {"ok": False, "error": f"Cycle detected while executing custom tool '{tname}'."}
+        if len(_call_stack) >= 4:
+            return {"ok": False, "error": "Max custom tool nesting depth (4) reached."}
+
+        reg = self._load_custom_tools_registry()
+        rec = reg.get(tname)
+        if not rec:
+            return {"ok": False, "error": f"Custom tool '{tname}' not found."}
+        if not rec.get("enabled", True):
+            return {"ok": False, "error": f"Custom tool '{tname}' is currently disabled."}
+
+        ok_run = False
+        err_txt = ""
+        payload_out: dict[str, Any] = {}
+
+        try:
+            if rec.get("kind") == "composite":
+                step_results: list[dict[str, Any]] = []
+                prev_res: dict[str, Any] = {}
+                for idx, st in enumerate(rec.get("steps") or []):
+                    sub_tool = str(st.get("tool") or "")
+                    sub_args = self._substitute_template_args(dict(st.get("args") or {}), args or {}, prev_res)
+                    if sub_tool.startswith("custom_"):
+                        sr = self.execute_custom_tool(
+                            sub_tool,
+                            sub_args,
+                            config,
+                            allow_subagent=allow_subagent,
+                            _call_stack=_call_stack + (tname,),
+                        )
+                    else:
+                        sr = self.execute_tool(sub_tool, sub_args, config, allow_subagent=allow_subagent)
+                    step_results.append({"step": idx + 1, "tool": sub_tool, "ok": bool(sr.get("ok")), "result": sr})
+                    prev_res = sr if isinstance(sr, dict) else {}
+                    if not sr.get("ok") and not st.get("continue_on_error", True):
+                        err_txt = str(sr.get("error") or f"Step {idx + 1} ({sub_tool}) failed")
+                        break
+                ok_run = not bool(err_txt) and any(s["ok"] for s in step_results)
+                payload_out = {
+                    "ok": ok_run,
+                    "custom_tool": tname,
+                    "version": rec.get("version", 1),
+                    "steps_executed": len(step_results),
+                    "results": step_results,
+                    **({"error": err_txt} if err_txt else {}),
+                }
+            elif rec.get("kind") == "python":
+                perm = self._effective_permission_level(config)
+                if perm in ("read_only", "safe_user"):
+                    return {"ok": False, "blocked": True, "error": "Running Python custom tools requires Level 3 or Level 4 permissions."}
+                script_path = Path(str(rec.get("code_path") or ""))
+                if not script_path.exists():
+                    return {"ok": False, "error": f"Script file missing for '{tname}'."}
+                harness = (
+                    "import importlib.util, json, sys\n"
+                    f"spec = importlib.util.spec_from_file_location('ctool', {repr(str(script_path))})\n"
+                    "mod = importlib.util.module_from_spec(spec)\n"
+                    "spec.loader.exec_module(mod)\n"
+                    "args = json.loads(sys.stdin.read() or '{}')\n"
+                    "res = mod.run(args)\n"
+                    "print(json.dumps(res if isinstance(res, dict) else {'result': res}))\n"
+                )
+                pr = subprocess.run(
+                    [sys.executable, "-c", harness],
+                    input=json.dumps(args or {}),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    creationflags=_WIN_NO_WINDOW,
+                )
+                if pr.returncode == 0 and pr.stdout.strip():
+                    parsed = json.loads(pr.stdout.strip().splitlines()[-1])
+                    ok_run = bool(parsed.get("ok", True))
+                    payload_out = {"ok": ok_run, "custom_tool": tname, "version": rec.get("version", 1), **parsed}
+                else:
+                    err_txt = (pr.stderr or pr.stdout or f"Exit code {pr.returncode}")[:800]
+                    payload_out = {"ok": False, "custom_tool": tname, "error": err_txt}
+            else:
+                err_txt = f"Unsupported custom tool kind: {rec.get('kind')}"
+                payload_out = {"ok": False, "error": err_txt}
+        except Exception as exc:
+            err_txt = str(exc)
+            payload_out = {"ok": False, "custom_tool": tname, "error": err_txt}
+
+        with self._lock:
+            reg2 = self._load_custom_tools_registry()
+            if tname in reg2:
+                reg2[tname]["runs"] = int(reg2[tname].get("runs", 0) or 0) + 1
+                if ok_run:
+                    reg2[tname]["successes"] = int(reg2[tname].get("successes", 0) or 0) + 1
+                    reg2[tname]["last_error"] = ""
+                else:
+                    reg2[tname]["failures"] = int(reg2[tname].get("failures", 0) or 0) + 1
+                    reg2[tname]["last_error"] = err_txt[:240]
+                reg2[tname]["last_run_at"] = utc_now_iso()
+                self._save_custom_tools_registry(reg2)
+        return payload_out
 
     def _init_sessions_db(self) -> None:
         self.hermes_home.mkdir(parents=True, exist_ok=True)
@@ -2639,7 +3088,7 @@ class HermesAgentManager:
     # Native Tool Registry + Safety Guard + Autonomous Loop
     # ------------------------------------------------------------------
     def _tool_schemas(self) -> list[dict[str, Any]]:
-        return [
+        base_tools = [
             {
                 "type": "function",
                 "function": {
@@ -3022,7 +3471,58 @@ class HermesAgentManager:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_custom_tool_forge",
+                    "description": "Create, combine, improve, run, toggle, or delete Hermes's own reusable custom tools (composite macro pipelines or Python scripts) to automate recurring workflows.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["list", "create_composite", "create_python", "combine", "improve", "run", "toggle", "delete"],
+                            },
+                            "name": {"type": "string", "description": "Tool slug (auto-prefixed with custom_)"},
+                            "description": {"type": "string"},
+                            "steps": {
+                                "type": "array",
+                                "items": {"type": "object"},
+                                "description": "Ordered list of {tool, args} steps for create_composite or improve",
+                            },
+                            "source_tools": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "List of built-in or custom tool names to merge when action=combine",
+                            },
+                            "code": {"type": "string", "description": "Python code with def run(args: dict) -> dict for create_python/improve"},
+                            "args": {"type": "object", "description": "Arguments when action=run"},
+                            "enabled": {"type": "boolean"},
+                            "improvement_note": {"type": "string"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
         ]
+        tools_list = [
+            # Dynamic enabled custom tools registered by the agent
+        ]
+        try:
+            for ct in self.list_custom_tools(include_disabled=False)[:20]:
+                tools_list.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": ct["name"],
+                            "description": f"[Custom {ct.get('kind', 'composite')} v{ct.get('version', 1)}] {ct.get('description', '')}",
+                            "parameters": ct.get("parameters") or {"type": "object", "properties": {}, "required": []},
+                        },
+                    }
+                )
+        except Exception:
+            pass
+        return base_tools + tools_list
 
     def _effective_permission_level(self, config: AppConfig) -> str:
         lvl = str(getattr(config, "hermes_permission_level", "safe_user") or "safe_user")
@@ -3937,6 +4437,9 @@ class HermesAgentManager:
                 )
                 return {"ok": True, "job": job}
 
+            if name.startswith("custom_"):
+                return self.execute_custom_tool(name, args, config, allow_subagent=allow_subagent)
+
             return {"ok": False, "error": f"Unknown tool: {name}"}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -3952,6 +4455,8 @@ class HermesAgentManager:
         mem = self.memory_path.read_text(encoding="utf-8", errors="ignore")[:900]
         skills = self.list_skills()
         skill_summary = ", ".join(s["slug"] for s in skills[:10]) or "none yet"
+        custom_tools = self.list_custom_tools(include_disabled=False)
+        ct_summary = ", ".join(f"{c['name']}(v{c.get('version', 1)})" for c in custom_tools[:8]) or "none yet"
 
         prof = self.get_pc_usage_profile()
         top_apps = sorted((prof.get("apps") or {}).items(), key=lambda kv: int(kv[1].get("hits", 0)), reverse=True)[:5]
@@ -3969,9 +4474,10 @@ class HermesAgentManager:
             f"Mannerisms: {persona['mannerisms']}\n"
             f"{persona['prompt_directive']}\n"
             f"Learned Whole-PC & Remote Usage Context: Source={src_root} | WebSearch={'ON' if web_ok else 'OFF'} | Safety={perm_lbl} | "
-            f"TopApps={apps_txt} | Games={games_txt} | Skills={skill_summary}\n"
+            f"TopApps={apps_txt} | Games={games_txt} | Skills={skill_summary} | CustomTools={ct_summary}\n"
             f"User Notes: {user_txt}\nMemory: {mem}\n"
             "Action & Self-Development Assistant Guidelines: Answer the user's exact request directly—if they ask for improvements, tests, or skills, propose concrete file-specific additions instead of saying no action is needed. "
+            "You can create, combine, and improve your own reusable custom tools via `astra_custom_tool_forge` whenever a recurring multi-step workflow would make the user's life easier. "
             "Ground EVERY file path, module name, metric, and error in real tool output from this turn; NEVER invent fictional modules, packages, or bridges (such as non-existent bridges). "
             "Respect protected OS processes/files, verify code changes, and answer clearly without raw markdown clutter."
         )
@@ -4399,7 +4905,7 @@ class HermesAgentManager:
             else:
                 final_reply = "Completed tool workflow."
 
-            # Hermes Closed Learning Loop: auto-crystallize reusable skill after 3+ tool calls
+            # Hermes Closed Learning Loop: auto-crystallize reusable skill AND composite custom tool after 3+ successful tool calls
             if len(tool_events) >= 3 and not skill_created:
                 slug = re.sub(r"[^a-z0-9]+", "-", clean_prompt.lower())[:32].strip("-") or "auto-workflow"
                 steps_txt = "\n".join(f"{idx+1}. Call `{ev['tool']}` ({json.dumps(ev['args'])})" for idx, ev in enumerate(tool_events))
@@ -4409,6 +4915,22 @@ class HermesAgentManager:
                     f"# Auto-Learned Procedure\n{steps_txt}\n",
                 )
                 skill_created = str(sp)
+                ok_steps = [
+                    {"tool": ev["tool"], "args": ev["args"], "continue_on_error": True}
+                    for ev in tool_events
+                    if ev.get("ok") and not str(ev.get("tool", "")).startswith(("custom_", "astra_custom_tool_forge", "sudo_exec", "shell_exec"))
+                ]
+                if len(ok_steps) >= 3 and self._effective_permission_level(config) != "read_only":
+                    try:
+                        self.create_composite_custom_tool(
+                            name=f"custom_auto_{slug.replace('-', '_')}",
+                            description=f"Auto-combined workflow for: {clean_prompt[:110]}",
+                            steps=ok_steps[:6],
+                            auto_learned=True,
+                            config=config,
+                        )
+                    except Exception:
+                        pass
 
             self._append_session_message(
                 session_id,

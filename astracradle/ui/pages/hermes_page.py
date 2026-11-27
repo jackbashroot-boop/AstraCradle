@@ -1328,6 +1328,66 @@ def render_hermes_page(app: AstraCradleApp) -> None:
         skills_box.insert("end", f"=== SKILL: {sk['slug']} ({sk['path']}) ===\n{sk['content']}\n\n")
     skills_box.configure(state="disabled")
 
+    # AI-Forged Custom Tools Section (composite macros + Python custom tools)
+    ct_list = hm.list_custom_tools(include_disabled=True)
+    ct_card = ctk.CTkFrame(t_mem, fg_color=p.bg_elevated, corner_radius=9)
+    ct_card.pack(fill="x", padx=8, pady=(4, 6))
+    ctk.CTkLabel(
+        ct_card,
+        text=f"AI-Created & Combined Custom Tools ({len(ct_list)} forged):",
+        font=f["body_bold"],
+        text_color=p.accent_jade,
+    ).pack(anchor="w", padx=10, pady=(6, 4))
+    if not ct_list:
+        ctk.CTkLabel(
+            ct_card,
+            text="No custom tools forged yet — ask Hermes to combine tools or build a reusable macro/custom tool, or run a 3+ step workflow!",
+            font=f["caption"],
+            text_color=p.text_secondary,
+        ).pack(anchor="w", padx=10, pady=(0, 8))
+    else:
+        for ct in ct_list[:8]:
+            crow = ctk.CTkFrame(ct_card, fg_color=p.bg_card, corner_radius=7)
+            crow.pack(fill="x", padx=8, pady=3)
+            cname = str(ct.get("name") or "")
+            en_now = bool(ct.get("enabled", True))
+            meta_txt = (
+                f"{cname}  (v{ct.get('version', 1)} · {ct.get('kind', 'composite')} · "
+                f"runs={ct.get('runs', 0)} ok={ct.get('successes', 0)}) — {str(ct.get('description') or '')[:90]}"
+            )
+            ctk.CTkLabel(crow, text=meta_txt, font=f["caption"], text_color=(p.text_primary if en_now else p.text_muted), anchor="w").pack(side="left", padx=8, pady=4)
+            ctk.CTkButton(
+                crow,
+                text="Delete",
+                width=58,
+                height=22,
+                fg_color=p.accent_coral,
+                font=f["caption"],
+                command=lambda n=cname: (hm.delete_custom_tool(n), render_hermes_page(app)),
+            ).pack(side="right", padx=(3, 6), pady=4)
+            ctk.CTkButton(
+                crow,
+                text=("Disable" if en_now else "Enable"),
+                width=64,
+                height=22,
+                fg_color=p.bg_elevated,
+                font=f["caption"],
+                command=lambda n=cname, nxt=(not en_now): (hm.toggle_custom_tool(n, nxt), render_hermes_page(app)),
+            ).pack(side="right", padx=3, pady=4)
+            ctk.CTkButton(
+                crow,
+                text="Run",
+                width=48,
+                height=22,
+                fg_color=p.accent_cyan,
+                text_color="#071217",
+                font=f["caption"],
+                command=lambda n=cname: (
+                    app.show_toast(f"Ran {n}: ok={hm.execute_custom_tool(n, {}, cfg).get('ok')}"),
+                    render_hermes_page(app),
+                ),
+            ).pack(side="right", padx=3, pady=4)
+
     # ── Tab 3: Cron & Subagents ──────────────────────────────────────────────
     cron_form = ctk.CTkFrame(t_cron, fg_color="transparent")
     cron_form.pack(fill="x", padx=8, pady=6)
