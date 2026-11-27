@@ -3072,6 +3072,249 @@ def test_samsung_tv_ad_domains_blocked_and_essential_apps_allowed() -> None:
             assert blocked is False, f"Expected {safe_dom} to remain allowed, got {reason}"
 
 
+def test_hermes_delete_all_chats_including_default_chaos(monkeypatch) -> None:
+    import sys
+    import tempfile
+    import types
+    from pathlib import Path
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "astra")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig()
+        hm.ensure_hermes_home(cfg)
+
+        # Populate multiple sessions including "default"
+        hm._append_session_message("default", "user", "default msg 1")
+        hm._append_session_message("sess_a", "user", "session a msg")
+        hm._append_session_message("sess_b", "user", "session b msg")
+
+        # Delete every session sequentially until DB is completely empty (including "default")
+        for sid in ("sess_b", "sess_a", "default"):
+            res = hm.delete_session(sid)
+            assert res["ok"] is True
+        assert hm.list_sessions() == []
+
+        # Chaos: delete "default", empty string, whitespace, None repeatedly on empty DB
+        for bad_sid in ("default", "", "   ", None):  # type: ignore[arg-type]
+            res_empty = hm.delete_session(bad_sid)  # type: ignore[arg-type]
+            assert res_empty["ok"] is True
+            assert res_empty["remaining_count"] == 0
+            assert res_empty["next_session_id"] == "default"
+            assert hm.get_session_messages("default") == []
+
+        # Headless UI simulation: click Delete Chat repeatedly when sessions are empty + non-empty
+        class _FakeWidget:
+            def __init__(self, *a, **kw):
+                self._cmd = kw.get("command")
+                self._text = kw.get("text", "")
+                self._parent_canvas = self
+                _created_widgets.append(self)
+
+            def pack(self, *a, **kw):
+                return self
+
+            def grid(self, *a, **kw):
+                return self
+
+            def bind(self, *a, **kw):
+                return None
+
+            def after(self, ms, cb=None, *a):
+                if callable(cb):
+                    _after_queue.append(cb)
+                return "after_id"
+
+            def configure(self, *a, **kw):
+                return None
+
+            def winfo_children(self):
+                return []
+
+            def winfo_exists(self):
+                return True
+
+            def winfo_width(self):
+                return 800
+
+            def winfo_height(self):
+                return 900
+
+            def yview_moveto(self, *_a):
+                return None
+
+            def destroy(self):
+                return None
+
+            def insert(self, *a, **kw):
+                return None
+
+            def get(self, *a, **kw):
+                return ""
+
+            def focus_set(self):
+                return None
+
+            def grid_columnconfigure(self, *a, **kw):
+                return None
+
+            def add(self, name):
+                return _FakeWidget()
+
+            def set(self, name):
+                return None
+
+        _created_widgets: list[_FakeWidget] = []
+        _after_queue: list[object] = []
+
+        fake_ctk = types.SimpleNamespace(
+            CTkFrame=_FakeWidget,
+            CTkScrollableFrame=_FakeWidget,
+            CTkLabel=_FakeWidget,
+            CTkButton=_FakeWidget,
+            CTkOptionMenu=_FakeWidget,
+            CTkEntry=_FakeWidget,
+            CTkSwitch=_FakeWidget,
+            CTkCheckBox=_FakeWidget,
+            CTkSlider=_FakeWidget,
+            CTkTabview=_FakeWidget,
+            CTkTextbox=_FakeWidget,
+            ScalingTracker=types.SimpleNamespace(get_widget_scaling=lambda _w: 1.0),
+        )
+        fake_tk = types.SimpleNamespace(
+            StringVar=lambda value="": types.SimpleNamespace(get=lambda: value, set=lambda _v: None),
+            BooleanVar=lambda value=False: types.SimpleNamespace(get=lambda: value, set=lambda _v: None),
+            messagebox=types.SimpleNamespace(askyesno=lambda *_a, **_kw: True),
+        )
+        import astracradle.ui.pages.hermes_page as hp_mod
+        from astracradle.core.hermes_agent import recommend_hermes_models
+        from astracradle.theme import get_ui_fonts, get_palette
+
+        monkeypatch.setattr(hp_mod, "ctk", fake_ctk)
+        monkeypatch.setattr(hp_mod, "tk", fake_tk)
+        monkeypatch.setitem(sys.modules, "tkinter", fake_tk)
+
+        hm._append_session_message("default", "user", "hello")
+        toasts: list[str] = []
+        fake_app = types.SimpleNamespace(
+            hermes_scroll=_FakeWidget(),
+            palette=get_palette("obsidian"),
+            fonts=get_ui_fonts(1.0),
+            config_obj=cfg,
+            cfg_mgr=cm,
+            hermes_mgr=hm,
+            current_nav="hermes",
+            _hermes_session_id="default",
+            _hermes_fullscreen_chat=True,
+            _hermes_rec_cache=recommend_hermes_models(),
+            _hermes_status_cache=hm.get_status(cfg),
+            _show_startup_popups=False,
+            _content_wrap=lambda pad=0: 600,
+            winfo_exists=lambda: True,
+            winfo_height=lambda: 900,
+            after=lambda ms, cb=None, *a: (_after_queue.append(cb) if callable(cb) else None),
+            show_toast=lambda msg, **_kw: toasts.append(str(msg)),
+        )
+        hp_mod.render_hermes_page(fake_app)  # type: ignore[arg-type]
+        del_btns = [w for w in _created_widgets if "Delete Chat" in str(getattr(w, "_text", ""))]
+        assert del_btns and callable(del_btns[0]._cmd)
+        # Click Delete Chat on non-empty "default", drain queued rerender, then click AGAIN on empty "default"
+        del_btns[0]._cmd()
+        assert hm.list_sessions() == []
+        while _after_queue:
+            cb = _after_queue.pop(0)
+            if callable(cb):
+                cb()
+        del_btns_after = [w for w in _created_widgets if "Delete Chat" in str(getattr(w, "_text", ""))]
+        assert del_btns_after
+        del_btns_after[-1]._cmd()
+        assert any("already empty" in t.lower() or "deleted chat" in t.lower() for t in toasts)
+
+
+def test_update_preserves_live_user_settings_and_auto_restarts(monkeypatch) -> None:
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    from astracradle.core.config import ConfigManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.lifecycle import LifecycleManager
+    from astracradle.core.rollback import RollbackManager
+    from astracradle.core.updater import ModuleAndUpdateManager, UpdateCheckResult
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        repo = root / "repo"
+        (repo / ".git").mkdir(parents=True, exist_ok=True)
+        (repo / "astracradle").mkdir(parents=True, exist_ok=True)
+
+        cm = ConfigManager(base_dir=root / "astra")
+        cfg = cm.load()
+        cfg.setup_wizard_completed = True
+        cfg.apply_module_selection(["core_diagnostics", "ai_hunter", "pro_tuning"], preset_name="Custom", sync_simple_mode=False)
+        cfg.hermes_persona = "jedi_master"
+        cfg.astrashield_lan_tv_mode = True
+        cfg.github_check_interval_min = 45
+        cm.save(cfg)
+
+        j = ForensicJournal(cm)
+        rb = RollbackManager(cm)
+        lc = LifecycleManager(cm, rb, j)
+        upd = ModuleAndUpdateManager(cm, j)
+
+        # Simulate stale older install_memory.json with different modules/mode
+        upd.save_install_memory(
+            {
+                "install_dir": str(repo),
+                "install_method": "git_clone",
+                "enabled_modules": ["core_diagnostics"],
+                "install_bundle_preset": "Minimal",
+                "setup_wizard_completed": True,
+                "hermes_setup": {"hermes_mode": "local_gpu", "hermes_provider": "ollama", "hermes_model": "old-model"},
+            }
+        )
+
+        monkeypatch.setattr(
+            upd,
+            "check_for_updates",
+            lambda *_a, **_kw: UpdateCheckResult(
+                current_version="2.5.1",
+                latest_version="2.5.1 (9999aaa)",
+                update_available=True,
+                channel="stable",
+                release_notes="https://github.com/jackbashroot-boop/AstraCradle/archive/9999aaa.zip",
+                status_message="Newer GitHub push ready",
+            ),
+        )
+        monkeypatch.setattr(
+            "astracradle.core.updater.subprocess.run",
+            lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr=""),
+        )
+        monkeypatch.setattr(
+            upd,
+            "get_local_build_info",
+            lambda **_kw: {"version": "2.5.1", "short_sha": "9999aaa", "display_version": "2.5.1 (9999aaa)"},
+        )
+
+        ok, _ = upd.pull_from_github_and_update(cfg, repo_dir=repo, run_pip=False)
+        assert ok is True
+        upd.reapply_remembered_setup(cfg, lc, repo_dir=repo)
+        reloaded = cm.load()
+        assert "ai_hunter" in reloaded.enabled_modules
+        assert "pro_tuning" in reloaded.enabled_modules
+        assert reloaded.hermes_persona == "jedi_master"
+        assert reloaded.astrashield_lan_tv_mode is True
+        assert reloaded.github_check_interval_min == 45
+
+        app_src = (Path(__file__).resolve().parents[1] / "astracradle" / "ui" / "app.py").read_text(encoding="utf-8")
+        assert "self.single_instance.release()" in app_src
+        assert "self.after(700, self.restart_application)" in app_src
+        assert (Path(__file__).resolve().parents[1] / "BUG_REPORTS.txt").exists()
+
+
+
 
 
 

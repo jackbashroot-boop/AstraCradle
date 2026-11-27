@@ -3965,7 +3965,7 @@ class HermesAgentManager:
 
     def delete_session(self, session_id: str) -> dict[str, Any]:
         """Deletes a chat session and all of its stored messages from sessions.db, returning the next active session ID."""
-        sid = (session_id or "").strip() or "default"
+        sid = (str(session_id or "").strip()) or "default"
         self._init_sessions_db()
         with sqlite3.connect(self.sessions_db_path) as conn:
             cur_m = conn.execute("DELETE FROM messages WHERE session_id=?", (sid,))
@@ -3974,7 +3974,9 @@ class HermesAgentManager:
             deleted_sess = int(cur_s.rowcount or 0)
             conn.commit()
             nxt_row = conn.execute("SELECT session_id FROM sessions ORDER BY updated_at DESC LIMIT 1").fetchone()
-        next_sid = str(nxt_row[0]) if nxt_row else "default"
+            rem_row = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        remaining_count = int(rem_row[0]) if rem_row else 0
+        next_sid = (str(nxt_row[0]).strip() if nxt_row and nxt_row[0] else "") or "default"
         if next_sid == sid:
             next_sid = "default"
         return {
@@ -3982,6 +3984,7 @@ class HermesAgentManager:
             "deleted_session": sid,
             "deleted_messages": deleted_msgs,
             "deleted_record": bool(deleted_sess),
+            "remaining_count": remaining_count,
             "next_session_id": next_sid,
         }
 

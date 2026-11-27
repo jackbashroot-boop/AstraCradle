@@ -707,6 +707,10 @@ class ModuleAndUpdateManager:
         run_pip: bool = True,
     ) -> tuple[bool, str]:
         """Pulls update from the configured GitHub repo first (updating git clone directly if present), then falls back to zip/local bundles."""
+        try:
+            self.cfg_mgr.save(config)
+        except Exception:
+            pass
         res = self.check_for_updates(config, check_remote=True, repo_dir=repo_dir)
         base_dir = repo_dir or Path(__file__).resolve().parents[2]
 

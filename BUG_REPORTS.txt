@@ -1,0 +1,67 @@
+AstraCradle Bug Reports & Stability Ledger
+============================================
+Add new user/QA bug reports below (or append comments) and AstraCradle maintainers/AI
+can read, reproduce, add chaos tests, fix, and update status directly in this file.
+
+--------------------------------------------------------------------------------
+[BUG-001] Crash when deleting all Hermes AI chats including "default"
+Status: FIXED (verified with chaos/edge-case test suite)
+Reported: 2026-11-16
+Symptoms:
+  - Clicking "Delete Chat" repeatedly until all sessions including "default" are
+    deleted crashed the AstraCradle UI.
+Root Cause:
+  1. `_delete_session()` called `render_hermes_page(app)` synchronously right after
+     `messagebox.askyesno()` inside the `CTkButton` click callback, destroying the
+     `CTkButton`, `CTkTabview`, and `CTkScrollableFrame` while Tk/CustomTkinter
+     still had active event/focus/grab cleanup on those widgets.
+  2. `_render_chat_bubbles()` called `container.update_idletasks()` mid-build and
+     `_sync_wrap` didn't verify `container.winfo_exists()`.
+  3. Clicking Delete Chat on an already-empty "default" session still triggered a
+     full page teardown/rebuild.
+Fix:
+  - Defer `render_hermes_page(app)` via `app.after(20, ...)` (`_schedule_hermes_rerender`)
+    across `_delete_session`, `_new_session`, `_switch_sess`, and `_toggle_fs`.
+  - Normalize empty/whitespace `session_id` to `"default"`.
+  - Cancel active stream events on the deleted session before removal.
+  - Guard empty `"default"` delete as a harmless no-op toast, and guard `winfo_exists()`
+    in `_sync_wrap` + `_post_render_scroll`.
+Tests:
+  - `test_hermes_delete_all_chats_including_default_chaos` (deletes custom + default,
+    repeats delete on empty DB, verifies headless UI re-render and fallback).
+
+--------------------------------------------------------------------------------
+[BUG-002] Post-update auto-restart & preserving live user settings across updates
+Status: FIXED (verified with updater + restart regression tests)
+Reported: 2026-11-16
+Symptoms:
+  1. After accepting an update from GitHub, AstraCradle asked the user to restart
+     manually instead of restarting automatically.
+  2. `reapply_remembered_setup()` could overwrite live `config.json` modules/Hermes
+     fields from older `install_memory.json` snapshots.
+  3. `restart_application()` did not release `single_instance` lock before spawning
+     the restarted child process.
+Fix:
+  - `pull_from_github_and_update()` saves live `config` prior to pulling.
+  - `reapply_remembered_setup()` preserves live `config.json` when `setup_wizard_completed`
+    is True (only restoring from `install_memory.json` on fresh/unconfigured installs).
+  - `restart_application()` releases `self.single_instance.release()` before spawning
+    `[sys.executable, "-m", "astracradle"]`.
+  - `_prompt_github_update_available()` and `on_check_updates()` trigger automatic
+    restart (`self.after(700, self.restart_application)`) on successful update.
+Tests:
+  - `test_update_preserves_live_user_settings_and_auto_restarts`.
+
+--------------------------------------------------------------------------------
+[BUG-003] Samsung Smart TV native YouTube ads vs DNS-level AstraShield blocking
+Status: DOCUMENTED / MITIGATED
+Reported: 2026-11-16
+Notes:
+  - Samsung Tizen UI / Home Screen / ACR telemetry ads (`samsungads.com`,
+    `samsungacr.com`, `acr-us-prd.samsungcloud.tv`) are blocked at DNS level while
+    essential Samsung app/store/clock domains (`time.samsungcloudsolution.com`,
+    `lcprd1.samsungcloudsolution.net`, `imasdk.googleapis.com`) stay allowlisted.
+  - In-stream video ads inside the native Samsung Tizen YouTube app share
+    `*.googlevideo.com` CDN hostnames + SSAI with video playback and cannot be
+    stripped by any DNS sinkhole without third-party TV app or PC/HDMI playback
+    (Firefox/Brave + uBlock Origin) or YouTube Premium.

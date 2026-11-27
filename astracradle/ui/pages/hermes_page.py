@@ -462,9 +462,11 @@ def _render_chat_bubbles(
 
         def _sync_wrap(_evt=None) -> None:
             try:
+                if not container.winfo_exists():
+                    return
                 cw = int(container._parent_canvas.winfo_width() or 0)
             except Exception:
-                cw = 0
+                return
             if cw < 320:
                 return
             for lbl, pad_sub in list(getattr(container, "_hermes_wrappables", []) or []):
@@ -479,13 +481,22 @@ def _render_chat_bubbles(
             container.after(40, _sync_wrap)
         except Exception:
             pass
+
+    def _post_render_scroll() -> None:
+        try:
+            if not container.winfo_exists():
+                return
+            cw_now = int(container._parent_canvas.winfo_width() or 0)
+            if cw_now >= 320:
+                for lbl, pad_sub in list(getattr(container, "_hermes_wrappables", []) or []):
+                    if lbl.winfo_exists():
+                        lbl.configure(wraplength=_calc_wrap(cw_now, pad_sub))
+            container._parent_canvas.yview_moveto(1.0)
+        except Exception:
+            pass
+
     try:
-        container.update_idletasks()
-        cw_now = int(container._parent_canvas.winfo_width() or 0)
-        if cw_now >= 320:
-            for lbl, pad_sub in wrappable_labels:
-                lbl.configure(wraplength=_calc_wrap(cw_now, pad_sub))
-        container._parent_canvas.yview_moveto(1.0)
+        container.after(20, _post_render_scroll)
     except Exception:
         pass
 
@@ -896,7 +907,8 @@ def _build_chat_workspace(
     cfg = app.config_obj
     hm = app.hermes_mgr
 
-    session_id = str(getattr(app, "_hermes_session_id", "default"))
+    session_id = (str(getattr(app, "_hermes_session_id", "default") or "").strip()) or "default"
+    app._hermes_session_id = session_id
     chat_top = ctk.CTkFrame(container, fg_color=p.bg_elevated, corner_radius=10)
     chat_top.pack(fill="x", padx=8, pady=(6, 4))
 
@@ -904,16 +916,29 @@ def _build_chat_workspace(
     row_a.pack(fill="x", padx=10, pady=(8, 4))
 
     sessions = hm.list_sessions(limit=20)
-    sess_ids = [s["session_id"] for s in sessions] or ["default"]
+    sess_ids = [s["session_id"] for s in sessions if s.get("session_id")] or ["default"]
     if session_id not in sess_ids:
         sess_ids.insert(0, session_id)
     sess_var = tk.StringVar(value=session_id)
 
     ctk.CTkLabel(row_a, text="Session:", font=f["small_bold"]).pack(side="left", padx=(0, 6))
 
+    def _schedule_hermes_rerender() -> None:
+        def _do() -> None:
+            try:
+                if app.winfo_exists() and getattr(app, "current_nav", "") == "hermes":
+                    render_hermes_page(app)
+            except Exception:
+                pass
+
+        try:
+            app.after(20, _do)
+        except Exception:
+            pass
+
     def _switch_sess(val: str) -> None:
-        app._hermes_session_id = val
-        render_hermes_page(app)
+        app._hermes_session_id = (str(val or "").strip()) or "default"
+        _schedule_hermes_rerender()
 
     ctk.CTkOptionMenu(row_a, values=sess_ids, variable=sess_var, width=180, command=_switch_sess).pack(side="left", padx=(0, 6))
 
@@ -921,21 +946,44 @@ def _build_chat_workspace(
         import time as _t
 
         app._hermes_session_id = f"session_{int(_t.time())}"
-        render_hermes_page(app)
+        _schedule_hermes_rerender()
 
     def _delete_session() -> None:
         from tkinter import messagebox
 
+        active_sid = (str(getattr(app, "_hermes_session_id", session_id) or "").strip()) or "default"
+        existing_sessions = hm.list_sessions(limit=50)
+        has_db_record = any(s.get("session_id") == active_sid for s in existing_sessions)
+        has_msgs = bool(hm.get_session_messages(active_sid, limit=1))
+        if active_sid == "default" and not has_db_record and not has_msgs:
+            app._hermes_session_id = "default"
+            app.show_toast("Chat 'default' is already empty and ready.")
+            return
+
         if getattr(app, "_show_startup_popups", True):
             if not messagebox.askyesno(
                 "Delete Chat Session",
-                f"Delete chat session '{session_id}' and all its messages?\n\n(Your MEMORY.md and Knowledge Library stay intact.)",
+                f"Delete chat session '{active_sid}' and all its messages?\n\n(Your MEMORY.md and Knowledge Library stay intact.)",
             ):
                 return
-        res_del = hm.delete_session(session_id)
-        app._hermes_session_id = str(res_del.get("next_session_id") or "default")
-        app.show_toast(f"Deleted chat '{session_id}' ({res_del.get('deleted_messages', 0)} messages removed).")
-        render_hermes_page(app)
+
+        if getattr(app, "_hermes_live_session_id", "") == active_sid:
+            ev = getattr(app, "_hermes_cancel_event", None)
+            if ev is not None:
+                try:
+                    ev.set()
+                except Exception:
+                    pass
+            app._hermes_live_session_id = ""
+            app._hermes_live_thinking = ""
+
+        res_del = hm.delete_session(active_sid)
+        next_sid = (str(res_del.get("next_session_id") or "").strip()) or "default"
+        app._hermes_session_id = next_sid
+        app.show_toast(
+            f"Deleted chat '{active_sid}' ({res_del.get('deleted_messages', 0)} messages removed)."
+        )
+        _schedule_hermes_rerender()
 
     ctk.CTkButton(row_a, text="+ New Chat", width=96, height=28, fg_color=p.bg_card, command=_new_session).pack(side="left", padx=(0, 6))
     ctk.CTkButton(
@@ -966,7 +1014,7 @@ def _build_chat_workspace(
 
     def _toggle_fs() -> None:
         app._hermes_fullscreen_chat = not bool(getattr(app, "_hermes_fullscreen_chat", False))
-        render_hermes_page(app)
+        _schedule_hermes_rerender()
 
     ctk.CTkButton(
         row_a,
@@ -1325,8 +1373,16 @@ def _build_chat_workspace(
 
 def render_hermes_page(app: AstraCradleApp) -> None:
     parent = app.hermes_scroll
-    for child in parent.winfo_children():
-        child.destroy()
+    try:
+        if not parent.winfo_exists():
+            return
+    except Exception:
+        return
+    for child in list(parent.winfo_children()):
+        try:
+            child.destroy()
+        except Exception:
+            pass
 
     p = app.palette
     f = app.fonts

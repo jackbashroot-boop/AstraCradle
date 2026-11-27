@@ -9423,14 +9423,17 @@ class AstraCradleApp(ctk.CTk):
                     self.settings_ver_lbl.configure(text=f"{__app_name__} · {new_info['display_version']}")
                 if hasattr(self, "settings_gh_ver_lbl") and self.settings_gh_ver_lbl.winfo_exists():
                     self.settings_gh_ver_lbl.configure(
-                        text=f"GitHub Sync: Updated to {latest} — restart to apply",
+                        text=f"GitHub Sync: Updated to {latest} — restarting automatically...",
                         text_color=self.palette.accent_jade,
                     )
                 if hasattr(self, "upd_status_lbl") and self.upd_status_lbl.winfo_exists():
                     self.upd_status_lbl.configure(text=msg)
-                self.show_toast(msg)
+                self.show_toast(
+                    f"Updated to {latest}! Restarting AstraCradle automatically..." if ok else msg,
+                    important=True,
+                )
                 if ok and self._show_startup_popups:
-                    messagebox.showinfo("AstraCradle Updated!", msg)
+                    self.after(700, self.restart_application)
 
             try:
                 self.after(0, _done)
@@ -9516,13 +9519,16 @@ class AstraCradleApp(ctk.CTk):
                             self.settings_ver_lbl.configure(text=f"{__app_name__} · {new_info['display_version']}")
                         if hasattr(self, "settings_gh_ver_lbl") and self.settings_gh_ver_lbl.winfo_exists():
                             self.settings_gh_ver_lbl.configure(
-                                text=f"GitHub Sync: Updated to {res.latest_version} — restart to apply",
+                                text=f"GitHub Sync: Updated to {res.latest_version} — restarting automatically...",
                                 text_color=self.palette.accent_jade,
                             )
                     self.upd_status_lbl.configure(text=msg)
-                    self.show_toast(msg)
+                    self.show_toast(
+                        f"Updated to {res.latest_version}! Restarting AstraCradle automatically..." if ok else msg,
+                        important=True,
+                    )
                     if ok and self._show_startup_popups:
-                        messagebox.showinfo("AstraCradle Updated!", msg)
+                        self.after(700, self.restart_application)
                     return
             bundle_cand = Path(res.release_notes) if res.release_notes and Path(res.release_notes).exists() else None
             if bundle_cand is not None:
@@ -9540,7 +9546,12 @@ class AstraCradleApp(ctk.CTk):
                             msg = f"{msg} ({'; '.join(reapplied)})"
                         self._refresh_install_memory_label()
                     self.upd_status_lbl.configure(text=msg)
-                    self.show_toast(msg)
+                    self.show_toast(
+                        "Update installed! Restarting AstraCradle automatically..." if ok else msg,
+                        important=True,
+                    )
+                    if ok and self._show_startup_popups:
+                        self.after(700, self.restart_application)
                     return
             elif self.config_obj.auto_update_mode == "silent_auto" or messagebox.askyesno(
                 f"AstraCradle Update Ready (v{res.latest_version})",
@@ -10120,7 +10131,7 @@ class AstraCradleApp(ctk.CTk):
         )
 
     def restart_application(self) -> None:
-        """Cleanly saves state, spawns a fresh AstraCradle instance, and exits this window."""
+        """Cleanly saves state, releases single-instance lock, spawns a fresh AstraCradle instance, and exits this window."""
         import subprocess
         import sys
 
@@ -10133,11 +10144,20 @@ class AstraCradleApp(ctk.CTk):
             self.adblock_shield.stop_dns_sinkhole()
             self.tray.stop()
             self.crash_analyzer.mark_clean_shutdown()
+            if hasattr(self, "single_instance"):
+                self.single_instance.release()
         except Exception:
             pass
         if self._show_startup_popups:
-            subprocess.Popen([sys.executable, "-m", "astracradle"], start_new_session=True)
-        self.destroy()
+            subprocess.Popen([sys.executable, "-m", "astracradle"], start_new_session=True, close_fds=True)
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        try:
+            self.quit()
+        except Exception:
+            pass
 
     def on_setup_and_restart_astrashield(self) -> None:
         """Configures AstraShield host + DNS sinkhole with auto-start on startup, then restarts AstraCradle."""
