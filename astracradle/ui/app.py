@@ -9140,6 +9140,24 @@ class AstraCradleApp(ctk.CTk):
                         if cyc.get("ran") and cyc.get("actions_this_cycle"):
                             summary_txt = "; ".join(cyc["actions_this_cycle"][:2])
                             self.after(0, lambda m=summary_txt: self.show_toast(f"Hermes Guardian: {m}"))
+                        g_alerts = list(cyc.get("guardian_alerts") or [])
+                        if g_alerts:
+                            def _alert_guardian(items=g_alerts) -> None:
+                                first = items[0]
+                                msg = f"{first.get('title', 'Safety Alert')}: {first.get('target_path', '')} — {first.get('reason', '')}"
+                                self.show_toast(msg, color=self.palette.red, important=True)
+                                try:
+                                    self.tray.notify("AstraCradle File Guardian Warning", msg[:140])
+                                except Exception:
+                                    pass
+                                if self._show_startup_popups:
+                                    lines = [f"• [{it.get('severity', 'warning').upper()}] {it.get('target_path', '')}\n  {it.get('reason', '')}" for it in items[:4]]
+                                    messagebox.showwarning(
+                                        "AstraCradle Pre-Activation Safety Warning",
+                                        "Review these newly detected/incoming files or startup items BEFORE enabling or running them:\n\n" + "\n\n".join(lines),
+                                    )
+
+                            self.after(0, _alert_guardian)
                     except Exception:
                         pass
                 sensors = (

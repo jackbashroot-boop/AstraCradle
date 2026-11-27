@@ -15,6 +15,10 @@ All notable updates and fixes to **AstraCradle** (`v2.5.1+`) are documented here
 - Polls automatically every 60s and triggers an **important alert toast + desktop tray notification** whenever any Bluetooth device battery drops below **20%** (with recharge hysteresis at 25%).
 - Displays live and tracked Bluetooth device battery badges in **Clean & Protect → Smart TV, Bluetooth & Network Devices** and `python3 -m astracradle --scan-tv`.
 
+### Hermes AI Full PC File Catalog, Passive Idle Scanner & Pre-Activation Guard
+- Added `PcFileGuardian` (`astracradle/core/file_guardian.py`) and the `astra_file_guardian` Hermes tool so Hermes can catalog PC files/drives, capture full system/hardware/package/port inventory, passively scan during idle time (`cpu < 25%` and not gaming), verify incoming files (`Downloads`/`Desktop`/`autostart`/`systemd user`), and warn the user **before** risky files or startup units are turned on.
+- Updated Hermes prompts, tool routing, and the turn-0 grounding safety net so Astra/Hermes uses local OS tools directly instead of claiming it lacks OS/hardware access.
+
 ### Hermes AI Chat Delete, Live Working Indicator & Stability Fixes
 - Added **Delete Chat** button next to **+ New Chat** in Hermes AI.
 - Added an animated `Working... (Xs)` indicator (cycling `.` / `..` / `...` + elapsed timer) in both the active chat bubble and a live status bar above the input box, and preserved live streaming/step updates even when switching AstraCradle menus or tabs while Hermes is working.

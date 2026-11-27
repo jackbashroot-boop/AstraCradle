@@ -1362,6 +1362,9 @@ class HermesAgentManager:
         self.custom_tools_scripts_dir = self.custom_tools_dir / "scripts"
         self.custom_tools_versions_dir = self.custom_tools_dir / "versions"
         self.sop_templates_path = self.hermes_home / "sop_templates.json"
+        from .file_guardian import PcFileGuardian
+
+        self.file_guardian = PcFileGuardian(self.hermes_home / "file_guardian.db")
 
         self._gateway_proc: subprocess.Popen | None = None
         self._ollama_proc: subprocess.Popen | None = None
@@ -5360,6 +5363,36 @@ class HermesAgentManager:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_file_guardian",
+                    "description": "Full PC file & drive catalog, passive idle-only background scanner, incoming file safety verifier, and pre-activation warning engine (notifies before risky files/startups are turned on).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": [
+                                    "start_full_catalog_and_guard",
+                                    "scan_now_batch",
+                                    "scan_incoming",
+                                    "verify_file",
+                                    "search_catalog",
+                                    "status",
+                                    "acknowledge_alerts",
+                                ],
+                            },
+                            "path": {"type": "string", "description": "File or directory path for verify_file"},
+                            "query": {"type": "string", "description": "Search filter for search_catalog"},
+                            "risk_filter": {"type": "string", "enum": ["", "safe", "warning", "high_risk"]},
+                            "max_files": {"type": "integer"},
+                            "limit": {"type": "integer"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+            },
         ]
         tools_list = [
             # Dynamic enabled custom tools registered by the agent
@@ -6869,6 +6902,72 @@ class HermesAgentManager:
                     config=config,
                 )
 
+            if name == "astra_file_guardian":
+                act = str(args.get("action") or "status").strip().lower()
+                if act == "start_full_catalog_and_guard":
+                    config.file_guardian_catalog_enabled = True
+                    config.file_guardian_incoming_enabled = True
+                    try:
+                        self.cfg_mgr.save(config)
+                    except Exception:
+                        pass
+                    start_res = self.file_guardian.start_full_catalog()
+                    batch_res = self.file_guardian.run_idle_catalog_batch(
+                        max_files=int(args.get("max_files") or 1200),
+                        max_seconds=1.5,
+                        force=True,
+                    )
+                    inc_res = self.file_guardian.scan_incoming_and_prelaunch()
+                    status_res = self.file_guardian.get_status()
+                    inv = status_res.get("system_inventory") or {}
+                    try:
+                        self.store_library_item(
+                            title="PC Full File & System Catalog Baseline",
+                            body=json.dumps({"inventory": inv, "drives": status_res.get("drives", []), "files_cataloged": status_res.get("files_cataloged", 0)}, indent=2),
+                            category="pc_catalog",
+                            tags="pc catalog files drives inventory guardian",
+                        )
+                    except Exception:
+                        pass
+                    sudo_note = (
+                        "Permission Level 4 is active — I can prompt you for your sudo password via sudo_exec whenever root-owned folders or system fixes require elevation."
+                        if perm == "sudo_with_prompt"
+                        else f"Currently at Permission Level '{perm}': all user-readable drives/files are cataloging passively when PC is idle; switch to Level 4 ('User Control + Sudo Only When You Type Password') in Hermes OS AI if you want sudo password prompts for root-only paths."
+                    )
+                    return {
+                        "ok": True,
+                        "action": "start_full_catalog_and_guard",
+                        "catalog_started": start_res,
+                        "initial_batch": batch_res,
+                        "incoming_scan": inc_res,
+                        "status": status_res,
+                        "sudo_capability_note": sudo_note,
+                    }
+                if act == "scan_now_batch":
+                    return self.file_guardian.run_idle_catalog_batch(
+                        max_files=int(args.get("max_files") or 800),
+                        max_seconds=1.5,
+                        force=True,
+                    )
+                if act == "scan_incoming":
+                    return self.file_guardian.scan_incoming_and_prelaunch()
+                if act == "verify_file":
+                    p_str = str(args.get("path") or "").strip()
+                    if not p_str:
+                        return {"ok": False, "error": "Missing path for verify_file"}
+                    return {"ok": True, **self.file_guardian.verify_file_safety(Path(p_str).expanduser(), deep_hash=True, run_clamav=True)}
+                if act == "search_catalog":
+                    rows = self.file_guardian.search_catalog(
+                        str(args.get("query") or ""),
+                        risk_filter=str(args.get("risk_filter") or ""),
+                        limit=int(args.get("limit") or 40),
+                    )
+                    return {"ok": True, "count": len(rows), "items": rows}
+                if act == "acknowledge_alerts":
+                    cleared = self.file_guardian.acknowledge_alerts()
+                    return {"ok": True, "acknowledged": cleared}
+                return self.file_guardian.get_status()
+
             if name == "shell_exec":
                 cmd = str(args.get("command", "")).strip()
                 if not cmd:
@@ -7530,12 +7629,12 @@ class HermesAgentManager:
             "astra_verify_work",
         }
 
-        if any(w in low for w in ("scan", "fix", "autofix", "heal", "clean", "ram", "cpu", "gpu", "thermal", "temp", "fan", "probalance", "process", "kill", "startup", "autorun", "rollback", "undo", "dependency", "dependencies", "audio", "pipewire", "display", "usb", "stutter", "escalate")):
+        if any(w in low for w in ("scan", "fix", "autofix", "heal", "clean", "ram", "cpu", "gpu", "thermal", "temp", "fan", "probalance", "process", "kill", "startup", "autorun", "rollback", "undo", "dependency", "dependencies", "audio", "pipewire", "display", "usb", "stutter", "escalate", "catalog", "drive", "drives", "incoming", "passive", "idle", "notify", "before", "turned on", "safe", "malware", "virus")):
             selected_names.update({
-                "astra_full_os_autofix", "astra_deep_scan", "astra_fix_safe", "astra_process_lookup", "astra_process_manage",
+                "astra_file_guardian", "astra_full_os_autofix", "astra_deep_scan", "astra_fix_safe", "astra_process_lookup", "astra_process_manage",
                 "astra_probalance_and_profile", "astra_startup_audit", "astra_self_heal_repair",
                 "astra_rollback_undo", "astra_dependencies", "astra_pc_usage_summary",
-                "astra_thermals_and_fans", "astra_av_and_peripherals",
+                "astra_thermals_and_fans", "astra_av_and_peripherals", "shell_exec", "sudo_exec",
             })
         if any(w in low for w in ("wifi", "wi-fi", "network", "lan", "subnet", "dns", "internet", "ping", "remote", "phone", "iphone", "android", "watch", "tailscale", "adb", "astrabeam", "sunshine", "tv", "samsung", "lg", "roku", "chromecast", "sinkhole", "astrashield", "adblock", "youtube", "aim", "devices")):
             selected_names.update({"astra_wifi_check", "astra_wifi_optimize", "astra_lan_and_sinkhole", "astra_remote_tasks", "astra_services_and_storage"})
@@ -8257,6 +8356,34 @@ class HermesAgentManager:
                     pass
 
             # 6. Skill & Knowledge Library Auto-Prune + Periodic Web Reference Prefetch
+            guardian_alerts: list[dict[str, Any]] = []
+            try:
+                if bool(getattr(config, "file_guardian_catalog_enabled", False)):
+                    cpu_now = float(getattr(snapshot, "cpu_percent", 0.0) or 0.0)
+                    fg_batch = self.file_guardian.run_idle_catalog_batch(
+                        cpu_percent=cpu_now,
+                        is_gaming=is_gaming,
+                        max_files=250,
+                        max_seconds=0.75,
+                    )
+                    if fg_batch.get("ran") and fg_batch.get("processed", 0) > 0:
+                        actions_taken.append(f"Idle File Catalog indexed {fg_batch['processed']} file(s)")
+                    if fg_batch.get("completed_full_pass"):
+                        actions_taken.append("Full PC File Catalog pass completed")
+                if not is_gaming and bool(getattr(config, "file_guardian_incoming_enabled", True)):
+                    inc_res = self.file_guardian.scan_incoming_and_prelaunch()
+                    if inc_res.get("flagged"):
+                        warnings.append(f"{len(inc_res['flagged'])} incoming/pre-launch safety alert(s)")
+                        for fl in inc_res["flagged"][:4]:
+                            self.record_hermes_diagnostic(
+                                "file_guardian_prelaunch_alert",
+                                "warning",
+                                f"{fl.get('title', 'Alert')}: {fl.get('path', '')} — {fl.get('reason', '')}",
+                                "Review before launching or enabling.",
+                            )
+                guardian_alerts = self.file_guardian.pop_unnotified_alerts(limit=5)
+            except Exception:
+                pass
             try:
                 if bool(getattr(config, "hermes_library_auto_prune", True)):
                     prune_res = self.prune_library(config, aggressive=False)
@@ -8286,6 +8413,7 @@ class HermesAgentManager:
                 "health": ("Needs Attention" if warnings else "Protected & Healthy"),
                 "warnings": warnings,
                 "actions_this_cycle": actions_taken,
+                "guardian_alerts": guardian_alerts,
                 "recent_actions": hist[:25],
                 "rocm_conflict": rocm_conflict,
                 "permission_level": perm,
@@ -8397,6 +8525,7 @@ class HermesAgentManager:
             "browse", "fetch", "skill", "memory", "remember", "cron", "remote",
             "device", "devices", "tailscale", "bluetooth", "astrabeam", "astracradle", "astra",
             "tv", "samsung", "lg", "roku", "chromecast", "sinkhole", "astrashield", "adblock", "ad-block", "lan", "subnet", "network", "youtube", "dns", "aim",
+            "catalog", "drive", "drives", "incoming", "passive", "idle", "notify", "before", "turned on", "safe", "malware", "virus", "library",
             "changes", "improve", "review", "feature", "learned", "usage", "apps",
             "games", "tool", "custom", "status", "audit", "summary", "summarize",
             "library", "topic", "research", "storage", "harvest", "autofix", "subagent", "sub-agent", "escalate",
@@ -8410,9 +8539,9 @@ class HermesAgentManager:
         self.ensure_hermes_home(config)
         persona = self.get_active_persona(config)
         return (
-            f"You are {persona['name']} ({persona['badge']}), AstraCradle's integrated PC AI assistant.\n"
+            f"You are {persona['name']} ({persona['badge']}), AstraCradle's integrated PC AI assistant running directly on the user's computer with full local OS diagnostic, file catalog, and guardian tools.\n"
             f"Traits: {persona['traits']}.\n"
-            "Never invent fake percentages, endpoints, files, or metrics. Answer clearly, concisely, and helpfully in plain readable text without markdown code fences."
+            "Never claim you lack access to the user's PC, files, drives, or OS. Never invent fake percentages, endpoints, files, or metrics. Answer clearly, concisely, and helpfully in plain readable text without markdown code fences."
         )
 
     def _build_system_prompt(self, config: AppConfig) -> str:
@@ -8446,7 +8575,10 @@ class HermesAgentManager:
             f"TopApps={apps_txt} | Games={games_txt} | Skills={skill_summary} | CustomTools={ct_summary}\n"
             f"Internal Deep Memory Index: KnownTopics=[{topics_txt}] | Categories=[{cats_txt}]\n"
             f"User Notes: {user_txt}\nMemory: {mem}\n"
-            "Action & Self-Development Assistant Guidelines: ALWAYS check your own internal Knowledge Library, MEMORY.md, Skills, and local files FIRST (`astra_knowledge_library(action='deep_recall')` / `memory_search`) before going to `web_search`, especially when a prompt relates to your KnownTopics. "
+            "Action & Self-Development Assistant Guidelines: You ARE running directly on the user's local PC inside AstraCradle with REAL OS tools (`astra_file_guardian`, `astra_deep_scan`, `astra_services_and_storage`, `astra_system_status`, `shell_exec`, `sudo_exec`, `list_dir`, `file_read`). "
+            "NEVER say 'I don't have direct access to your hardware or operating system' or 'I can't scan/catalog files or run processes'. "
+            "When the user asks to scan their PC, catalog all files/drives, passively scan while idle, scan incoming files, or notify BEFORE risky items turn on, IMMEDIATELY call `astra_file_guardian(action='start_full_catalog_and_guard')` (and `sudo_exec` when Permission Level 4 allows elevated inspection, or note how to enable Level 4 for root-only paths). "
+            "ALWAYS check your own internal Knowledge Library, MEMORY.md, Skills, and local files FIRST (`astra_knowledge_library(action='deep_recall')` / `memory_search`) before going to `web_search`, especially when a prompt relates to your KnownTopics. "
             "If the user references a picture, video, audio clip, PDF, or Office document, inspect it with `astra_inspect_media` (or attached multimodal frames). "
             "Answer the user's exact request directly—if they ask for improvements, tests, or skills, propose concrete file-specific additions instead of saying no action is needed. "
             "You can create, combine, and improve your own reusable custom tools via `astra_custom_tool_forge` whenever a recurring multi-step workflow would make the user's life easier. "
@@ -8959,6 +9091,9 @@ class HermesAgentManager:
                         auto_calls.append({"id": "auto_scan", "function": {"name": "astra_deep_scan", "arguments": {}}})
                     if any(k in low_p for k in ("learned", "pc usage", "top apps", "remote task")):
                         auto_calls.append({"id": "auto_usage", "function": {"name": "astra_pc_usage_summary", "arguments": {}}})
+                    if any(k in low_p for k in ("catalog", "all files", "all drives", "full scan", "incoming files", "passively scan", "before they are turned on")):
+                        auto_calls.append({"id": "auto_fg", "function": {"name": "astra_file_guardian", "arguments": {"action": "start_full_catalog_and_guard"}}})
+                        auto_calls.append({"id": "auto_svc", "function": {"name": "astra_services_and_storage", "arguments": {}}})
                     if auto_calls:
                         tool_calls = auto_calls
                         content = ""

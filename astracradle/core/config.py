@@ -436,6 +436,8 @@ class AppConfig:
     bluetooth_handshake_fallback: bool = True
     bluetooth_battery_monitor_enabled: bool = True
     bluetooth_low_battery_threshold: int = 20
+    file_guardian_catalog_enabled: bool = False
+    file_guardian_incoming_enabled: bool = True
     wifi_weak_rssi_threshold_dbm: int = -72
     auto_heal_features_enabled: bool = True
     consent_auto_install_deps: bool = False
