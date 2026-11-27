@@ -434,6 +434,8 @@ class AppConfig:
     astrabeam_lockout_seconds: int = 300
     auto_connect_proximity_devices: bool = True
     bluetooth_handshake_fallback: bool = True
+    bluetooth_battery_monitor_enabled: bool = True
+    bluetooth_low_battery_threshold: int = 20
     wifi_weak_rssi_threshold_dbm: int = -72
     auto_heal_features_enabled: bool = True
     consent_auto_install_deps: bool = False

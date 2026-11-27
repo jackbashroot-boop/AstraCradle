@@ -3314,6 +3314,102 @@ def test_update_preserves_live_user_settings_and_auto_restarts(monkeypatch) -> N
         assert (Path(__file__).resolve().parents[1] / "BUG_REPORTS.txt").exists()
 
 
+def test_bluetooth_battery_tracking_and_low_battery_important_alert(monkeypatch) -> None:
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    from astracradle.core.config import ConfigManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.core.lan_tv_shield import BluetoothDeviceInfo, LanTvAdShield
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td))
+        j = ForensicJournal(cm)
+        tv = LanTvAdShield(j, state_dir=cm.base_dir)
+
+        assert tv._parse_bt_battery_from_info("Battery Percentage: 0x55 (85)") == (85, "bluetoothctl")
+        assert tv._parse_bt_battery_from_info("Battery Percentage: 17") == (17, "bluetoothctl")
+
+        # Mock Linux bluetoothctl + upower scan
+        monkeypatch.setattr("astracradle.core.lan_tv_shield.platform.system", lambda: "Linux")
+        monkeypatch.setattr("astracradle.core.lan_tv_shield.shutil.which", lambda cmd: f"/usr/bin/{cmd}" if cmd in ("bluetoothctl", "upower") else None)
+
+        def _fake_run(cmd, **_kw):
+            if cmd[:2] == ["bluetoothctl", "devices"]:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout="Device AA:BB:CC:11:22:33 Sony WH-1000XM5\nDevice DD:EE:FF:44:55:66 DualSense Controller\n",
+                    stderr="",
+                )
+            if cmd[:3] == ["bluetoothctl", "info", "AA:BB:CC:11:22:33"]:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout="Paired: yes\nConnected: yes\nTrusted: yes\nIcon: audio-headphones\nBattery Percentage: 0x55 (85)\n",
+                    stderr="",
+                )
+            if cmd[:3] == ["bluetoothctl", "info", "DD:EE:FF:44:55:66"]:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout="Paired: yes\nConnected: yes\nIcon: input-gaming\n",
+                    stderr="",
+                )
+            if cmd[:2] == ["upower", "-d"]:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout="Device: /org/freedesktop/UPower/devices/gaming_input_dd_ee_ff\n  native-path: dd:ee:ff:44:55:66\n  percentage: 15%\n",
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+        monkeypatch.setattr("astracradle.core.lan_tv_shield.subprocess.run", _fake_run)
+        scanned = tv.scan_bluetooth_devices()
+        by_mac = {d.mac: d for d in scanned}
+        assert by_mac["AA:BB:CC:11:22:33"].battery_pct == 85
+        assert by_mac["DD:EE:FF:44:55:66"].battery_pct == 15
+
+        # 1. First scan below 20% -> triggers newly_low_devices alert
+        rep1 = tv.scan_and_track_bluetooth_batteries(low_threshold_pct=20, devices_override=scanned)
+        assert len(rep1["low_battery_devices"]) == 1
+        assert len(rep1["newly_low_devices"]) == 1
+        alert_txt = tv.format_low_battery_alert(rep1["newly_low_devices"], 20)
+        assert "DualSense Controller" in alert_txt and "15%" in alert_txt and "<20%" in alert_txt
+
+        # 2. Still below 20% on next poll -> stays tracked as low, does not spam newly_low_devices
+        still_low = [
+            BluetoothDeviceInfo(mac="AA:BB:CC:11:22:33", name="Sony WH-1000XM5", device_kind="audio", paired=True, connected=True, battery_pct=82),
+            BluetoothDeviceInfo(mac="DD:EE:FF:44:55:66", name="DualSense Controller", device_kind="input", paired=True, connected=True, battery_pct=14),
+        ]
+        rep2 = tv.scan_and_track_bluetooth_batteries(low_threshold_pct=20, devices_override=still_low)
+        assert len(rep2["low_battery_devices"]) == 1
+        assert rep2["newly_low_devices"] == []
+
+        # 3. Recharged >= 25% -> clears low_alerted, then dropping below 20% again alerts anew
+        recharged = [
+            BluetoothDeviceInfo(mac="DD:EE:FF:44:55:66", name="DualSense Controller", device_kind="input", paired=True, connected=True, battery_pct=65),
+        ]
+        rep3 = tv.scan_and_track_bluetooth_batteries(low_threshold_pct=20, devices_override=recharged)
+        assert rep3["low_battery_devices"] == []
+        dropped_again = [
+            BluetoothDeviceInfo(mac="DD:EE:FF:44:55:66", name="DualSense Controller", device_kind="input", paired=True, connected=True, battery_pct=18),
+        ]
+        rep4 = tv.scan_and_track_bluetooth_batteries(low_threshold_pct=20, devices_override=dropped_again)
+        assert len(rep4["newly_low_devices"]) == 1
+
+        # Persisted tracked list remembers devices even if temporarily disconnected
+        tracked = tv.get_tracked_bluetooth_devices()
+        assert len(tracked) == 2
+        assert any(t["mac"] == "AA:BB:CC:11:22:33" and t["battery_pct"] == 82 for t in tracked)
+
+        app_src = (Path(__file__).resolve().parents[1] / "astracradle" / "ui" / "app.py").read_text(encoding="utf-8")
+        assert "bt_battery_update" in app_src
+        assert "important=True" in app_src and "Bluetooth Battery Alerts (<20%)" in app_src
+
+
+
 
 
 

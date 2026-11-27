@@ -667,7 +667,8 @@ def run_cli(args: argparse.Namespace) -> int:
         lan_ip = sh.get_lan_ipv4()
         gw_ip = tv.get_default_gateway_ip()
         devs = tv.scan_lan_devices(sh, ssdp_timeout=0.6)
-        bdevs = tv.scan_bluetooth_devices()
+        bt_report = tv.scan_and_track_bluetooth_batteries(low_threshold_pct=int(getattr(cfg, "bluetooth_low_battery_threshold", 20)))
+        bdevs = bt_report["devices"]
         print(
             f"LAN AstraShield TV Primary DNS: {lan_ip} | Failsafe Secondary DNS: {gw_ip}\n"
             f"Discovered {len(devs)} Smart TV / LAN device(s):"
@@ -677,7 +678,12 @@ def run_cli(args: argparse.Namespace) -> int:
         print(f"Discovered {len(bdevs)} Bluetooth device(s):")
         for bt in bdevs:
             st = "Connected" if bt.connected else ("Paired" if bt.paired else "Available")
-            print(f"  [BT:{bt.device_kind.upper()}] {bt.name} ({bt.mac}) — {st}")
+            bstr = f" · Battery {bt.battery_pct}%" if bt.battery_pct is not None else ""
+            if bt.battery_pct is not None and bt.battery_pct < 20:
+                bstr += " [LOW <20%!]"
+            print(f"  [BT:{bt.device_kind.upper()}] {bt.name} ({bt.mac}) — {st}{bstr}")
+        if bt_report.get("low_battery_devices"):
+            print("IMPORTANT:", tv.format_low_battery_alert(bt_report["low_battery_devices"], bt_report["threshold_pct"]))
         return 0
 
     if args.tv_restore:

@@ -86,6 +86,9 @@ class BluetoothDeviceInfo:
     paired: bool = False
     connected: bool = False
     trusted: bool = False
+    battery_pct: int | None = None
+    battery_source: str = ""
+    last_seen: str = ""
 
 
 class LanTvAdShield:
@@ -95,6 +98,7 @@ class LanTvAdShield:
         self.journal = journal
         self.state_dir = state_dir or journal.cfg_mgr.base_dir
         self.failsafe_path = self.state_dir / "tv_failsafe_state.json"
+        self.bluetooth_tracker_path = self.state_dir / "bluetooth_battery_tracker.json"
 
     @staticmethod
     def _validate_ipv4(ip: str) -> str | None:
@@ -365,11 +369,87 @@ class LanTvAdShield:
             return "input"
         return "device"
 
+    @staticmethod
+    def _parse_bt_battery_from_info(itxt: str) -> tuple[int | None, str]:
+        if not itxt:
+            return None, ""
+        m_hex = re.search(r"Battery\s+Percentage:\s*0x[0-9a-fA-F]+\s*\((\d{1,3})\)", itxt)
+        if m_hex:
+            val = int(m_hex.group(1))
+            if 0 <= val <= 100:
+                return val, "bluetoothctl"
+        m_dec = re.search(r"Battery\s+Percentage:\s*(\d{1,3})\b", itxt)
+        if m_dec:
+            val = int(m_dec.group(1))
+            if 0 <= val <= 100:
+                return val, "bluetoothctl"
+        return None, ""
+
+    @staticmethod
+    def _probe_linux_bluetooth_batteries() -> dict[str, tuple[int, str]]:
+        """Collects Bluetooth device battery percentages from UPower and /sys/class/power_supply."""
+        found: dict[str, tuple[int, str]] = {}
+        # 1. sysfs power_supply entries (e.g., hid-aa:bb:cc:dd:ee:ff-battery or device/uniq)
+        ps_root = Path("/sys/class/power_supply")
+        if ps_root.exists():
+            try:
+                for entry in ps_root.iterdir():
+                    cap_f = entry / "capacity"
+                    if not cap_f.exists():
+                        continue
+                    try:
+                        pct = int(cap_f.read_text(encoding="utf-8", errors="ignore").strip())
+                    except Exception:
+                        continue
+                    if not (0 <= pct <= 100):
+                        continue
+                    keys: list[str] = [entry.name]
+                    for sub in ("uevent", "device/uniq", "model_name"):
+                        sf = entry / sub
+                        if sf.exists():
+                            try:
+                                keys.append(sf.read_text(encoding="utf-8", errors="ignore"))
+                            except Exception:
+                                pass
+                    blob = "\n".join(keys)
+                    m_mac = re.search(r"([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}", blob)
+                    if m_mac:
+                        mac = m_mac.group(0).replace("-", ":").upper()
+                        found[mac] = (pct, "sysfs")
+            except Exception:
+                pass
+        # 2. UPower dump (covers BlueZ experimental battery + HID++ + headphones/controllers)
+        if shutil.which("upower"):
+            try:
+                up = subprocess.run(["upower", "-d"], capture_output=True, text=True, timeout=3, check=False)
+                for block in re.split(r"\n(?=Device:\s)", up.stdout or ""):
+                    if not block.strip():
+                        continue
+                    m_pct = re.search(r"percentage:\s*(\d{1,3})\s*%", block, re.IGNORECASE)
+                    if not m_pct:
+                        continue
+                    pct = int(m_pct.group(1))
+                    if not (0 <= pct <= 100):
+                        continue
+                    m_mac = re.search(r"([0-9A-Fa-f]{2}[:\-_]){5}[0-9A-Fa-f]{2}", block)
+                    if m_mac:
+                        mac = m_mac.group(0).replace("-", ":").replace("_", ":").upper()
+                        found.setdefault(mac, (pct, "upower"))
+                    else:
+                        m_mod = re.search(r"model:\s*(.+)", block, re.IGNORECASE)
+                        if m_mod and ("bluetooth" in block.lower() or "headset" in block.lower() or "mouse" in block.lower() or "keyboard" in block.lower() or "controller" in block.lower()):
+                            found.setdefault(f"NAME:{m_mod.group(1).strip().lower()}", (pct, "upower"))
+            except Exception:
+                pass
+        return found
+
     def scan_bluetooth_devices(self) -> list[BluetoothDeviceInfo]:
-        """Scans paired and nearby Bluetooth devices (TVs, speakers, remotes, headphones)."""
+        """Scans paired and nearby Bluetooth devices (TVs, speakers, remotes, headphones) with battery levels."""
         out: list[BluetoothDeviceInfo] = []
         sys_name = platform.system()
+        now_iso = utc_now_iso()
         if sys_name == "Linux" and shutil.which("bluetoothctl"):
+            extra_batts = self._probe_linux_bluetooth_batteries()
             try:
                 proc = subprocess.run(
                     ["bluetoothctl", "devices"],
@@ -385,6 +465,8 @@ class LanTvAdShield:
                     mac, name = m.group(1).upper(), m.group(2).strip()
                     paired = connected = trusted = False
                     icon = ""
+                    batt_pct: int | None = None
+                    batt_src = ""
                     try:
                         iproc = subprocess.run(
                             ["bluetoothctl", "info", mac],
@@ -400,8 +482,14 @@ class LanTvAdShield:
                         im = re.search(r"Icon:\s*(.+)", itxt)
                         if im:
                             icon = im.group(1).strip()
+                        batt_pct, batt_src = self._parse_bt_battery_from_info(itxt)
                     except Exception:
                         pass
+                    if batt_pct is None:
+                        if mac in extra_batts:
+                            batt_pct, batt_src = extra_batts[mac]
+                        elif f"NAME:{name.lower()}" in extra_batts:
+                            batt_pct, batt_src = extra_batts[f"NAME:{name.lower()}"]
                     out.append(
                         BluetoothDeviceInfo(
                             mac=mac,
@@ -410,6 +498,9 @@ class LanTvAdShield:
                             paired=paired,
                             connected=connected,
                             trusted=trusted,
+                            battery_pct=batt_pct,
+                            battery_source=batt_src,
+                            last_seen=now_iso,
                         )
                     )
             except Exception:
@@ -429,8 +520,20 @@ class LanTvAdShield:
                         for item in blk.get(sec, []) or []:
                             if isinstance(item, dict):
                                 for name, meta in item.items():
-                                    mac = str((meta or {}).get("device_address", "")).upper()
+                                    meta_d = meta or {}
+                                    mac = str(meta_d.get("device_address", "")).upper()
                                     if mac:
+                                        batt_vals: list[int] = []
+                                        for bk in (
+                                            "device_batteryLevelMain",
+                                            "device_batteryLevelLeft",
+                                            "device_batteryLevelRight",
+                                            "device_batteryLevelCase",
+                                        ):
+                                            raw_b = str(meta_d.get(bk) or "").replace("%", "").strip()
+                                            if raw_b.isdigit() and 0 <= int(raw_b) <= 100:
+                                                batt_vals.append(int(raw_b))
+                                        batt_pct = min(batt_vals) if batt_vals else None
                                         out.append(
                                             BluetoothDeviceInfo(
                                                 mac=mac,
@@ -438,6 +541,9 @@ class LanTvAdShield:
                                                 device_kind=self._classify_bt_kind(str(name)),
                                                 paired=True,
                                                 connected=(sec == "device_connected"),
+                                                battery_pct=batt_pct,
+                                                battery_source=("system_profiler" if batt_pct is not None else ""),
+                                                last_seen=now_iso,
                                             )
                                         )
             except Exception:
@@ -469,12 +575,136 @@ class LanTvAdShield:
                                 device_kind=self._classify_bt_kind(fn),
                                 paired=True,
                                 connected=(str(r.get("Status") or "").lower() == "ok"),
+                                last_seen=now_iso,
                             )
                         )
             except Exception:
                 pass
         out.sort(key=lambda d: (0 if d.connected else 1, 0 if d.device_kind == "tv" else 1, d.name.lower()))
         return out
+
+    def get_tracked_bluetooth_devices(self) -> list[dict[str, Any]]:
+        """Loads persisted Bluetooth device + battery tracking records."""
+        if not self.bluetooth_tracker_path.exists():
+            return []
+        try:
+            data = json.loads(self.bluetooth_tracker_path.read_text(encoding="utf-8"))
+            devs = data.get("devices") if isinstance(data, dict) else None
+            if isinstance(devs, dict):
+                rows = [v for v in devs.values() if isinstance(v, dict)]
+                rows.sort(
+                    key=lambda r: (
+                        0 if r.get("connected") else 1,
+                        0 if (r.get("battery_pct") is not None and int(r["battery_pct"]) < 20) else 1,
+                        str(r.get("name") or "").lower(),
+                    )
+                )
+                return rows
+        except Exception:
+            pass
+        return []
+
+    def scan_and_track_bluetooth_batteries(
+        self,
+        *,
+        low_threshold_pct: int = 20,
+        devices_override: list[BluetoothDeviceInfo] | None = None,
+    ) -> dict[str, Any]:
+        """Scans Bluetooth devices, persists battery history, and detects devices below low_threshold_pct."""
+        thresh = max(5, min(50, int(low_threshold_pct)))
+        scanned = list(devices_override) if devices_override is not None else self.scan_bluetooth_devices()
+        now_iso = utc_now_iso()
+
+        existing: dict[str, dict[str, Any]] = {}
+        if self.bluetooth_tracker_path.exists():
+            try:
+                raw = json.loads(self.bluetooth_tracker_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict) and isinstance(raw.get("devices"), dict):
+                    for k, v in raw["devices"].items():
+                        if isinstance(v, dict):
+                            existing[str(k).upper()] = dict(v)
+            except Exception:
+                pass
+
+        for mac_key, rec in existing.items():
+            rec["connected"] = False
+
+        low_devices: list[dict[str, Any]] = []
+        newly_low_devices: list[dict[str, Any]] = []
+
+        for dev in scanned:
+            mac_k = (dev.mac or "").strip().upper()
+            if not mac_k:
+                continue
+            prev = existing.get(mac_k, {})
+            prev_alerted = bool(prev.get("low_alerted", False))
+            batt = dev.battery_pct if dev.battery_pct is not None else prev.get("battery_pct")
+            batt_src = dev.battery_source or str(prev.get("battery_source") or "")
+            if dev.battery_pct is not None and dev.battery_pct >= (thresh + 5):
+                low_alerted = False
+            elif dev.battery_pct is not None and dev.battery_pct < thresh:
+                low_alerted = True
+            else:
+                low_alerted = prev_alerted
+
+            rec = {
+                "mac": mac_k,
+                "name": dev.name or str(prev.get("name") or mac_k),
+                "device_kind": dev.device_kind or str(prev.get("device_kind") or "device"),
+                "paired": bool(dev.paired or prev.get("paired", False)),
+                "connected": bool(dev.connected),
+                "trusted": bool(dev.trusted or prev.get("trusted", False)),
+                "battery_pct": batt,
+                "battery_source": batt_src,
+                "last_seen": dev.last_seen or now_iso,
+                "last_battery_at": (now_iso if dev.battery_pct is not None else str(prev.get("last_battery_at") or "")),
+                "low_alerted": low_alerted,
+                "low_threshold_pct": thresh,
+            }
+            existing[mac_k] = rec
+
+            if dev.battery_pct is not None and dev.battery_pct < thresh:
+                low_devices.append(rec)
+                if not prev_alerted:
+                    newly_low_devices.append(rec)
+
+        try:
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            self.bluetooth_tracker_path.write_text(
+                json.dumps({"updated_at": now_iso, "threshold_pct": thresh, "devices": existing}, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+        if newly_low_devices:
+            summary_low = ", ".join(f"{d['name']} ({d['battery_pct']}%)" for d in newly_low_devices)
+            self.journal.log_event(
+                component="BluetoothMonitor",
+                action="low_battery_alert",
+                how=f"Detected Bluetooth device battery below {thresh}%: {summary_low}",
+                why="Alert user with an important notification before wireless devices die",
+                outcome="warn",
+            )
+
+        tracked_list = self.get_tracked_bluetooth_devices()
+        return {
+            "devices": scanned,
+            "tracked": tracked_list,
+            "low_battery_devices": low_devices,
+            "newly_low_devices": newly_low_devices,
+            "threshold_pct": thresh,
+        }
+
+    @staticmethod
+    def format_low_battery_alert(low_devices: list[dict[str, Any]], threshold_pct: int = 20) -> str:
+        if not low_devices:
+            return ""
+        if len(low_devices) == 1:
+            d = low_devices[0]
+            return f"Low Bluetooth Battery (<{threshold_pct}%): {d.get('name', 'Device')} is at {d.get('battery_pct')}% — charge soon!"
+        items = ", ".join(f"{d.get('name', 'Device')} ({d.get('battery_pct')}%)" for d in low_devices[:4])
+        return f"Low Bluetooth Batteries (<{threshold_pct}%): {items} — charge soon!"
 
     def connect_bluetooth_device(self, mac: str, connect: bool = True) -> tuple[bool, str]:
         valid_mac = self._validate_mac(mac)

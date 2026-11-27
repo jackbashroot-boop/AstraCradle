@@ -4544,21 +4544,33 @@ class AstraCradleApp(ctk.CTk):
                     font=self.fonts["caption"],
                     command=lambda d=dev: self._on_connect_protect_tv(d),
                 ).pack(side="right", padx=8, pady=4)
-            if bt_devs:
+            tracked_bt = self.lan_tv_shield.get_tracked_bluetooth_devices()
+            if bt_devs or tracked_bt:
+                bt_show = bt_devs[:8] if bt_devs else []
                 ctk.CTkLabel(
                     tvcard,
-                    text=f"Bluetooth Devices Discovered ({len(bt_devs)}):",
+                    text=(
+                        f"Bluetooth Devices & Battery Tracker ({len(bt_show)} live, {len(tracked_bt)} tracked):"
+                    ),
                     font=self.fonts["body_bold"],
                     text_color=p.accent_cyan,
                 ).pack(anchor="w", padx=14, pady=(6, 2))
-                for bt in bt_devs[:8]:
+                live_macs = {str(getattr(b, "mac", "")).upper() for b in bt_show}
+                for bt in bt_show:
                     brow = ctk.CTkFrame(tvcard, fg_color=p.bg_elevated, corner_radius=8)
                     brow.pack(fill="x", padx=14, pady=2)
-                    bcol = p.accent_jade if bt.connected else p.text_secondary
+                    bpct = getattr(bt, "battery_pct", None)
+                    is_low = bpct is not None and int(bpct) < int(getattr(self.config_obj, "bluetooth_low_battery_threshold", 20))
+                    bcol = p.accent_coral if is_low else (p.accent_jade if bt.connected else p.text_secondary)
                     st_txt = "Connected" if bt.connected else ("Paired" if bt.paired else "Available")
+                    batt_txt = (
+                        f" · 🪫 {bpct}% LOW!"
+                        if is_low
+                        else (f" · 🔋 {bpct}%" if bpct is not None else "")
+                    )
                     ctk.CTkLabel(
                         brow,
-                        text=f"[BT · {bt.device_kind.upper()}] {bt.name} ({bt.mac}) — {st_txt}",
+                        text=f"[BT · {bt.device_kind.upper()}] {bt.name} ({bt.mac}) — {st_txt}{batt_txt}",
                         font=self.fonts["mono_small"],
                         text_color=bcol,
                         anchor="w",
@@ -4573,6 +4585,24 @@ class AstraCradleApp(ctk.CTk):
                         font=self.fonts["caption"],
                         command=lambda b=bt: self._on_connect_bluetooth(b),
                     ).pack(side="right", padx=8, pady=4)
+                for rec_bt in [r for r in tracked_bt if str(r.get("mac") or "").upper() not in live_macs][:6]:
+                    brow = ctk.CTkFrame(tvcard, fg_color=p.bg_elevated, corner_radius=8)
+                    brow.pack(fill="x", padx=14, pady=2)
+                    bpct = rec_bt.get("battery_pct")
+                    is_low = bpct is not None and int(bpct) < int(getattr(self.config_obj, "bluetooth_low_battery_threshold", 20))
+                    bcol = p.accent_coral if is_low else p.text_muted
+                    batt_txt = (
+                        f" · Last Battery: 🪫 {bpct}% LOW!"
+                        if is_low
+                        else (f" · Last Battery: 🔋 {bpct}%" if bpct is not None else " · Battery n/a")
+                    )
+                    ctk.CTkLabel(
+                        brow,
+                        text=f"[BT · {str(rec_bt.get('device_kind', 'device')).upper()}] {rec_bt.get('name')} ({rec_bt.get('mac')}) — Tracked (Offline){batt_txt}",
+                        font=self.fonts["mono_small"],
+                        text_color=bcol,
+                        anchor="w",
+                    ).pack(side="left", padx=10, pady=5)
         ctk.CTkFrame(tvcard, height=4, fg_color="transparent").pack()
 
         # 1. Privacy Trace Sweeper (Consent-Gated)
@@ -7932,6 +7962,9 @@ class AstraCradleApp(ctk.CTk):
         self.set_quiet = tk.BooleanVar(value=self.config_obj.quiet_hours_enabled)
         self.set_auto_shield_var = tk.BooleanVar(value=bool(getattr(self.config_obj, "astrashield_auto_start", True)))
         self.set_tv_failsafe_var = tk.BooleanVar(value=bool(getattr(self.config_obj, "astrashield_tv_auto_failsafe", True)))
+        self.set_bt_battery_var = tk.BooleanVar(
+            value=bool(getattr(self.config_obj, "bluetooth_battery_monitor_enabled", True))
+        )
         self.set_wifi_auto_var = tk.BooleanVar(value=bool(getattr(self.config_obj, "wifi_auto_optimize", True)))
         self.set_confirm_prompts_var = tk.BooleanVar(value=bool(getattr(self.config_obj, "confirm_important_prompts", True)))
         self.set_badusb_var = tk.BooleanVar(value=bool(getattr(self.config_obj, "badusb_guard_enabled", True)))
@@ -8152,6 +8185,11 @@ class AstraCradleApp(ctk.CTk):
                     "TV Failsafe Auto-Reset",
                     ctk.CTkSwitch(sec_shield, text="Reset TV DNS/rules if AstraCradle fails or closes", variable=self.set_tv_failsafe_var),
                     "Automatically reverts connected Smart TV overrides back to stock router/DHCP DNS if sinkhole stops.",
+                ),
+                (
+                    "Bluetooth Battery Alerts (<20%)",
+                    ctk.CTkSwitch(sec_shield, text="Track Bluetooth devices & send important alert below 20%", variable=self.set_bt_battery_var),
+                    "Monitors connected/paired Bluetooth headphones, controllers & remotes and sends an important alert below 20%.",
                 ),
                 (
                     "Wi-Fi Best-Channel Auto-Optimizer",
@@ -8571,9 +8609,33 @@ class AstraCradleApp(ctk.CTk):
                 self.rf_wave_chart.set_snapshot(snap_rf)
         if self._should_run_hourly_github_check():
             self._refresh_github_version_badge_async(prompt_if_outdated=True)
+        if (
+            self._show_startup_popups
+            and bool(getattr(self.config_obj, "bluetooth_battery_monitor_enabled", True))
+            and (time.monotonic() - getattr(self, "_last_bt_battery_poll_ts", 0.0)) >= 60.0
+        ):
+            self._poll_bluetooth_batteries_async()
         if not self._is_busy:
             self.refresh_telemetry_async(include_dns=False, also_scan=False)
         self._schedule_telemetry_poll()
+
+    def _poll_bluetooth_batteries_async(self) -> None:
+        if getattr(self, "_bt_battery_poll_in_flight", False):
+            return
+        self._bt_battery_poll_in_flight = True
+        self._last_bt_battery_poll_ts = time.monotonic()
+        thresh = int(getattr(self.config_obj, "bluetooth_low_battery_threshold", 20) or 20)
+
+        def _worker() -> None:
+            try:
+                report = self.lan_tv_shield.scan_and_track_bluetooth_batteries(low_threshold_pct=thresh)
+                self._ui_queue.put(("bt_battery_update", report))
+            except Exception:
+                pass
+            finally:
+                self._bt_battery_poll_in_flight = False
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_toggle_desktop_widget_setting(self) -> None:
         want = bool(self.set_desktop_widget_var.get()) if hasattr(self, "set_desktop_widget_var") else False
@@ -8732,6 +8794,7 @@ class AstraCradleApp(ctk.CTk):
                 if first == "lan_tv_scanned":
                     devs = item[1] or []
                     bdevs = item[2] or []
+                    bt_report = item[3] if len(item) > 3 and isinstance(item[3], dict) else {}
                     self._latest_lan_devices = devs
                     self._latest_bt_devices = bdevs
                     self.finish_task_progress(
@@ -8739,6 +8802,33 @@ class AstraCradleApp(ctk.CTk):
                         f"TV & Bluetooth scan complete: found {len(devs)} Smart TV/LAN device(s) and {len(bdevs)} Bluetooth device(s).",
                         notify_title="Smart TV & Bluetooth Scan Complete",
                     )
+                    newly_low = bt_report.get("newly_low_devices") or []
+                    if newly_low:
+                        thresh = int(bt_report.get("threshold_pct") or getattr(self.config_obj, "bluetooth_low_battery_threshold", 20) or 20)
+                        alert_msg = self.lan_tv_shield.format_low_battery_alert(newly_low, threshold_pct=thresh)
+                        if alert_msg:
+                            self.show_toast(alert_msg, color=self.palette.accent_coral, important=True)
+                            try:
+                                self.tray.notify(f"Bluetooth Battery Low (<{thresh}%)", alert_msg)
+                            except Exception:
+                                pass
+                    if self.current_nav == "modules":
+                        self._render_modules()
+                    continue
+
+                if first == "bt_battery_update":
+                    bt_report = item[1] if isinstance(item[1], dict) else {}
+                    self._latest_bt_devices = bt_report.get("devices") or []
+                    newly_low = bt_report.get("newly_low_devices") or []
+                    if newly_low:
+                        thresh = int(bt_report.get("threshold_pct") or getattr(self.config_obj, "bluetooth_low_battery_threshold", 20) or 20)
+                        alert_msg = self.lan_tv_shield.format_low_battery_alert(newly_low, threshold_pct=thresh)
+                        if alert_msg:
+                            self.show_toast(alert_msg, color=self.palette.accent_coral, important=True)
+                            try:
+                                self.tray.notify(f"Bluetooth Battery Low (<{thresh}%)", alert_msg)
+                            except Exception:
+                                pass
                     if self.current_nav == "modules":
                         self._render_modules()
                     continue
@@ -9821,6 +9911,8 @@ class AstraCradleApp(ctk.CTk):
             self.config_obj.astrashield_auto_start = bool(self.set_auto_shield_var.get())
         if hasattr(self, "set_tv_failsafe_var"):
             self.config_obj.astrashield_tv_auto_failsafe = bool(self.set_tv_failsafe_var.get())
+        if hasattr(self, "set_bt_battery_var"):
+            self.config_obj.bluetooth_battery_monitor_enabled = bool(self.set_bt_battery_var.get())
         if hasattr(self, "set_wifi_auto_var"):
             self.config_obj.wifi_auto_optimize = bool(self.set_wifi_auto_var.get())
         if hasattr(self, "set_confirm_prompts_var"):
@@ -10658,11 +10750,12 @@ class AstraCradleApp(ctk.CTk):
 
     def _on_scan_lan_tvs(self) -> None:
         self.begin_task_progress("lan_tv", "Scanning Wi-Fi/LAN for Smart TVs and Bluetooth devices...")
+        thresh = int(getattr(self.config_obj, "bluetooth_low_battery_threshold", 20) or 20)
 
         def _worker() -> None:
             devs = self.lan_tv_shield.scan_lan_devices(self.adblock_shield, ssdp_timeout=0.8)
-            bdevs = self.lan_tv_shield.scan_bluetooth_devices()
-            self._ui_queue.put(("lan_tv_scanned", devs, bdevs))
+            bt_report = self.lan_tv_shield.scan_and_track_bluetooth_batteries(low_threshold_pct=thresh)
+            self._ui_queue.put(("lan_tv_scanned", devs, bt_report["devices"], bt_report))
 
         threading.Thread(target=_worker, daemon=True).start()
 
