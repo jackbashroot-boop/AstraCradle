@@ -464,6 +464,8 @@ class AppConfig:
     hermes_allow_shell: bool = False
     hermes_gpu_limit_mode: str = "game_adaptive"  # 100 | 75 | 50 | 25 | game_adaptive
     hermes_vram_reserve_mb: int = 1024  # Keep ~1 GB VRAM below max usage for games & desktop
+    hermes_allow_web_search: bool = True
+    hermes_persona: str = "astra_standard"
     hermes_cron_enabled: bool = False
     hermes_gateway_auto_start: bool = False
     excluded_processes: list[str] = field(default_factory=lambda: list(DEFAULT_PROTECTED_PROCESSES))
@@ -616,6 +618,8 @@ class AppConfig:
             "hermes_allow_shell",
             "hermes_gpu_limit_mode",
             "hermes_vram_reserve_mb",
+            "hermes_allow_web_search",
+            "hermes_persona",
             "hermes_cron_enabled",
             "hermes_gateway_auto_start",
         )

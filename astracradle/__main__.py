@@ -203,6 +203,9 @@ def run_cli(args: argparse.Namespace) -> int:
         if args.hermes_gpu_limit:
             cfg.hermes_gpu_limit_mode = args.hermes_gpu_limit
             cfg.hermes_vram_reserve_mb = max(512, int(getattr(cfg, "hermes_vram_reserve_mb", 1024) or 1024))
+        if args.hermes_persona:
+            cfg.hermes_persona = args.hermes_persona
+            cfg_mgr.save(cfg)
 
         if args.hermes_setup:
             ok_h, msg_h, st_h = hm.install_and_setup_hermes(
@@ -230,7 +233,9 @@ def run_cli(args: argparse.Namespace) -> int:
         rec = recommend_hermes_models()
         st = hm.get_status(cfg)
         gpu_plan = hm.compute_gpu_throttle_plan(cfg)
+        persona = hm.get_active_persona(cfg)
         print(f"Hermes OS AI Status : {st.summary}")
+        print(f"Active AI Identity  : {persona['name']} ({persona['badge']}) — {persona['tagline']}")
         if auto_info.get("integrated"):
             print(f"Auto-Integrated     : {auto_info.get('message')}")
         print(f"Hermes Home         : {st.hermes_home}")
@@ -1194,6 +1199,12 @@ def main(argv: list[str] | None = None) -> int:
         choices=["100", "75", "50", "25", "game_adaptive"],
         default=None,
         help="Hermes local AI GPU budget: 100, 75, 50, 25 percent, or game_adaptive (learns games and reserves about 1 GB VRAM).",
+    )
+    parser.add_argument(
+        "--hermes-persona",
+        type=str,
+        default=None,
+        help="Active AI personality/identity key (astra_standard or one of 10 unique personas).",
     )
     parser.add_argument("--hermes-api-key", type=str, default=None, help="API key to save in ~/.astracradle/hermes/.env during --hermes-setup.")
     parser.add_argument("--export-md", action="store_true", help="Export generated playbook Markdown.")

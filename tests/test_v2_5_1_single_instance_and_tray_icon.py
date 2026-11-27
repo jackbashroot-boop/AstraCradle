@@ -1517,7 +1517,7 @@ def test_hermes_whole_pc_learning_and_integrated_fix_tools() -> None:
 
         sys_prompt = hm._build_system_prompt(cfg)
         assert "Learned Whole-PC & Remote Usage Context" in sys_prompt
-        assert "Action Assistant Guidelines" in sys_prompt
+        assert "Action & Self-Development Assistant Guidelines" in sys_prompt
 
         # 2. Integrated safe PC-fixing tools
         prof_res = hm.execute_tool(
@@ -1546,6 +1546,173 @@ def test_hermes_whole_pc_learning_and_integrated_fix_tools() -> None:
         cfg.hermes_permission_level = "read_only"
         blocked = hm.execute_tool("astra_probalance_and_profile", {"action": "restrain_hogs"}, cfg)
         assert blocked["ok"] is False and blocked.get("blocked") is True
+
+
+def test_app_init_no_unbound_elevation_and_hermes_self_dev_tools(monkeypatch) -> None:
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.ui.app import AstraCradleApp
+
+    # 1. Guard against UnboundLocalError in AstraCradleApp.__init__ and TclError pack-before in hermes_page.py
+    assert "ElevationRunner" not in AstraCradleApp.__init__.__code__.co_varnames
+    hp_txt = (Path(__file__).resolve().parents[1] / "astracradle" / "ui" / "pages" / "hermes_page.py").read_text(encoding="utf-8")
+    assert "before=key_ent" not in hp_txt
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        cfg = AppConfig(hermes_permission_level="standard_user", hermes_allow_web_search=True)
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        hm.ensure_hermes_home(cfg)
+
+        # 2. Create, list, grep, read (line-numbered), and surgically edit with automatic backup
+        proj = Path(td) / "local_build"
+        proj.mkdir(parents=True, exist_ok=True)
+        target = proj / "sample_feature.py"
+
+        w_res = hm.execute_tool("file_write", {"path": str(target), "content": "def greet():\n    return 'old'\n"}, cfg)
+        assert w_res["ok"] is True
+
+        ls_res = hm.execute_tool("list_dir", {"path": str(proj), "pattern": "*.py"}, cfg)
+        assert ls_res["ok"] is True and any(e["name"] == "sample_feature.py" for e in ls_res["entries"])
+
+        gr_res = hm.execute_tool("grep_search", {"pattern": "def greet", "path": str(proj)}, cfg)
+        assert gr_res["ok"] is True and len(gr_res["matches"]) == 1
+
+        ed_res = hm.execute_tool(
+            "file_edit",
+            {"path": str(target), "old_text": "return 'old'", "new_text": "return 'updated'"},
+            cfg,
+        )
+        assert ed_res["ok"] is True and Path(ed_res["backup"]).exists()
+
+        rd_res = hm.execute_tool("file_read", {"path": str(target), "offset": 1, "limit": 10}, cfg)
+        assert rd_res["ok"] is True and "return 'updated'" in rd_res["content"]
+
+        # 3. Web search, fetch, and URL skill install (mocked HTTP)
+        monkeypatch.setattr(
+            hm,
+            "_web_search_impl",
+            lambda q, max_results=6: [{"title": "CachyOS Optimization", "url": "https://wiki.cachyos.org", "snippet": f"Tips for {q}"}],
+        )
+        ws_res = hm.execute_tool("web_search", {"query": "cachyos python tuning"}, cfg)
+        assert ws_res["ok"] is True and ws_res["results"][0]["title"] == "CachyOS Optimization"
+
+        class _FakeResp:
+            def __init__(self, body: str) -> None:
+                self._b = body.encode("utf-8")
+
+            def read(self, _n: int = -1) -> bytes:
+                return self._b
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        monkeypatch.setattr(
+            "astracradle.core.hermes_agent.urllib.request.urlopen",
+            lambda *_a, **_kw: _FakeResp("<html><body><h1>Remote Skill</h1><p>Check thermals first.</p></body></html>"),
+        )
+        wf_res = hm.execute_tool("web_fetch", {"url": "https://example.com/guide"}, cfg)
+        assert wf_res["ok"] is True and "Check thermals first." in wf_res["content"]
+
+        sk_res = hm.execute_tool("skill_install_from_url", {"slug": "thermal-guide", "url": "https://example.com/SKILL.md"}, cfg)
+        assert sk_res["ok"] is True and Path(sk_res["skill_path"]).exists()
+
+        mem_res = hm.execute_tool("memory_read", {"target": "all"}, cfg)
+        assert mem_res["ok"] is True and any(s["slug"] == "thermal-guide" for s in mem_res["skills"])
+
+        # 4. Native AstraCradle local source locator
+        dev_res = hm.execute_tool("astra_dev_self_build", {"action": "locate"}, cfg)
+        assert dev_res["ok"] is True and (Path(dev_res["source_root"]) / "astracradle" / "__main__.py").exists()
+
+        # 5. Respects hermes_allow_web_search=False & Level 2 file boundary
+        cfg.hermes_allow_web_search = False
+        ws_off = hm.execute_tool("web_search", {"query": "test"}, cfg)
+        assert ws_off["ok"] is False and ws_off.get("blocked") is True
+        cfg.hermes_permission_level = "safe_user"
+        ed_blocked = hm.execute_tool(
+            "file_edit",
+            {"path": str(target), "old_text": "return 'updated'", "new_text": "return 'x'"},
+            cfg,
+        )
+        assert ed_blocked["ok"] is False and ed_blocked.get("blocked") is True
+
+
+def test_hermes_personas_standard_plus_ten_and_think_strip(monkeypatch) -> None:
+    import io
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HERMES_PERSONAS, HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+    from astracradle.ui.pages import hermes_page
+
+    # 1. Verify Standard personality + 10 unique selectable identities (11 total)
+    assert "astra_standard" in HERMES_PERSONAS
+    assert len(HERMES_PERSONAS) == 11
+    names = {spec["name"] for spec in HERMES_PERSONAS.values()}
+    assert len(names) == 11
+    for key, spec in HERMES_PERSONAS.items():
+        for field_name in ("label", "name", "badge", "tagline", "traits", "mannerisms", "greeting", "prompt_directive"):
+            assert str(spec.get(field_name) or "").strip(), f"{key} missing {field_name}"
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "cfg")
+        cfg = AppConfig()
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        hm.ensure_hermes_home(cfg)
+
+        # 2. Verify switching persona updates _build_system_prompt with traits & mannerisms
+        for key in ("astra_standard", "kestrel_tactician", "sterling_butler", "halcyon_retro"):
+            cfg.hermes_persona = key
+            prompt = hm._build_system_prompt(cfg)
+            spec = HERMES_PERSONAS[key]
+            assert spec["name"] in prompt
+            assert spec["traits"] in prompt
+            assert spec["mannerisms"] in prompt
+
+        # 3. Verify <think>...</think> tags from reasoning models like Qwen3.6 are stripped cleanly
+        class _OllamaResp:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "<think>internal chain of thought</think>\nYes, I can see your PC clearly!",
+                                    "tool_calls": [],
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        captured_timeouts: list[float] = []
+
+        def _fake_urlopen(req, timeout=0):
+            captured_timeouts.append(timeout)
+            return _OllamaResp()
+
+        monkeypatch.setattr("astracradle.core.hermes_agent.urllib.request.urlopen", _fake_urlopen)
+        spec = hm.resolve_provider_spec(AppConfig(hermes_local_only=True, hermes_mode="local_gpu", hermes_provider="ollama", hermes_model="qwen3.6:35b"))
+        txt, calls = hm._call_llm(spec, "", [{"role": "user", "content": "hi"}], [])
+        assert txt == "Yes, I can see your PC clearly!"
+        assert calls == []
+        assert captured_timeouts and captured_timeouts[0] >= 240
+
+    # 4. Verify UI page exposes 8 wrapped chips + full-screen chat workspace + persona helpers
+    assert len(hermes_page._QUICK_ACTION_CHIPS) == 8
+    assert callable(hermes_page._build_chat_workspace)
+    assert callable(hermes_page._render_chat_bubbles)
+
+
 
 
 

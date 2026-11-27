@@ -281,7 +281,6 @@ class AstraCradleApp(ctk.CTk):
         self.ram_standby_mgr = MemoryStandbyManager(self.journal)
         self.battery_inspector = BatteryAndPowerInspector()
         self.safe_fixer = SafeBeginnerFixer(self.cfg_mgr, self.executor, self.rollback_mgr, self.journal)
-        from ..core.elevation import ElevationRunner
         from ..core.hermes_agent import HermesAgentManager
 
         self._hermes_elevation = ElevationRunner(password_prompt_cb=self._prompt_hermes_sudo_from_worker)

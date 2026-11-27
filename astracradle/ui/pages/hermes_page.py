@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import tkinter as tk
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import customtkinter as ctk
 
@@ -13,6 +14,7 @@ from ...core.hermes_agent import (
     FREE_CLOUD_PROVIDERS,
     HERMES_GPU_MODES,
     HERMES_PERMISSION_LEVELS,
+    HERMES_PERSONAS,
     HermesHardwareRecommendation,
     HermesSetupStatus,
     recommend_hermes_models,
@@ -20,6 +22,212 @@ from ...core.hermes_agent import (
 
 if TYPE_CHECKING:
     from ..app import AstraCradleApp
+
+
+_QUICK_ACTION_CHIPS: tuple[tuple[str, str], ...] = (
+    ("Diagnose PC", "Run a deep system scan and check live CPU/GPU/RAM status, then summarize clearly."),
+    ("Fix Slow PC (Safe)", "Diagnose bottlenecks, safely clean caches with astra_fix_safe(dry_run=false), and restrain background CPU hogs if needed."),
+    ("Optimize Wi-Fi", "Check my Wi-Fi channels and optimize if a cleaner channel is available."),
+    ("Startup & Hogs", "Audit my startup entries and high-CPU processes, and explain or trim safe bloat."),
+    ("Remote Tasks", "Check paired mobile/remote devices, Tailscale/ADB/AstraBeam status, and recent remote tasks."),
+    ("Self-Heal & Undo", "Run AstraCradle 14-invariant self-heal repair and list any recent rollback/undo items."),
+    ("What AI Learned", "Summarize what you have learned about my whole-PC usage, top apps, games, and remote tasks."),
+    ("Research & Improve Astra", "Search the web or inspect AstraCradle's local build to propose safe improvements, tests, or new skills."),
+)
+
+
+def _persona_options() -> tuple[list[str], dict[str, str]]:
+    labels = [spec["label"] for spec in HERMES_PERSONAS.values()]
+    by_lbl = {spec["label"]: k for k, spec in HERMES_PERSONAS.items()}
+    return labels, by_lbl
+
+
+def _format_tool_trace(raw_trace: str) -> str:
+    if not raw_trace:
+        return ""
+    try:
+        items = json.loads(raw_trace)
+        if isinstance(items, list) and items:
+            parts = []
+            for ev in items:
+                name = str(ev.get("tool") or "tool")
+                ok_mark = "OK" if ev.get("ok") else "BLOCKED/ERR"
+                parts.append(f"{name} [{ok_mark}]")
+            return "  ->  ".join(parts)
+    except Exception:
+        pass
+    return raw_trace[:220]
+
+
+def _render_chat_bubbles(
+    container: ctk.CTkScrollableFrame,
+    msgs: list[dict[str, str]],
+    persona: dict[str, str],
+    p,
+    f,
+    *,
+    wrap_px: int = 720,
+    thinking_text: str = "",
+    error_text: str = "",
+) -> None:
+    for child in container.winfo_children():
+        child.destroy()
+
+    if not msgs and not thinking_text and not error_text:
+        welcome = ctk.CTkFrame(
+            container,
+            fg_color=p.bg_card,
+            border_width=1,
+            border_color=p.border_subtle,
+            corner_radius=12,
+        )
+        welcome.pack(fill="x", padx=6, pady=6)
+        ctk.CTkLabel(
+            welcome,
+            text=f"{persona['name']} · {persona['badge']}",
+            font=f["body_bold"],
+            text_color=p.accent_cyan,
+        ).pack(anchor="w", padx=14, pady=(10, 2))
+        ctk.CTkLabel(
+            welcome,
+            text=(
+                f"{persona['greeting']}\n\n"
+                f"Style: {persona['tagline']}\n"
+                "Try one of the quick action buttons below, or ask anything about your PC, Wi-Fi, games, "
+                "remote devices, online research, or updating AstraCradle's local build."
+            ),
+            font=f["body"],
+            text_color=p.text_primary,
+            justify="left",
+            wraplength=wrap_px,
+        ).pack(anchor="w", padx=14, pady=(0, 12))
+    else:
+        for m in msgs:
+            is_user = m.get("role") == "user"
+            card_bg = "#132934" if is_user else p.bg_card
+            border_col = p.accent_cyan if is_user else p.border_subtle
+            hdr_txt = "You" if is_user else f"{persona['name']} · {persona['badge']}"
+            hdr_col = p.accent_cyan if is_user else p.accent_jade
+
+            bubble = ctk.CTkFrame(
+                container,
+                fg_color=card_bg,
+                border_width=1,
+                border_color=border_col,
+                corner_radius=11,
+            )
+            bubble.pack(
+                fill="x",
+                padx=(46, 6) if is_user else (6, 32),
+                pady=4,
+            )
+            top = ctk.CTkFrame(bubble, fg_color="transparent")
+            top.pack(fill="x", padx=12, pady=(8, 2))
+            ctk.CTkLabel(top, text=hdr_txt, font=f["caption_bold"], text_color=hdr_col).pack(side="left")
+            ts = str(m.get("ts") or "")[:19].replace("T", " ")
+            if ts:
+                ctk.CTkLabel(top, text=ts, font=f["caption"], text_color=p.text_muted).pack(side="right")
+
+            ctk.CTkLabel(
+                bubble,
+                text=str(m.get("content") or ""),
+                font=f["body"],
+                text_color=p.text_primary,
+                justify="left",
+                wraplength=max(360, wrap_px - 80),
+            ).pack(anchor="w", padx=12, pady=(0, 8))
+
+            trace_str = _format_tool_trace(str(m.get("tool_trace") or ""))
+            if trace_str:
+                tbar = ctk.CTkFrame(bubble, fg_color=p.bg_elevated, corner_radius=7)
+                tbar.pack(fill="x", padx=10, pady=(0, 8))
+                ctk.CTkLabel(
+                    tbar,
+                    text=f"Tools Run: {trace_str}",
+                    font=f["caption"],
+                    text_color=p.text_secondary,
+                    justify="left",
+                    wraplength=max(340, wrap_px - 100),
+                ).pack(anchor="w", padx=8, pady=4)
+
+    if thinking_text:
+        tcard = ctk.CTkFrame(
+            container,
+            fg_color=p.bg_card,
+            border_width=1,
+            border_color=p.accent_amber,
+            corner_radius=11,
+        )
+        tcard.pack(fill="x", padx=(6, 32), pady=4)
+        ctk.CTkLabel(
+            tcard,
+            text=f"{persona['name']} · Working...",
+            font=f["caption_bold"],
+            text_color=p.accent_amber,
+        ).pack(anchor="w", padx=12, pady=(8, 2))
+        ctk.CTkLabel(
+            tcard,
+            text=thinking_text,
+            font=f["body"],
+            text_color=p.text_secondary,
+            justify="left",
+            wraplength=max(360, wrap_px - 80),
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
+    if error_text:
+        ecard = ctk.CTkFrame(
+            container,
+            fg_color=p.bg_card,
+            border_width=1,
+            border_color=p.accent_rose,
+            corner_radius=11,
+        )
+        ecard.pack(fill="x", padx=(6, 32), pady=4)
+        ctk.CTkLabel(
+            ecard,
+            text=f"{persona['name']} · Notice / Error",
+            font=f["caption_bold"],
+            text_color=p.accent_rose,
+        ).pack(anchor="w", padx=12, pady=(8, 2))
+        ctk.CTkLabel(
+            ecard,
+            text=error_text,
+            font=f["body"],
+            text_color=p.text_primary,
+            justify="left",
+            wraplength=max(360, wrap_px - 80),
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
+    try:
+        container.update_idletasks()
+        container._parent_canvas.yview_moveto(1.0)
+    except Exception:
+        pass
+
+
+def _build_quick_chips(
+    parent: ctk.CTkFrame,
+    send_cb: Callable[[str], None],
+    p,
+    f,
+    *,
+    cols: int = 4,
+) -> None:
+    for c in range(cols):
+        parent.grid_columnconfigure(c, weight=1, uniform="qchips")
+    for idx, (lbl_txt, q_txt) in enumerate(_QUICK_ACTION_CHIPS):
+        r, c = divmod(idx, cols)
+        ctk.CTkButton(
+            parent,
+            text=lbl_txt,
+            height=28,
+            corner_radius=7,
+            fg_color=p.bg_elevated,
+            hover_color=p.accent_cyan,
+            text_color=p.text_primary,
+            font=f["caption"],
+            command=lambda qt=q_txt: send_cb(qt),
+        ).grid(row=r, column=c, sticky="ew", padx=3, pady=3)
 
 
 def _build_provider_options() -> tuple[list[str], dict[str, tuple[str, str]]]:
@@ -59,23 +267,25 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
     win = ctk.CTkToplevel(app)
     app._quick_ai_win = win
     win.title("AstraCradle AI Action Assistant")
-    win.geometry("760x560")
+    win.geometry("860x660")
+    win.minsize(740, 540)
     win.configure(fg_color=p.bg_canvas)
     try:
         win.transient(app)
     except Exception:
         pass
 
-    hdr = ctk.CTkFrame(win, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=10)
+    hdr = ctk.CTkFrame(win, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12)
     hdr.pack(fill="x", padx=12, pady=(12, 6))
     ctk.CTkLabel(
         hdr,
-        text="Ask AI Assistant · Diagnose, Fix & Automate Safely",
+        text="Ask AI Assistant · Diagnose, Fix, Research & Automate",
         font=f["section"],
         text_color=p.accent_cyan,
-    ).pack(side="left", padx=12, pady=10)
+    ).pack(side="left", padx=14, pady=10)
 
     def _open_full_hub() -> None:
+        app._hermes_fullscreen_chat = True
         try:
             win.destroy()
         except Exception:
@@ -84,60 +294,93 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
 
     ctk.CTkButton(
         hdr,
-        text="Open Full AI Hub ->",
-        height=28,
-        fg_color=p.bg_elevated,
-        hover_color=p.border_strong,
-        font=f["small"],
+        text="Open Full-Screen Chat ⛶",
+        height=30,
+        fg_color=p.accent_jade,
+        text_color="#071510",
+        font=f["small_bold"],
         command=_open_full_hub,
-    ).pack(side="right", padx=10, pady=8)
+    ).pack(side="right", padx=12, pady=8)
+
+    # Identity + Hardware/Budget status strip
+    meta_card = ctk.CTkFrame(win, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=10)
+    meta_card.pack(fill="x", padx=12, pady=(0, 6))
+
+    id_row = ctk.CTkFrame(meta_card, fg_color="transparent")
+    id_row.pack(fill="x", padx=12, pady=(8, 4))
+    p_labels, p_by_lbl = _persona_options()
+    cur_persona = hm.get_active_persona(cfg)
+    persona_var = tk.StringVar(value=cur_persona["label"])
+
+    ctk.CTkLabel(id_row, text="Assistant Identity:", font=f["small_bold"], text_color=p.text_primary).pack(side="left", padx=(0, 8))
+    trait_lbl = ctk.CTkLabel(
+        meta_card,
+        text=f"{cur_persona['tagline']}  ·  Traits: {cur_persona['traits']}",
+        font=f["caption"],
+        text_color=p.accent_jade,
+        justify="left",
+        wraplength=800,
+    )
 
     spec = hm.resolve_provider_spec(cfg)
     gpu_plan = hm.compute_gpu_throttle_plan(cfg)
     ctk.CTkLabel(
-        win,
+        id_row,
         text=(
-            f"Model: {spec['model']} ({spec['provider']})  ·  "
-            f"GPU Budget: {gpu_plan['target_gpu_pct']}% (Reserve {gpu_plan['vram_reserve_mb']} MB VRAM)  ·  "
-            f"Learned Games: {gpu_plan['learned_games_count']}"
+            f"Model: {spec['model']} ({spec['provider']}) · "
+            f"GPU: {gpu_plan['target_gpu_pct']}% · Reserve: {gpu_plan['vram_reserve_mb']} MB"
         ),
         font=f["caption"],
         text_color=p.text_secondary,
-    ).pack(anchor="w", padx=16, pady=(0, 4))
+    ).pack(side="right")
 
     session_id = str(getattr(app, "_hermes_session_id", "default"))
-    transcript = ctk.CTkTextbox(win, font=f["body"], fg_color=p.bg_elevated, wrap="word")
-    transcript.pack(fill="both", expand=True, padx=12, pady=4)
+    chat_scroll = ctk.CTkScrollableFrame(
+        win,
+        fg_color=p.bg_elevated,
+        border_width=1,
+        border_color=p.border_subtle,
+        corner_radius=12,
+    )
+    chat_scroll.pack(fill="both", expand=True, padx=12, pady=4)
 
-    def _reload_transcript() -> None:
-        transcript.configure(state="normal")
-        transcript.delete("1.0", "end")
+    def _reload_transcript(thinking: str = "", err: str = "") -> None:
+        persona_now = hm.get_active_persona(cfg)
         msgs = hm.get_session_messages(session_id, limit=30)
-        if not msgs:
-            transcript.insert(
-                "end",
-                "Tell me what you need fixed or checked on your PC!\n"
-                "Examples:\n"
-                "  • \"My PC feels sluggish — scan and safely clean caches & restrain background CPU hogs.\"\n"
-                "  • \"Check my Wi-Fi channels and optimize if congested.\"\n"
-                "  • \"Check my paired mobile/remote devices and AstraBeam status.\"\n"
-                "  • \"What have you learned about how I use my PC?\"\n",
-            )
-        else:
-            for m in msgs:
-                who = "You" if m["role"] == "user" else "Hermes AI"
-                transcript.insert("end", f"[{who}] {m['content']}\n")
-                if m.get("tool_trace"):
-                    transcript.insert("end", f"  └─ Actions/Tools: {m['tool_trace']}\n")
-                transcript.insert("end", "\n")
-        transcript.configure(state="disabled")
-        transcript.see("end")
+        _render_chat_bubbles(
+            chat_scroll,
+            msgs,
+            persona_now,
+            p,
+            f,
+            wrap_px=740,
+            thinking_text=thinking,
+            error_text=err,
+        )
 
+    def _on_persona_change(choice: str) -> None:
+        pkey = p_by_lbl.get(choice, "astra_standard")
+        cfg.hermes_persona = pkey
+        app.cfg_mgr.save(cfg)
+        hm.write_config_yaml(cfg)
+        np = hm.get_active_persona(cfg)
+        trait_lbl.configure(text=f"{np['tagline']}  ·  Traits: {np['traits']}")
+        _reload_transcript()
+        app.show_toast(f"Switched AI identity to {np['name']} ({np['badge']})")
+        if app.current_nav == "hermes":
+            render_hermes_page(app)
+
+    ctk.CTkOptionMenu(id_row, values=p_labels, variable=persona_var, width=360, command=_on_persona_change).pack(side="left")
+    trait_lbl.pack(anchor="w", padx=12, pady=(0, 8))
     _reload_transcript()
 
     chips = ctk.CTkFrame(win, fg_color="transparent")
-    chips.pack(fill="x", padx=12, pady=(2, 4))
-    entry = ctk.CTkEntry(win, placeholder_text="Ask or tell AstraCradle AI to fix, check, or optimize something...")
+    chips.pack(fill="x", padx=10, pady=(4, 4))
+
+    in_row = ctk.CTkFrame(win, fg_color="transparent")
+    in_row.pack(fill="x", padx=12, pady=(2, 12))
+    entry = ctk.CTkEntry(in_row, height=36, placeholder_text="Ask or tell AstraCradle AI to inspect, fix, research, or update...")
+    entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
     def _send(override: str | None = None) -> None:
         q = (override if override is not None else entry.get()).strip()
@@ -145,10 +388,7 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
             return
         if override is None:
             entry.delete(0, "end")
-        transcript.configure(state="normal")
-        transcript.insert("end", f"[You] {q}\n[Hermes AI] Inspecting & running safe AstraCradle tools...\n")
-        transcript.configure(state="disabled")
-        transcript.see("end")
+        _reload_transcript(thinking=f"Prompt: \"{q[:140]}\"\nInspecting PC telemetry & running safe tools via {spec['model']}...")
 
         def _worker() -> None:
             res = hm.run_prompt(q, cfg, session_id=session_id)
@@ -156,7 +396,7 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
             def _done() -> None:
                 app._hermes_status_cache = hm.get_status(cfg)
                 if win.winfo_exists():
-                    _reload_transcript()
+                    _reload_transcript(err=(res.error if not res.ok else ""))
                 if not res.ok:
                     app.show_toast(f"Hermes AI: {res.error}")
                 elif app.current_nav == "hermes":
@@ -166,40 +406,182 @@ def open_quick_assistant_modal(app: AstraCradleApp) -> None:
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    for lbl_txt, q_txt in (
-        ("Fix Slow PC (Safe)", "Diagnose my PC, safely clean junk/caches with astra_fix_safe(dry_run=false), and restrain background CPU hogs if needed."),
-        ("Optimize Wi-Fi", "Check my Wi-Fi channels and apply optimization if a cleaner channel is available."),
-        ("Startup & Hogs", "Audit my startup entries and high-CPU processes, and suggest or safely trim unneeded bloat."),
-        ("Remote Tasks", "Check my paired mobile/remote devices, Tailscale/ADB/AstraBeam status, and recent remote tasks."),
-        ("What AI Learned", "Summarize what you have learned about my whole-PC usage, top apps, games, and remote tasks."),
-    ):
-        ctk.CTkButton(
-            chips,
-            text=lbl_txt,
-            height=26,
-            fg_color=p.bg_elevated,
-            hover_color=p.accent_cyan,
-            font=f["caption"],
-            command=lambda qt=q_txt: _send(qt),
-        ).pack(side="left", padx=(0, 6))
-
-    in_row = ctk.CTkFrame(win, fg_color="transparent")
-    in_row.pack(fill="x", padx=12, pady=(2, 12))
-    entry.pack_forget()
-    entry = ctk.CTkEntry(in_row, height=34, placeholder_text="Tell AstraCradle AI what to check, fix, or automate...")
-    entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+    _build_quick_chips(chips, _send, p, f, cols=4)
     entry.bind("<Return>", lambda _e: _send())
     ctk.CTkButton(
         in_row,
         text="Send & Act",
-        width=120,
-        height=34,
+        width=130,
+        height=36,
         fg_color=p.accent_cyan,
         text_color="#071216",
         font=f["body_bold"],
         command=_send,
     ).pack(side="right")
     entry.focus_set()
+
+
+def _build_chat_workspace(
+    container: ctk.CTkFrame | ctk.CTkScrollableFrame,
+    app: AstraCradleApp,
+    *,
+    is_fullscreen: bool = False,
+) -> None:
+    """Renders the fleshed-out Hermes AI Action Chat (used in Tab 1 AND Full-Screen Chat mode)."""
+    p = app.palette
+    f = app.fonts
+    cfg = app.config_obj
+    hm = app.hermes_mgr
+
+    session_id = str(getattr(app, "_hermes_session_id", "default"))
+    chat_top = ctk.CTkFrame(container, fg_color=p.bg_elevated, corner_radius=10)
+    chat_top.pack(fill="x", padx=8, pady=(6, 4))
+
+    row_a = ctk.CTkFrame(chat_top, fg_color="transparent")
+    row_a.pack(fill="x", padx=10, pady=(8, 4))
+
+    sessions = hm.list_sessions(limit=20)
+    sess_ids = [s["session_id"] for s in sessions] or ["default"]
+    if session_id not in sess_ids:
+        sess_ids.insert(0, session_id)
+    sess_var = tk.StringVar(value=session_id)
+
+    ctk.CTkLabel(row_a, text="Session:", font=f["small_bold"]).pack(side="left", padx=(0, 6))
+
+    def _switch_sess(val: str) -> None:
+        app._hermes_session_id = val
+        render_hermes_page(app)
+
+    ctk.CTkOptionMenu(row_a, values=sess_ids, variable=sess_var, width=180, command=_switch_sess).pack(side="left", padx=(0, 6))
+
+    def _new_session() -> None:
+        import time as _t
+
+        app._hermes_session_id = f"session_{int(_t.time())}"
+        render_hermes_page(app)
+
+    ctk.CTkButton(row_a, text="+ New Chat", width=96, height=28, fg_color=p.bg_card, command=_new_session).pack(side="left", padx=(0, 12))
+
+    # Active Identity / Persona selector right in the chat header
+    p_labels, p_by_lbl = _persona_options()
+    cur_persona = hm.get_active_persona(cfg)
+    persona_var = tk.StringVar(value=cur_persona["label"])
+
+    ctk.CTkLabel(row_a, text="Identity:", font=f["small_bold"]).pack(side="left", padx=(0, 6))
+    trait_banner = ctk.CTkLabel(
+        chat_top,
+        text=f"{cur_persona['name']} ({cur_persona['badge']}) — {cur_persona['tagline']}  ·  Mannerisms: {cur_persona['mannerisms']}",
+        font=f["caption"],
+        text_color=p.accent_jade,
+        justify="left",
+        wraplength=app._content_wrap(90),
+    )
+
+    def _toggle_fs() -> None:
+        app._hermes_fullscreen_chat = not bool(getattr(app, "_hermes_fullscreen_chat", False))
+        render_hermes_page(app)
+
+    ctk.CTkButton(
+        row_a,
+        text=("⤢ Exit Full-Screen" if is_fullscreen else "⛶ Full-Screen Chat"),
+        width=145,
+        height=28,
+        fg_color=(p.accent_amber if is_fullscreen else p.accent_cyan),
+        text_color="#071216",
+        font=f["small_bold"],
+        command=_toggle_fs,
+    ).pack(side="right")
+
+    chat_scroll = ctk.CTkScrollableFrame(
+        container,
+        height=(460 if is_fullscreen else 320),
+        fg_color=p.bg_elevated,
+        border_width=1,
+        border_color=p.border_subtle,
+        corner_radius=11,
+    )
+    chat_scroll.pack(fill="both", expand=True, padx=8, pady=4)
+
+    def _reload_chat(thinking: str = "", err: str = "") -> None:
+        persona_now = hm.get_active_persona(cfg)
+        msgs = hm.get_session_messages(session_id, limit=40)
+        _render_chat_bubbles(
+            chat_scroll,
+            msgs,
+            persona_now,
+            p,
+            f,
+            wrap_px=max(560, app._content_wrap(120)),
+            thinking_text=thinking,
+            error_text=err,
+        )
+
+    def _on_persona_changed(choice: str) -> None:
+        pkey = p_by_lbl.get(choice, "astra_standard")
+        cfg.hermes_persona = pkey
+        app.cfg_mgr.save(cfg)
+        hm.write_config_yaml(cfg)
+        np = hm.get_active_persona(cfg)
+        trait_banner.configure(
+            text=f"{np['name']} ({np['badge']}) — {np['tagline']}  ·  Mannerisms: {np['mannerisms']}"
+        )
+        _reload_chat()
+        app.show_toast(f"AI identity switched to {np['name']} ({np['badge']})")
+
+    ctk.CTkOptionMenu(row_a, values=p_labels, variable=persona_var, width=320, command=_on_persona_changed).pack(side="left")
+    trait_banner.pack(anchor="w", padx=10, pady=(0, 8))
+    _reload_chat()
+
+    chips = ctk.CTkFrame(container, fg_color="transparent")
+    chips.pack(fill="x", padx=6, pady=(4, 4))
+
+    in_row = ctk.CTkFrame(container, fg_color="transparent")
+    in_row.pack(fill="x", padx=8, pady=(2, 8))
+    prompt_entry = ctk.CTkEntry(
+        in_row,
+        height=38,
+        placeholder_text="Ask Hermes OS AI to inspect, fix, research online, or help build AstraCradle updates...",
+    )
+    prompt_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+    def _send_prompt(override: str | None = None) -> None:
+        q = (override if override is not None else prompt_entry.get()).strip()
+        if not q:
+            return
+        if override is None:
+            prompt_entry.delete(0, "end")
+        spec = hm.resolve_provider_spec(cfg)
+        _reload_chat(thinking=f"Prompt: \"{q[:160]}\"\nInspecting telemetry & running safe tools via {spec['model']}...")
+
+        def _worker() -> None:
+            res = hm.run_prompt(q, cfg, session_id=session_id)
+
+            def _ui() -> None:
+                app._hermes_status_cache = hm.get_status(cfg)
+                if res.ok:
+                    render_hermes_page(app)
+                    if res.skill_created:
+                        app.show_toast("Hermes auto-learned a new reusable SKILL.md!")
+                else:
+                    _reload_chat(err=res.error)
+                    app.show_toast(f"Hermes error: {res.error}")
+
+            app.after(0, _ui)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    _build_quick_chips(chips, _send_prompt, p, f, cols=4)
+    prompt_entry.bind("<Return>", lambda _e: _send_prompt())
+    ctk.CTkButton(
+        in_row,
+        text="Send & Act",
+        width=136,
+        height=38,
+        fg_color=p.accent_cyan,
+        text_color="#071216",
+        font=f["body_bold"],
+        command=_send_prompt,
+    ).pack(side="right")
 
 
 def render_hermes_page(app: AstraCradleApp) -> None:
@@ -225,6 +607,36 @@ def render_hermes_page(app: AstraCradleApp) -> None:
             app.after(0, lambda: render_hermes_page(app) if app.current_nav == "hermes" else None)
 
         threading.Thread(target=_bg_probe, daemon=True).start()
+
+    # Full-Screen Chat Focus Mode — fills the entire Hermes OS AI canvas
+    if bool(getattr(app, "_hermes_fullscreen_chat", False)):
+        fs_bar = ctk.CTkFrame(parent, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12)
+        fs_bar.pack(fill="x", padx=4, pady=(2, 8))
+        spec_fs = hm.resolve_provider_spec(cfg)
+        gpu_fs = hm.compute_gpu_throttle_plan(cfg)
+        ctk.CTkLabel(
+            fs_bar,
+            text=(
+                f"Hermes OS AI · Full-Screen Action Chat   |   Model: {spec_fs['model']}   ·   "
+                f"GPU: {gpu_fs['target_gpu_pct']}% (Reserve {gpu_fs['vram_reserve_mb']} MB VRAM)"
+            ),
+            font=f["small_bold"],
+            text_color=p.accent_cyan,
+        ).pack(side="left", padx=14, pady=10)
+        ctk.CTkButton(
+            fs_bar,
+            text="Show Setup & All Tabs",
+            height=28,
+            fg_color=p.bg_elevated,
+            hover_color=p.border_strong,
+            font=f["small"],
+            command=lambda: (setattr(app, "_hermes_fullscreen_chat", False), render_hermes_page(app)),
+        ).pack(side="right", padx=12, pady=8)
+
+        fs_card = ctk.CTkFrame(parent, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12)
+        fs_card.pack(fill="both", expand=True, padx=4, pady=(0, 6))
+        _build_chat_workspace(fs_card, app, is_fullscreen=True)
+        return
 
     # ── Top Banner: Hermes OS AI Status & Hardware Match ─────────────────────
     hdr = ctk.CTkFrame(parent, fg_color=p.bg_card, border_width=1, border_color=p.border_subtle, corner_radius=12)
@@ -329,8 +741,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     ctk.CTkLabel(row1, text="Backend / Provider:", font=f["small"], width=130, anchor="w").pack(side="left")
 
     row2 = ctk.CTkFrame(setup_card, fg_color="transparent")
-    row3 = ctk.CTkFrame(setup_card, fg_color="transparent")
-
+    row2.pack(fill="x", padx=14, pady=4)
     ctk.CTkLabel(row2, text="Model Name:", font=f["small"], width=130, anchor="w").pack(side="left")
     model_ent = ctk.CTkEntry(
         row2,
@@ -339,6 +750,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     )
     if getattr(cfg, "hermes_model", ""):
         model_ent.insert(0, str(cfg.hermes_model))
+    model_ent.pack(side="left", padx=(4, 10))
 
     ctk.CTkLabel(row2, text="API Key (if Cloud):", font=f["small"]).pack(side="left", padx=(4, 4))
     key_ent = ctk.CTkEntry(
@@ -347,7 +759,10 @@ def render_hermes_page(app: AstraCradleApp) -> None:
         show="*",
         placeholder_text="Paste key (not needed for Local-Only)",
     )
+    key_ent.pack(side="left", fill="x", expand=True)
 
+    row3 = ctk.CTkFrame(setup_card, fg_color="transparent")
+    row3.pack(fill="x", padx=14, pady=4)
     ctk.CTkLabel(row3, text="Endpoint URL:", font=f["small"], width=130, anchor="w").pack(side="left")
     url_ent = ctk.CTkEntry(
         row3,
@@ -355,6 +770,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     )
     if getattr(cfg, "hermes_base_url", ""):
         url_ent.insert(0, str(cfg.hermes_base_url))
+    url_ent.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
     def _on_prov_changed(choice: str) -> None:
         mode, prov = prov_map.get(choice, ("free_cloud", "openrouter_free"))
@@ -386,19 +802,6 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     ).pack(side="left", padx=(4, 10))
     ctk.CTkLabel(row1, text="Context:", font=f["small"]).pack(side="left", padx=(8, 4))
     ctk.CTkOptionMenu(row1, values=["16384", "32768", "65536"], variable=ctx_var, width=100).pack(side="left")
-
-    row2.pack(fill="x", padx=14, pady=4)
-    model_ent.pack(side="left", padx=(4, 10), before=key_ent)
-    # Re-pack cleanly so order is Model Label -> model_ent -> Key Label -> key_ent
-    for w_child in row2.winfo_children():
-        w_child.pack_forget()
-    row2.winfo_children()[0].pack(side="left")
-    model_ent.pack(side="left", padx=(4, 10))
-    row2.winfo_children()[2].pack(side="left", padx=(4, 4))
-    key_ent.pack(side="left", fill="x", expand=True)
-
-    row3.pack(fill="x", padx=14, pady=4)
-    url_ent.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
     ctk.CTkSwitch(
         setup_card,
@@ -560,123 +963,10 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     t_chat = tabs.add("Action Assistant Chat")
     t_mem = tabs.add("Learned PC Usage & Memory")
     t_cron = tabs.add("Cron & Subagents")
-    t_safe = tabs.add("Safety, GPU Budget & Gateways")
+    t_safe = tabs.add("Safety, Identity & GPU Budget")
 
-    # ── Tab 1: Chat & Tool Execution ─────────────────────────────────────────
-    session_id = str(getattr(app, "_hermes_session_id", "default"))
-    chat_top = ctk.CTkFrame(t_chat, fg_color="transparent")
-    chat_top.pack(fill="x", padx=8, pady=(4, 4))
-
-    sessions = hm.list_sessions(limit=20)
-    sess_ids = [s["session_id"] for s in sessions] or ["default"]
-    if session_id not in sess_ids:
-        sess_ids.insert(0, session_id)
-    sess_var = tk.StringVar(value=session_id)
-
-    ctk.CTkLabel(chat_top, text="Session:", font=f["small"]).pack(side="left", padx=(0, 6))
-
-    def _switch_sess(val: str) -> None:
-        app._hermes_session_id = val
-        render_hermes_page(app)
-
-    ctk.CTkOptionMenu(chat_top, values=sess_ids, variable=sess_var, width=200, command=_switch_sess).pack(side="left", padx=(0, 8))
-
-    def _new_session() -> None:
-        import time as _t
-
-        app._hermes_session_id = f"session_{int(_t.time())}"
-        render_hermes_page(app)
-
-    ctk.CTkButton(chat_top, text="+ New Session", width=110, height=26, fg_color=p.bg_elevated, command=_new_session).pack(side="left")
-
-    transcript = ctk.CTkTextbox(t_chat, height=260, font=f["body"], fg_color=p.bg_elevated, wrap="word")
-    transcript.pack(fill="both", expand=True, padx=8, pady=4)
-    msgs = hm.get_session_messages(session_id, limit=40)
-    if not msgs:
-        transcript.insert(
-            "end",
-            "Hermes OS AI is ready.\n"
-            "Try asking:\n"
-            "  • Diagnose my PC right now and explain any bottlenecks.\n"
-            "  • Check my Wi-Fi channels and GPU temperature.\n"
-            "  • Preview safe cache cleanup without deleting personal files.\n"
-            "  • Remember my preference and turn this workflow into a reusable skill.\n",
-        )
-    else:
-        for m in msgs:
-            who = "You" if m["role"] == "user" else "Hermes AI"
-            transcript.insert("end", f"[{who}] {m['content']}\n")
-            if m.get("tool_trace"):
-                transcript.insert("end", f"  └─ Tools: {m['tool_trace']}\n")
-            transcript.insert("end", "\n")
-    transcript.configure(state="disabled")
-    transcript.see("end")
-
-    # Quick-action prompt chips
-    chips = ctk.CTkFrame(t_chat, fg_color="transparent")
-    chips.pack(fill="x", padx=8, pady=(2, 4))
-    prompt_entry = ctk.CTkEntry(t_chat, placeholder_text="Ask Hermes OS AI to inspect, diagnose, automate, or build a skill...")
-
-    def _send_prompt(override: str | None = None) -> None:
-        q = (override if override is not None else prompt_entry.get()).strip()
-        if not q:
-            return
-        if override is None:
-            prompt_entry.delete(0, "end")
-        transcript.configure(state="normal")
-        transcript.insert("end", f"[You] {q}\n[Hermes AI] Thinking & calling OS tools...\n")
-        transcript.configure(state="disabled")
-        transcript.see("end")
-
-        def _worker() -> None:
-            res = hm.run_prompt(q, cfg, session_id=session_id)
-
-            def _ui() -> None:
-                app._hermes_status_cache = hm.get_status(cfg)
-                render_hermes_page(app)
-                if not res.ok:
-                    app.show_toast(f"Hermes error: {res.error}")
-                elif res.skill_created:
-                    app.show_toast("Hermes auto-learned a new reusable SKILL.md!")
-
-            app.after(0, _ui)
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    for label_txt, q_txt in (
-        ("Diagnose PC", "Run a deep system scan and check live CPU/GPU/RAM status, then summarize in plain English."),
-        ("Fix Slow PC (Safe)", "Diagnose bottlenecks, safely clean caches with astra_fix_safe(dry_run=false), and restrain background CPU hogs if needed."),
-        ("Optimize Wi-Fi", "Check my Wi-Fi channels and optimize if a cleaner channel is available."),
-        ("Startup & Hogs", "Audit my startup entries and high-CPU processes, and explain or trim safe bloat."),
-        ("Remote Tasks", "Check paired mobile/remote devices, Tailscale/ADB/AstraBeam status, and recent remote tasks."),
-        ("Self-Heal & Undo", "Run AstraCradle 14-invariant self-heal repair and list any recent rollback/undo items."),
-    ):
-        ctk.CTkButton(
-            chips,
-            text=label_txt,
-            height=24,
-            fg_color=p.bg_elevated,
-            hover_color=p.accent_cyan,
-            font=f["caption"],
-            command=lambda qt=q_txt: _send_prompt(qt),
-        ).pack(side="left", padx=(0, 6))
-
-    in_row = ctk.CTkFrame(t_chat, fg_color="transparent")
-    in_row.pack(fill="x", padx=8, pady=(2, 6))
-    prompt_entry.pack_forget()
-    prompt_entry = ctk.CTkEntry(in_row, placeholder_text="Ask Hermes OS AI anything about your PC or tasks...")
-    prompt_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-    prompt_entry.bind("<Return>", lambda _e: _send_prompt())
-    ctk.CTkButton(
-        in_row,
-        text="Send to Hermes",
-        width=130,
-        height=32,
-        fg_color=p.accent_cyan,
-        text_color="#071216",
-        font=f["body_bold"],
-        command=_send_prompt,
-    ).pack(side="right")
+    # ── Tab 1: Fleshed-Out Chat, Identity Selector & Tool Execution ─────────
+    _build_chat_workspace(t_chat, app, is_fullscreen=False)
 
     # ── Tab 2: Learned Whole-PC Usage, Memory & Skills ───────────────────────
     hm.ensure_hermes_home(cfg)
@@ -759,9 +1049,54 @@ def render_hermes_page(app: AstraCradleApp) -> None:
             command=lambda jid=job.get("job_id", ""): (hm.delete_cron_job(jid), render_hermes_page(app)),
         ).pack(side="right", padx=8, pady=4)
 
-    # ── Tab 4: Safety & Messaging Gateways ───────────────────────────────────
+    # ── Tab 4: Safety, Identity & Messaging Gateways ────────────────────────
+    id_card = ctk.CTkFrame(t_safe, fg_color=p.bg_elevated, corner_radius=9)
+    id_card.pack(fill="x", padx=10, pady=(8, 4))
+    ctk.CTkLabel(
+        id_card,
+        text="Assistant Personality & Selectable Identities (Standard + 10 Unique Personas)",
+        font=f["body_bold"],
+        text_color=p.accent_cyan,
+    ).pack(anchor="w", padx=10, pady=(8, 4))
+
+    safe_p_labels, safe_p_by_lbl = _persona_options()
+    cur_safe_p = hm.get_active_persona(cfg)
+    safe_p_var = tk.StringVar(value=cur_safe_p["label"])
+    safe_p_desc = ctk.CTkLabel(
+        id_card,
+        text=(
+            f"Traits: {cur_safe_p['traits']}\n"
+            f"Mannerisms: {cur_safe_p['mannerisms']}\n"
+            f"Greeting: \"{cur_safe_p['greeting']}\""
+        ),
+        font=f["caption"],
+        text_color=p.text_secondary,
+        wraplength=700,
+        justify="left",
+    )
+
+    def _save_persona_tab(_choice=None) -> None:
+        pk = safe_p_by_lbl.get(safe_p_var.get(), "astra_standard")
+        cfg.hermes_persona = pk
+        app.cfg_mgr.save(cfg)
+        hm.write_config_yaml(cfg)
+        np = hm.get_active_persona(cfg)
+        safe_p_desc.configure(
+            text=(
+                f"Traits: {np['traits']}\n"
+                f"Mannerisms: {np['mannerisms']}\n"
+                f"Greeting: \"{np['greeting']}\""
+            )
+        )
+        app.show_toast(f"Switched AI identity to {np['name']} ({np['badge']})")
+        render_hermes_page(app)
+
+    ctk.CTkOptionMenu(id_card, values=safe_p_labels, variable=safe_p_var, width=520, command=_save_persona_tab).pack(anchor="w", padx=10, pady=(0, 4))
+    safe_p_desc.pack(anchor="w", padx=12, pady=(0, 8))
+
     req_app_var = tk.BooleanVar(value=bool(getattr(cfg, "hermes_require_approval", True)))
     cron_en_var = tk.BooleanVar(value=bool(getattr(cfg, "hermes_cron_enabled", False)))
+    web_search_var = tk.BooleanVar(value=bool(getattr(cfg, "hermes_allow_web_search", True)))
     safe_perm_var = tk.StringVar(value=HERMES_PERMISSION_LEVELS[cur_perm_key]["label"])
     perm_desc_lbl = ctk.CTkLabel(
         t_safe,
@@ -778,6 +1113,7 @@ def render_hermes_page(app: AstraCradleApp) -> None:
         cfg.hermes_allow_shell = sel_p in ("standard_user", "sudo_with_prompt")
         cfg.hermes_require_approval = bool(req_app_var.get())
         cfg.hermes_cron_enabled = bool(cron_en_var.get())
+        cfg.hermes_allow_web_search = bool(web_search_var.get())
         perm_desc_lbl.configure(text=HERMES_PERMISSION_LEVELS[sel_p]["summary"])
         perm_var.set(safe_perm_var.get())
         app.cfg_mgr.save(cfg)
@@ -788,8 +1124,9 @@ def render_hermes_page(app: AstraCradleApp) -> None:
     ctk.CTkOptionMenu(t_safe, values=perm_labels, variable=safe_perm_var, width=520, command=_save_safety).pack(anchor="w", padx=10, pady=(0, 4))
     perm_desc_lbl.pack(anchor="w", padx=12, pady=(0, 8))
 
-    ctk.CTkSwitch(t_safe, text="Require explicit approval / dry-run before risky changes (Recommended)", variable=req_app_var, command=_save_safety).pack(anchor="w", padx=10, pady=6)
-    ctk.CTkSwitch(t_safe, text="Enable scheduled Hermes Cron tasks while AstraCradle runs", variable=cron_en_var, command=_save_safety).pack(anchor="w", padx=10, pady=6)
+    ctk.CTkSwitch(t_safe, text="Allow AI Web Search, Online Docs Research & Skill URL Fetch (keeps local GPU model offline)", variable=web_search_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
+    ctk.CTkSwitch(t_safe, text="Require explicit approval / dry-run before risky changes (Recommended)", variable=req_app_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
+    ctk.CTkSwitch(t_safe, text="Enable scheduled Hermes Cron tasks while AstraCradle runs", variable=cron_en_var, command=_save_safety).pack(anchor="w", padx=10, pady=4)
 
     # GPU Usage Limit & Learned Games Manager
     gpu_card = ctk.CTkFrame(t_safe, fg_color=p.bg_elevated, corner_radius=9)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html as _html
 from dataclasses import asdict, dataclass, field
 import json
 import os
@@ -16,6 +17,7 @@ import threading
 import time
 from typing import Any, Callable
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import psutil
@@ -146,6 +148,193 @@ HERMES_GPU_MODES: dict[str, dict[str, Any]] = {
         "label": "25% GPU · Light Background Mode",
         "pct": 25,
         "summary": "Caps local AI to ~25% GPU (offloading most layers to RAM/CPU) so the GPU stays open for games & apps.",
+    },
+}
+
+HERMES_PERSONAS: dict[str, dict[str, str]] = {
+    "astra_standard": {
+        "label": "Standard · Astra Assistant (Balanced, Clear & Proactive)",
+        "name": "Astra",
+        "badge": "Standard AI Assistant",
+        "tagline": "Warm, direct, practical, and tool-first — explains clearly without jargon or fluff.",
+        "traits": "Calm, grounded, honest, plain-English first with structured technical depth on demand.",
+        "mannerisms": (
+            "Inspects real telemetry/files before guessing; states clearly what was checked, changed, and verified; "
+            "skips robotic filler or sycophancy; flags trade-offs honestly and offers a safe next step."
+        ),
+        "greeting": "Ready to inspect your PC, fix issues safely, research solutions, or build updates together.",
+        "prompt_directive": (
+            "Speak as a capable, thoughtful modern AI assistant: clear, warm, concise, and grounded in reality. "
+            "Lead with direct answers, verify facts with tools before stating them, explain technical steps in plain English, "
+            "and state plainly what you checked, changed, and verified — never exaggerate or invent outcomes."
+        ),
+    },
+    "sentinel_architect": {
+        "label": "1. The Systems Architect (Crisp Root-Cause Engineer)",
+        "name": "Architect",
+        "badge": "Systems Architect",
+        "tagline": "Measured, diagnostic-first principal engineer focused on root causes and clean invariants.",
+        "traits": "Analytical, composed, precise, intolerant of guesswork.",
+        "mannerisms": (
+            "Opens complex findings with compact headers like 'Observation:', 'Root Cause:', and 'Verified State:'; "
+            "quotes exact metrics, PIDs, paths, and exit statuses; prefers surgical edits over broad rewrites."
+        ),
+        "greeting": "Telemetry channel open. State the symptom or module and I will trace it to root cause.",
+        "prompt_directive": (
+            "Adopt the persona of a calm, razor-sharp Principal Systems Architect. "
+            "Think in invariants, dependency chains, and measurable signals. Structure multi-step technical answers with crisp labels "
+            "('Signal:', 'Root Cause:', 'Action Taken:', 'Verified State:'), cite exact numbers and paths, and never guess."
+        ),
+    },
+    "atlas_mentor": {
+        "label": "2. Atlas · Patient Tech Mentor (Beginner-Friendly Guide)",
+        "name": "Atlas",
+        "badge": "Patient Tech Mentor",
+        "tagline": "Encouraging, plain-spoken guide who turns intimidating Linux/PC internals into simple analogies.",
+        "traits": "Warm, patient, reassuring, great at demystifying tech.",
+        "mannerisms": (
+            "Translates technical terms into everyday comparisons (like desk space for RAM or lanes on a highway for Wi-Fi); "
+            "reassures the user what stays untouched before making safe cleanups; celebrates solved bottlenecks."
+        ),
+        "greeting": "No question is too small! Tell me what feels slow or confusing and we'll walk through it together.",
+        "prompt_directive": (
+            "Adopt the persona of Atlas, a warm, patient tech mentor for newcomers. "
+            "Avoid unexplained jargon; whenever you mention a technical concept (VRAM, processes, DNS, permissions), explain it "
+            "briefly with an intuitive everyday analogy. Reassure the user what personal files remain safe."
+        ),
+    },
+    "kestrel_tactician": {
+        "label": "3. Kestrel · Performance Tactician (Gaming & Low-Latency Pro)",
+        "name": "Kestrel",
+        "badge": "Performance Tactician",
+        "tagline": "Sharp telemetry specialist obsessed with frame-pacing, VRAM headroom, thermals, and zero stutter.",
+        "traits": "Focused, high-tempo, efficiency-driven, competitive-gamer fluent.",
+        "mannerisms": (
+            "Uses crisp race-pit / flight-telemetry phrasing ('VRAM margin locked', 'Frame-time interference cleared', 'Thermal headroom green'); "
+            "checks GPU budgets, learned games, CPU hogs, and Wi-Fi jitter first."
+        ),
+        "greeting": "Telemetry online. Ready to clear stutters, protect your VRAM headroom, and lock in smooth frame-times.",
+        "prompt_directive": (
+            "Adopt the persona of Kestrel, a crisp performance & gaming telemetry tactician. "
+            "Prioritize smooth frame-pacing, 1% lows, ~1 GB VRAM headroom, clean Wi-Fi channels, and suppressing background CPU spikes. "
+            "Keep phrasing punchy and telemetry-oriented ('Headroom locked', 'Background contention cleared') while remaining strictly accurate."
+        ),
+    },
+    "lyra_atelier": {
+        "label": "4. Lyra · Creative Co-Builder (Software & UX Craftsperson)",
+        "name": "Lyra",
+        "badge": "Creative Co-Builder",
+        "tagline": "Curious, thoughtful coding & interface partner who treats AstraCradle like an evolving craft.",
+        "traits": "Imaginative, collaborative, detail-oriented about UX and clean code.",
+        "mannerisms": (
+            "Offers clean design trade-offs before editing code; notices layout rhythm, readability, and user delight; "
+            "uses constructive co-building language ('Let's inspect...', 'Here is a cleaner pattern...')."
+        ),
+        "greeting": "Workshop's open! Let's research ideas, polish the interface, or build AstraCradle's next feature cleanly.",
+        "prompt_directive": (
+            "Adopt the persona of Lyra, an expressive, craftsmanship-minded software & UX co-builder. "
+            "Care deeply about clean architecture, readable code, and thoughtful user experience. When proposing improvements or edits, "
+            "briefly highlight the design rationale and always verify with tests."
+        ),
+    },
+    "vanguard_sec": {
+        "label": "5. Vanguard · Security Sentinel (Privacy & Zero-Trust Guardian)",
+        "name": "Vanguard",
+        "badge": "Security Sentinel",
+        "tagline": "Vigilant guardian focused on local-only privacy, least privilege, backups, and verifiable integrity.",
+        "traits": "Cautious, thorough, protective, security-conscious.",
+        "mannerisms": (
+            "Explicitly confirms permission boundaries, protected-path guards, and automatic backups before mutating files; "
+            "highlights local-only vs outbound network exposure and SHA-256 / forensic audit integrity."
+        ),
+        "greeting": "Perimeter check standing by. Permissions, backups, and privacy shields are my top priority.",
+        "prompt_directive": (
+            "Adopt the persona of Vanguard, a disciplined security & privacy sentinel. "
+            "Emphasize least privilege, automatic edit backups, local-only data sovereignty, USB/BadUSB hygiene, and forensic verification. "
+            "Explicitly state any permission boundary or safety check you respected."
+        ),
+    },
+    "pip_spark": {
+        "label": "6. Pip · Upbeat Tinkerer (Curious Lab Buddy)",
+        "name": "Pip",
+        "badge": "Upbeat Tinkerer",
+        "tagline": "Energetic, optimistic problem-solver who loves testing tools, learning skills, and squashing bugs.",
+        "traits": "Playful, inquisitive, enthusiastic, resourceful.",
+        "mannerisms": (
+            "Shows genuine curiosity when inspecting logs or searching docs ('Ooh, spotted something interesting—let's check!'); "
+            "keeps momentum upbeat and turns solved problems into reusable SKILL.md recipes."
+        ),
+        "greeting": "Hey! Workbench is powered up — ready to poke around, learn a new trick, or squash whatever's acting weird!",
+        "prompt_directive": (
+            "Adopt the persona of Pip, a friendly, upbeat lab tinkerer. "
+            "Bring curiosity and light enthusiasm to troubleshooting, research, and coding, while staying concise, respectful, "
+            "and 100% factual about tool results."
+        ),
+    },
+    "sterling_butler": {
+        "label": "7. Sterling · Digital Steward (Poised, Dry-Witted Concierge)",
+        "name": "Sterling",
+        "badge": "Digital Steward",
+        "tagline": "Impeccably composed, polite, and organized — keeps your workstation spotless without fuss.",
+        "traits": "Courteous, poised, quietly witty, methodical.",
+        "mannerisms": (
+            "Uses refined, understated stewardship phrasing ('Very good — I have attended to the stray caches and verified the wireless channel.'); "
+            "keeps summaries tidy and never flusters under heavy system load."
+        ),
+        "greeting": "Good day. Your workstation telemetry is in hand — do let me know what requires attention.",
+        "prompt_directive": (
+            "Adopt the persona of Sterling, an unfailingly poised, courteous digital steward with subtle dry wit. "
+            "Maintain crisp organization, refined politeness, and quiet thoroughness in every diagnostic and repair report."
+        ),
+    },
+    "nomad_field": {
+        "label": "8. Nomad · Remote & Field Liaison (Mobile & Continuity Pro)",
+        "name": "Nomad",
+        "badge": "Field Ops Liaison",
+        "tagline": "Practical multi-device specialist tuned for Tailscale, iPhone/Watch links, Wi-Fi hops, and AstraBeam.",
+        "traits": "Adaptable, brief, mobile-first, reliability-obsessed.",
+        "mannerisms": (
+            "Checks network links, paired phones, Tailscale tunnels, battery/thermal states, and remote tasks proactively; "
+            "gives compact field-ready status reports designed to read cleanly even on a phone screen."
+        ),
+        "greeting": "Link check ready. Whether you're at your desk or streaming from your phone, let's keep every hop solid.",
+        "prompt_directive": (
+            "Adopt the persona of Nomad, a pragmatic multi-device & remote-continuity liaison. "
+            "Think across desktop, Wi-Fi/failover, Tailscale, ADB, and iPhone/Watch AstraBeam links. Keep responses compact and field-ready."
+        ),
+    },
+    "nocturne_zen": {
+        "label": "9. Nocturne · Minimalist Focus Monk (Zero-Fluff Clarity)",
+        "name": "Nocturne",
+        "badge": "Minimalist Focus",
+        "tagline": "Ultra-calm, distraction-free voice delivering only essential facts and clean 3-line summaries.",
+        "traits": "Serene, sparse, uncluttered, deeply focused.",
+        "mannerisms": (
+            "Uses minimal punctuation and short, tranquil sentences; strips away unnecessary preamble; "
+            "presents outcomes in 2-4 crisp bullet points so the user's attention stays completely calm."
+        ),
+        "greeting": "Quiet mind, steady machine. Tell me what needs balance.",
+        "prompt_directive": (
+            "Adopt the persona of Nocturne, a calm minimalist focus guide. "
+            "Eliminate all chatter and filler. Respond in serene, ultra-concise bullet points covering only findings, actions taken, and verified status."
+        ),
+    },
+    "halcyon_retro": {
+        "label": "10. Halcyon · Starship Bridge Computer (Retro Sci-Fi Mainframe)",
+        "name": "Halcyon",
+        "badge": "Bridge Computer",
+        "tagline": "Classic starship diagnostic computer cadence paired with grounded, real local OS tooling.",
+        "traits": "Steady, evocative, structured, reassuringly methodical.",
+        "mannerisms": (
+            "Frames system diagnostics with clean bridge-console flavor ('Subsystems nominal.', 'Thermal core within green band.', "
+            "'Routing safe cleanup directive.'); never lets flavor obscure real numbers or file paths."
+        ),
+        "greeting": "Halcyon online. All local compute cores standing by — specify diagnostic or engineering directive.",
+        "prompt_directive": (
+            "Adopt the persona of Halcyon, a classic starship bridge computer. "
+            "Use subtle, clean console phrasing ('Subsystems nominal', 'Diagnostic pass complete', 'Thermal envelope green') "
+            "while keeping every file path, metric, tool result, and technical explanation 100% concrete and accurate."
+        ),
     },
 }
 
@@ -1947,10 +2136,14 @@ class HermesAgentManager:
                 "type": "function",
                 "function": {
                     "name": "file_read",
-                    "description": "Read a local non-protected text file (max 6000 chars).",
+                    "description": "Read a local non-protected text file with optional 1-based line offset & limit.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "offset": {"type": "integer", "description": "1-based start line (default 1)"},
+                            "limit": {"type": "integer", "description": "Max lines to read (default 220)"},
+                        },
                         "required": ["path"],
                     },
                 },
@@ -1959,11 +2152,126 @@ class HermesAgentManager:
                 "type": "function",
                 "function": {
                     "name": "file_write",
-                    "description": "Write text to a user-writable file outside protected OS directories.",
+                    "description": "Create or overwrite a user-writable file outside protected OS directories (respects permission level).",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
                         "required": ["path", "content"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_edit",
+                    "description": "Surgically edit an existing file by replacing one exact old_text block with new_text (automatically backs up the file first).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "old_text": {"type": "string"},
+                            "new_text": {"type": "string"},
+                        },
+                        "required": ["path", "old_text", "new_text"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_dir",
+                    "description": "List files and folders inside a directory (supports optional glob pattern).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "pattern": {"type": "string", "description": "Optional glob pattern like *.py"},
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "grep_search",
+                    "description": "Search code or text files recursively for a regex/text pattern inside AstraCradle source or any user directory.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "pattern": {"type": "string"},
+                            "path": {"type": "string", "description": "Root folder (defaults to AstraCradle local source root)"},
+                            "glob": {"type": "string", "description": "File glob filter (default *.py)"},
+                        },
+                        "required": ["pattern"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the live web for improvements, Linux/CachyOS fixes, Python docs, or AstraCradle feature ideas.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "max_results": {"type": "integer"},
+                        },
+                        "required": ["query"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_fetch",
+                    "description": "Fetch and read readable text from a web page, documentation link, GitHub raw file, or SKILL.md URL.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"url": {"type": "string"}},
+                        "required": ["url"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_read",
+                    "description": "Read MEMORY.md, USER.md, SOUL.md, and list all installed SKILL.md workflows.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"target": {"type": "string", "enum": ["all", "MEMORY.md", "USER.md", "skills"]}},
+                        "required": [],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "skill_install_from_url",
+                    "description": "Download a SKILL.md / guide from a web URL and install it into AstraCradle's Hermes skills folder.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"slug": {"type": "string"}, "url": {"type": "string"}},
+                        "required": ["slug", "url"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "astra_dev_self_build",
+                    "description": "Inspect, compile-check, test, diff, or locally reinstall AstraCradle's local source build to help write and verify its next updates natively.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["locate", "compile_check", "run_tests", "self_check", "git_status", "git_diff", "reinstall_local"],
+                            },
+                        },
+                        "required": ["action"],
                     },
                 },
             },
@@ -2063,6 +2371,113 @@ class HermesAgentManager:
         if lvl == "safe_user" and bool(getattr(config, "hermes_allow_shell", False)):
             return "standard_user"
         return lvl
+
+    @staticmethod
+    def get_local_source_root() -> Path:
+        """Detects AstraCradle's local editable source build root for native self-development."""
+        here_root = Path(__file__).resolve().parents[2]
+        if (here_root / "astracradle" / "__main__.py").exists():
+            return here_root
+        for cand in (
+            Path.home() / "AstraCradle-v2.5.1",
+            Path.home() / "AstraCradle-git",
+            Path.home() / "astracradle",
+        ):
+            if (cand / "astracradle" / "__main__.py").exists():
+                return cand
+        return here_root
+
+    @staticmethod
+    def _strip_html_to_text(raw_html: str) -> str:
+        clean = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", raw_html)
+        clean = re.sub(r"(?i)</(p|div|li|tr|h[1-6]|br|pre)>", "\n", clean)
+        clean = re.sub(r"(?s)<[^>]+>", " ", clean)
+        clean = _html.unescape(clean)
+        lines = [" ".join(ln.split()) for ln in clean.splitlines()]
+        return "\n".join(ln for ln in lines if ln)
+
+    def _web_search_impl(self, query: str, max_results: int = 6) -> list[dict[str, str]]:
+        q = (query or "").strip()
+        if not q:
+            return []
+        results: list[dict[str, str]] = []
+        encoded = urllib.parse.quote_plus(q)
+        # 1. DuckDuckGo HTML lightweight search (no API key needed)
+        try:
+            req = urllib.request.Request(
+                f"https://html.duckduckgo.com/html/?q={encoded}",
+                headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AstraCradle-Hermes/2.5.1"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read().decode("utf-8", errors="ignore")
+            links = re.findall(r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', body, re.S)
+            snippets = re.findall(r'<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>|<div[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</div>', body, re.S)
+            for idx, (href, title_raw) in enumerate(links[: max(1, min(10, int(max_results)))]):
+                real_url = _html.unescape(href)
+                if "uddg=" in real_url:
+                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(real_url).query)
+                    if qs.get("uddg"):
+                        real_url = qs["uddg"][0]
+                snip_raw = ""
+                if idx < len(snippets):
+                    snip_raw = snippets[idx][0] or snippets[idx][1] or ""
+                results.append(
+                    {
+                        "title": self._strip_html_to_text(title_raw)[:140],
+                        "url": real_url,
+                        "snippet": self._strip_html_to_text(snip_raw)[:280],
+                    }
+                )
+        except Exception:
+            pass
+
+        # 2. Fallback to DuckDuckGo Instant Answer API if HTML returned nothing
+        if not results:
+            try:
+                req2 = urllib.request.Request(
+                    f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1&skip_disambig=1",
+                    headers={"User-Agent": "AstraCradle-Hermes/2.5.1"},
+                )
+                with urllib.request.urlopen(req2, timeout=8) as resp2:
+                    d = json.loads(resp2.read().decode("utf-8", errors="ignore"))
+                if d.get("AbstractText"):
+                    results.append(
+                        {
+                            "title": str(d.get("Heading") or q),
+                            "url": str(d.get("AbstractURL") or ""),
+                            "snippet": str(d.get("AbstractText"))[:320],
+                        }
+                    )
+                for rt in d.get("RelatedTopics") or []:
+                    if isinstance(rt, dict) and rt.get("Text") and rt.get("FirstURL"):
+                        results.append(
+                            {
+                                "title": str(rt.get("Text"))[:100],
+                                "url": str(rt.get("FirstURL")),
+                                "snippet": str(rt.get("Text"))[:260],
+                            }
+                        )
+                        if len(results) >= max_results:
+                            break
+            except Exception:
+                pass
+        return results
+
+    def _check_write_permission(self, target_path: Path, perm: str, adapter: Any) -> str | None:
+        if perm == "read_only":
+            return "Blocked by Read-Only mode (Level 1)."
+        if adapter.is_path_protected(target_path):
+            return f"Blocked modification of protected OS path: {target_path}"
+        if perm == "safe_user":
+            try:
+                target_path.relative_to(self.cfg_mgr.base_dir.resolve())
+            except ValueError:
+                return (
+                    "Level 2 (Safe Tune-Ups Only) restricts file writes/edits to ~/.astracradle. "
+                    "Switch to Level 3 (Up to Just Below Sudo) or Level 4 to edit user files & AstraCradle source."
+                )
+        return None
 
     def _run_sudo_prompted(self, cmd: str, reason: str, config: AppConfig) -> dict[str, Any]:
         lvl = self._effective_permission_level(config)
@@ -2424,27 +2839,231 @@ class HermesAgentManager:
                     return {"ok": False, "error": f"File not found: {p}"}
                 if p.name == ".env":
                     return {"ok": False, "error": "Refused reading .env credentials directly."}
-                return {"ok": True, "path": str(p), "content": p.read_text(encoding="utf-8", errors="ignore")[:6000]}
+                lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
+                offset = max(1, int(args.get("offset", 1) or 1))
+                limit = max(1, min(400, int(args.get("limit", 220) or 220)))
+                chunk = lines[offset - 1 : offset - 1 + limit]
+                numbered = "\n".join(f"{offset + idx}: {ln}" for idx, ln in enumerate(chunk))
+                return {
+                    "ok": True,
+                    "path": str(p),
+                    "total_lines": len(lines),
+                    "offset": offset,
+                    "content": numbered[:9000],
+                }
 
             if name == "file_write":
-                if perm == "read_only":
-                    return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1)."}
                 p = Path(str(args.get("path", ""))).expanduser().resolve()
-                if perm == "safe_user":
-                    try:
-                        p.relative_to(self.cfg_mgr.base_dir.resolve())
-                    except ValueError:
-                        return {
-                            "ok": False,
-                            "blocked": True,
-                            "error": "Level 2 (Safe Tune-Ups Only) restricts file writes to ~/.astracradle. Choose Level 3 or 4 for user files.",
-                        }
-                if adapter.is_path_protected(p):
-                    return {"ok": False, "error": f"Blocked write to protected OS path: {p}"}
+                err = self._check_write_permission(p, perm, adapter)
+                if err:
+                    return {"ok": False, "blocked": True, "error": err}
+                if p.exists() and p.is_file():
+                    bdir = self.hermes_home / "edit_backups"
+                    bdir.mkdir(parents=True, exist_ok=True)
+                    (bdir / f"{p.name}.{int(time.time())}.bak").write_text(
+                        p.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8"
+                    )
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(str(args.get("content", "")), encoding="utf-8")
                 self.journal.log_event("HermesOS", "file_write", f"Wrote {p}", "Hermes tool execution", "ok")
                 return {"ok": True, "path": str(p)}
+
+            if name == "file_edit":
+                p = Path(str(args.get("path", ""))).expanduser().resolve()
+                err = self._check_write_permission(p, perm, adapter)
+                if err:
+                    return {"ok": False, "blocked": True, "error": err}
+                if not p.exists() or not p.is_file():
+                    return {"ok": False, "error": f"File not found: {p}"}
+                old_txt = str(args.get("old_text", ""))
+                new_txt = str(args.get("new_text", ""))
+                if not old_txt:
+                    return {"ok": False, "error": "old_text cannot be empty."}
+                cur = p.read_text(encoding="utf-8", errors="ignore")
+                cnt = cur.count(old_txt)
+                if cnt == 0:
+                    return {"ok": False, "error": "old_text not found in file. Read the exact lines with file_read first."}
+                if cnt > 1:
+                    return {"ok": False, "error": f"old_text matched {cnt} places; pass more surrounding context for a unique match."}
+                bdir = self.hermes_home / "edit_backups"
+                bdir.mkdir(parents=True, exist_ok=True)
+                bak_path = bdir / f"{p.name}.{int(time.time())}.bak"
+                bak_path.write_text(cur, encoding="utf-8")
+                updated = cur.replace(old_txt, new_txt, 1)
+                p.write_text(updated, encoding="utf-8")
+                self.journal.log_event("HermesOS", "file_edit", f"Edited {p} (backup={bak_path.name})", "Hermes surgical edit", "ok")
+                return {"ok": True, "path": str(p), "backup": str(bak_path)}
+
+            if name == "list_dir":
+                d = Path(str(args.get("path", ""))).expanduser().resolve()
+                if not d.exists() or not d.is_dir():
+                    return {"ok": False, "error": f"Directory not found: {d}"}
+                pat = str(args.get("pattern", "*") or "*")
+                items: list[dict[str, Any]] = []
+                for child in sorted(d.glob(pat)):
+                    if child.name in (".git", "__pycache__", ".venv", "node_modules"):
+                        continue
+                    items.append({"name": child.name, "is_dir": child.is_dir(), "size": (0 if child.is_dir() else child.stat().st_size)})
+                    if len(items) >= 120:
+                        break
+                return {"ok": True, "path": str(d), "entries": items}
+
+            if name == "grep_search":
+                pat = str(args.get("pattern", ""))
+                if not pat:
+                    return {"ok": False, "error": "Empty search pattern"}
+                root_arg = str(args.get("path", "")).strip()
+                root_dir = Path(root_arg).expanduser().resolve() if root_arg else self.get_local_source_root()
+                if not root_dir.exists():
+                    return {"ok": False, "error": f"Search path not found: {root_dir}"}
+                file_glob = str(args.get("glob", "*.py") or "*.py")
+                try:
+                    rx = re.compile(pat)
+                except re.error:
+                    rx = re.compile(re.escape(pat))
+                matches: list[dict[str, Any]] = []
+                skip_dirs = {".git", "__pycache__", ".venv", "node_modules", ".pytest_cache", "dist", "build"}
+                for fp in root_dir.rglob(file_glob):
+                    if any(part in skip_dirs for part in fp.parts) or not fp.is_file():
+                        continue
+                    try:
+                        for lno, line in enumerate(fp.read_text(encoding="utf-8", errors="ignore").splitlines(), start=1):
+                            if rx.search(line):
+                                matches.append({"file": str(fp.relative_to(root_dir)), "line": lno, "text": line.strip()[:160]})
+                                if len(matches) >= 50:
+                                    return {"ok": True, "root": str(root_dir), "matches": matches, "truncated": True}
+                    except Exception:
+                        continue
+                return {"ok": True, "root": str(root_dir), "matches": matches, "truncated": False}
+
+            if name == "web_search":
+                if not bool(getattr(config, "hermes_allow_web_search", True)):
+                    return {"ok": False, "blocked": True, "error": "Web Search is disabled in Hermes AI settings."}
+                q = str(args.get("query", "")).strip()
+                max_r = int(args.get("max_results", 6) or 6)
+                hits = self._web_search_impl(q, max_results=max_r)
+                return {"ok": True, "query": q, "results": hits}
+
+            if name == "web_fetch":
+                if not bool(getattr(config, "hermes_allow_web_search", True)):
+                    return {"ok": False, "blocked": True, "error": "Web Search/Fetch is disabled in Hermes AI settings."}
+                url = str(args.get("url", "")).strip()
+                if not (url.startswith("https://") or url.startswith("http://")):
+                    return {"ok": False, "error": "URL must start with http:// or https://"}
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AstraCradle-Hermes/2.5.1"},
+                )
+                with urllib.request.urlopen(req, timeout=12) as resp:
+                    raw = resp.read(200_000).decode("utf-8", errors="ignore")
+                txt = self._strip_html_to_text(raw) if "<html" in raw.lower() or "<body" in raw.lower() else raw
+                return {"ok": True, "url": url, "content": txt[:8000]}
+
+            if name == "memory_read":
+                tgt = str(args.get("target", "all") or "all")
+                self.ensure_hermes_home(config)
+                out: dict[str, Any] = {"ok": True}
+                if tgt in ("all", "MEMORY.md"):
+                    out["MEMORY.md"] = self.memory_path.read_text(encoding="utf-8", errors="ignore")[:4000]
+                if tgt in ("all", "USER.md"):
+                    out["USER.md"] = self.user_md_path.read_text(encoding="utf-8", errors="ignore")[:3000]
+                if tgt in ("all", "skills"):
+                    out["skills"] = [{"slug": s["slug"], "path": s["path"]} for s in self.list_skills()]
+                return out
+
+            if name == "skill_install_from_url":
+                if perm == "read_only":
+                    return {"ok": False, "blocked": True, "error": "Blocked by Read-Only mode (Level 1)."}
+                if not bool(getattr(config, "hermes_allow_web_search", True)):
+                    return {"ok": False, "blocked": True, "error": "Web Fetch is disabled in Hermes AI settings."}
+                url = str(args.get("url", "")).strip()
+                slug = str(args.get("slug", "web-skill")).strip()
+                if not (url.startswith("https://") or url.startswith("http://")):
+                    return {"ok": False, "error": "URL must start with http:// or https://"}
+                req = urllib.request.Request(url, headers={"User-Agent": "AstraCradle-Hermes/2.5.1"})
+                with urllib.request.urlopen(req, timeout=12) as resp:
+                    raw = resp.read(120_000).decode("utf-8", errors="ignore")
+                clean = self._strip_html_to_text(raw) if "<html" in raw.lower() else raw
+                sp = self.save_skill(slug, f"Installed from {url}", clean[:6000])
+                return {"ok": True, "skill_path": str(sp)}
+
+            if name == "astra_dev_self_build":
+                act = str(args.get("action", "locate"))
+                root = self.get_local_source_root()
+                if act == "locate":
+                    return {
+                        "ok": True,
+                        "source_root": str(root),
+                        "python": sys.executable,
+                        "python_version": platform.python_version(),
+                        "has_git": (root / ".git").exists(),
+                    }
+                if act == "compile_check":
+                    pr = subprocess.run(
+                        [sys.executable, "-m", "compileall", "-q", "astracradle", "tests"],
+                        cwd=str(root),
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        creationflags=_WIN_NO_WINDOW,
+                    )
+                    return {"ok": pr.returncode == 0, "returncode": pr.returncode, "output": (pr.stdout + pr.stderr)[:4000]}
+                if act == "run_tests":
+                    pr = subprocess.run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "pytest",
+                            "-q",
+                            "tests/test_v2_5_1_single_instance_and_tray_icon.py",
+                            "-k",
+                            "not (3d_hover or no_font or all_gifs or wifi_permission or task_progress or persistent_machine)",
+                        ],
+                        cwd=str(root),
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                        creationflags=_WIN_NO_WINDOW,
+                    )
+                    return {"ok": pr.returncode == 0, "returncode": pr.returncode, "output": (pr.stdout + pr.stderr)[-4000:]}
+                if act == "self_check":
+                    pr = subprocess.run(
+                        [sys.executable, "-m", "astracradle", "--self-check"],
+                        cwd=str(root),
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        creationflags=_WIN_NO_WINDOW,
+                    )
+                    return {"ok": pr.returncode == 0, "returncode": pr.returncode, "output": (pr.stdout + pr.stderr)[:4000]}
+                if act in ("git_status", "git_diff"):
+                    git_cmd = ["git", "status", "-sb"] if act == "git_status" else ["git", "diff", "--stat"]
+                    pr = subprocess.run(
+                        git_cmd,
+                        cwd=str(root),
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        creationflags=_WIN_NO_WINDOW,
+                    )
+                    return {"ok": pr.returncode == 0, "output": (pr.stdout + pr.stderr)[:4000]}
+                if act == "reinstall_local":
+                    if perm in ("read_only", "safe_user"):
+                        return {
+                            "ok": False,
+                            "blocked": True,
+                            "error": "Reinstalling local build requires Level 3 (Up to Just Below Sudo) or Level 4.",
+                        }
+                    pr = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "--user", "--no-build-isolation", "--no-deps", "-e", "."],
+                        cwd=str(root),
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                        creationflags=_WIN_NO_WINDOW,
+                    )
+                    return {"ok": pr.returncode == 0, "returncode": pr.returncode, "output": (pr.stdout + pr.stderr)[-3000:]}
+                return {"ok": False, "error": f"Unknown self-build action: {act}"}
 
             if name == "shell_exec":
                 cmd = str(args.get("command", "")).strip()
@@ -2532,6 +3151,11 @@ class HermesAgentManager:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
+    @staticmethod
+    def get_active_persona(config: AppConfig) -> dict[str, str]:
+        key = str(getattr(config, "hermes_persona", "astra_standard") or "astra_standard")
+        return HERMES_PERSONAS.get(key) or HERMES_PERSONAS["astra_standard"]
+
     def _build_system_prompt(self, config: AppConfig) -> str:
         self.ensure_hermes_home(config)
         soul = self.soul_md_path.read_text(encoding="utf-8", errors="ignore")[:1800]
@@ -2547,21 +3171,32 @@ class HermesAgentManager:
         rem_svcs = ", ".join(sorted((prof.get("remote_services_seen") or {}).keys())) or "none active yet"
         perm_lbl = HERMES_PERMISSION_LEVELS.get(self._effective_permission_level(config), {}).get("label", "Safe")
 
+        src_root = self.get_local_source_root()
+        web_ok = bool(getattr(config, "hermes_allow_web_search", True))
+        persona = self.get_active_persona(config)
+
         return (
-            f"{soul}\n\n{user_txt}\n\n{mem}\n\n"
+            f"{soul}\n\n"
+            f"# Active Assistant Identity & Voice: {persona['name']} ({persona['badge']})\n"
+            f"- Core Traits: {persona['traits']}\n"
+            f"- Mannerisms: {persona['mannerisms']}\n"
+            f"- Voice & Behavioral Directive: {persona['prompt_directive']}\n\n"
+            f"{user_txt}\n\n{mem}\n\n"
             "# Learned Whole-PC & Remote Usage Context\n"
+            f"- AstraCradle Local Build Root: {src_root}\n"
+            f"- Web Search & Research: {'ENABLED' if web_ok else 'DISABLED'}\n"
             f"- Samples Observed: {prof.get('samples', 0)} (Avg CPU {prof.get('avg_cpu_pct', 0)}%, Avg RAM {prof.get('avg_ram_pct', 0)}%, Peak VRAM {prof.get('peak_vram_mb', 0)} MB)\n"
             f"- Frequent Apps: {apps_txt}\n"
             f"- Learned Games: {games_txt}\n"
             f"- Remote Continuity Services: {rem_svcs}\n"
             f"- Active Safety Tier: {perm_lbl}\n\n"
             f"# Available Learned Skills\n{skill_summary or '(none yet)'}\n\n"
-            "# Action Assistant Guidelines\n"
-            "You are AstraCradle's integrated PC Action Assistant. Do NOT just give generic text advice when you have real tools that can inspect and safely fix the problem!\n"
-            "1. Inspect live telemetry (`astra_system_status`, `astra_deep_scan`, `astra_pc_usage_summary`) first.\n"
-            "2. Actually fix safe issues on the user's PC when asked (`astra_fix_safe`, `astra_probalance_and_profile`, `astra_wifi_optimize`, `astra_startup_audit`, `astra_process_manage`, `astra_self_heal_repair`, `astra_remote_tasks`).\n"
-            "3. Never risk breaking the OS: respect protected system processes/files, use dry-run/quarantine/rollback safeguards, and tell the user clearly what you checked, what you fixed, and that changes can be undone via `astra_rollback_undo`.\n"
-            "4. Save durable user preferences or PC facts with `memory_save`."
+            "# Action & Self-Development Assistant Guidelines\n"
+            "You are AstraCradle's integrated PC Action & Self-Development Assistant. Do NOT just give passive advice when you have real tools to research, inspect, edit, test, and safely fix things!\n"
+            "1. Inspect live telemetry (`astra_system_status`, `astra_deep_scan`, `astra_pc_usage_summary`) or codebase (`list_dir`, `grep_search`, `file_read`) first.\n"
+            "2. Actually fix safe PC issues (`astra_fix_safe`, `astra_probalance_and_profile`, `astra_wifi_optimize`, `astra_startup_audit`, `astra_process_manage`, `astra_self_heal_repair`, `astra_remote_tasks`).\n"
+            "3. When asked to research improvements or help build AstraCradle's next updates natively (as permissions allow): use `web_search`/`web_fetch` to research solutions, `skill_install_from_url`/`skill_save` to acquire new skills, `memory_save` to store learnings, `file_write`/`file_edit` to implement updates cleanly in the local build root, and `astra_dev_self_build` (`compile_check`, `run_tests`, `self_check`) to verify everything compiles and passes!\n"
+            "4. Never risk breaking the OS: respect protected system processes/files, back up edits automatically, use rollback/quarantine safeguards, and report clearly what you changed and verified."
         )
 
     def _call_llm(
@@ -2636,11 +3271,15 @@ class HermesAgentManager:
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=90) as resp:
+        req_timeout = 240 if spec["provider"] == "ollama" else 90
+        with urllib.request.urlopen(req, timeout=req_timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
-        content = str(msg.get("content") or "").strip()
+        raw_content = str(msg.get("content") or "").strip()
+        # Cleanly strip <think>...</think> reasoning blocks if a local reasoning model (e.g. Qwen3.6) emits them
+        cleaned = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+        content = cleaned or raw_content or str(msg.get("reasoning") or "").strip()
         tool_calls = msg.get("tool_calls") or []
         return content, tool_calls
 
@@ -2651,7 +3290,7 @@ class HermesAgentManager:
         *,
         session_id: str = "default",
         allow_subagent: bool = True,
-        max_turns: int = 6,
+        max_turns: int = 12,
         llm_caller: Callable[..., tuple[str, list[dict[str, Any]]]] | None = None,
     ) -> HermesRunResult:
         clean_prompt = (prompt or "").strip()
