@@ -1167,7 +1167,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--proximity-connect", action="store_true", help="Auto-connect paired/designated iOS, Watch & Android devices.")
     parser.add_argument("--hermes-status", action="store_true", help="Show Hermes OS AI status, GPU-matched local model, and free cloud recommendation.")
     parser.add_argument("--hermes-setup", action="store_true", help="Automatically install & set up Hermes OS AI (local GPU Ollama or free/own cloud API).")
-    parser.add_argument("--hermes-local-only", action="store_true", help="Lock Hermes OS AI to 100% offline local-only GPU mode (Ollama).")
+    parser.add_argument("--hermes-local-only", action="store_true", help="Lock Hermes OS AI to fully offline local-only GPU mode (Ollama).")
     parser.add_argument("--hermes-ask", type=str, default=None, help="Run a single prompt through native Hermes OS AI with AstraCradle tools.")
     parser.add_argument("--hermes-mode", type=str, choices=["local_gpu", "free_cloud", "custom_api"], default=None, help="Hermes backend mode.")
     parser.add_argument("--hermes-provider", type=str, default=None, help="Hermes provider (ollama, openrouter_free, gemini_free, groq_free, nous_portal, openai, anthropic, custom).")
