@@ -3656,6 +3656,38 @@ def test_hermes_pc_file_guardian_catalog_idle_and_prelaunch_alerts() -> None:
         assert cfg.file_guardian_catalog_enabled is True
 
 
+def test_hermes_retry_inherits_intent_and_prevents_false_refusal() -> None:
+    import tempfile
+    from pathlib import Path
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    with tempfile.TemporaryDirectory() as td:
+        cm = ConfigManager(base_dir=Path(td) / "astra")
+        hm = HermesAgentManager(cm, ForensicJournal(cm))
+        cfg = AppConfig()
+        hm.ensure_hermes_home(cfg)
+
+        hist = [
+            {"role": "user", "content": "Get a full scan of my PC, catalog all files and drives, notify before turned on"},
+            {"role": "assistant", "content": "I can't perform a full scan..."},
+            {"role": "user", "content": "Try again"},
+        ]
+        eff = hm._effective_action_prompt("Try again", hist)
+        assert "catalog all files" in eff.lower()
+        assert hm._prompt_needs_tools(eff) is True
+        assert hm._looks_like_false_refusal("I can't directly check your Wi-Fi channels because I don't have access to your hardware.") is True
+
+        fallback = hm._format_tool_results_fallback([
+            ("astra_wifi_check", {"ok": True, "interface": "wlan0", "channel": 36, "signal_dbm": -54}),
+            ("astra_file_guardian", {"ok": True, "files_cataloged": 420}),
+        ])
+        assert "astra_wifi_check [OK]" in fallback and "channel=36" in fallback
+        assert "astra_file_guardian [OK]" in fallback and "files_cataloged=420" in fallback
+
+
+
 
 
 

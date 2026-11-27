@@ -17,7 +17,7 @@ All notable updates and fixes to **AstraCradle** (`v2.5.1+`) are documented here
 
 ### Hermes AI Full PC File Catalog, Passive Idle Scanner & Pre-Activation Guard
 - Added `PcFileGuardian` (`astracradle/core/file_guardian.py`) and the `astra_file_guardian` Hermes tool so Hermes can catalog PC files/drives, capture full system/hardware/package/port inventory, passively scan during idle time (`cpu < 25%` and not gaming), verify incoming files (`Downloads`/`Desktop`/`autostart`/`systemd user`), and warn the user **before** risky files or startup units are turned on.
-- Updated Hermes prompts, tool routing, and the turn-0 grounding safety net so Astra/Hermes uses local OS tools directly instead of claiming it lacks OS/hardware access.
+- Updated Hermes prompts, tool routing, short-retry intent inheritance (`"Try again"` / `"Go ahead"`), and universal turn-0/fallback grounding across Wi-Fi, diagnostics, startup, remote tasks, Smart TV/LAN, and file catalog prompts so Astra/Hermes runs live AstraCradle tools directly instead of claiming it lacks OS/hardware access.
 
 ### Hermes AI Chat Delete, Live Working Indicator & Stability Fixes
 - Added **Delete Chat** button next to **+ New Chat** in Hermes AI.

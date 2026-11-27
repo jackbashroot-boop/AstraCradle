@@ -8512,6 +8512,62 @@ class HermesAgentManager:
         }
 
     @staticmethod
+    def _effective_action_prompt(prompt: str, history: list[dict[str, Any]] | None = None) -> str:
+        """For short follow-ups like 'try again' or 'go ahead', inherits the previous user prompt from history."""
+        txt = (prompt or "").strip()
+        low = txt.lower().strip(" .!?")
+        retry_phrases = {
+            "try again", "retry", "do it", "go ahead", "yes", "yes please",
+            "please", "continue", "run it", "run that", "again", "do that",
+        }
+        if (low in retry_phrases or (len(low) <= 22 and any(r in low for r in ("try again", "retry", "go ahead", "run it")))) and history:
+            prev_users = [
+                str(m.get("content") or "").strip()
+                for m in history
+                if str(m.get("role") or "") == "user"
+            ]
+            # Find the latest substantive user message before the current short follow-up
+            for candidate in reversed(prev_users[:-1] if len(prev_users) >= 2 and prev_users[-1].lower().strip(" .!?") == low else prev_users):
+                if candidate and candidate.lower().strip(" .!?") not in retry_phrases:
+                    return f"{candidate} ({txt})"
+        return txt
+
+    @staticmethod
+    def _looks_like_false_refusal(text: str) -> bool:
+        low = (text or "").lower()
+        return any(
+            ph in low
+            for ph in (
+                "don't have access",
+                "do not have access",
+                "don't have direct access",
+                "do not have direct access",
+                "can't directly",
+                "cannot directly",
+                "can't perform a full scan",
+                "cannot perform a full scan",
+                "cannot run processes",
+                "can't run processes",
+                "lack direct access",
+                "unable to directly",
+            )
+        )
+
+    @staticmethod
+    def _format_tool_results_fallback(executed_results: list[tuple[str, dict[str, Any]]]) -> str:
+        lines = ["Here are the live results directly from AstraCradle's local OS tools on this PC:"]
+        for tname, res in executed_results:
+            ok_str = "OK" if res.get("ok") else "Notice"
+            summary_parts: list[str] = []
+            for k in ("os", "cpu_percent", "ram_percent", "ram_used", "ssid", "interface", "signal_dbm", "channel", "recommended_channel", "message", "status_message", "files_cataloged", "sudo_capability_note", "error"):
+                if k in res and res[k] not in (None, "", []):
+                    summary_parts.append(f"{k}={res[k]}")
+            if not summary_parts:
+                summary_parts.append(json.dumps(res)[:320])
+            lines.append(f"- {tname} [{ok_str}]: " + ", ".join(summary_parts))
+        return "\n".join(lines)
+
+    @staticmethod
     def _prompt_needs_tools(prompt: str) -> bool:
         """Returns True when the user is asking for live system/file/web/remote action rather than pure chat."""
         low = (prompt or "").strip().lower()
@@ -8951,10 +9007,11 @@ class HermesAgentManager:
         self._append_session_message(session_id, "user", clean_prompt + att_note, title_hint=clean_prompt)
 
         history = self.get_session_messages(session_id, limit=24)
+        effective_prompt = self._effective_action_prompt(clean_prompt, history)
         use_compact = False
         if spec["provider"] == "ollama":
             route = self.select_dynamic_ollama_model(
-                clean_prompt,
+                effective_prompt,
                 config,
                 history=history,
                 has_images=bool(encoded_imgs),
@@ -8964,7 +9021,7 @@ class HermesAgentManager:
             spec["dynamic_tier"] = route["tier"]
             if llm_caller is None and route.get("missing_fast_recommendation"):
                 self.ensure_fast_companion_model_async(config)
-            if route["tier"] == "fast" and not self._prompt_needs_tools(clean_prompt) and not attachments:
+            if route["tier"] == "fast" and not self._prompt_needs_tools(effective_prompt) and not attachments:
                 use_compact = True
         # Compact older history if long so context fits comfortably
         sys_prompt = self._build_compact_system_prompt(config) if use_compact else self._build_system_prompt(config)
@@ -9037,9 +9094,10 @@ class HermesAgentManager:
             except Exception:
                 pass
 
-        tools = [] if use_compact else self._select_tool_schemas(clean_prompt, self._tool_schemas())
+        tools = [] if use_compact else self._select_tool_schemas(effective_prompt, self._tool_schemas())
         caller = llm_caller or self._call_llm
         tool_events: list[dict[str, Any]] = []
+        executed_results: list[tuple[str, dict[str, Any]]] = []
         skill_created = ""
         final_reply = ""
 
@@ -9067,8 +9125,8 @@ class HermesAgentManager:
                 if cancel_event is not None and cancel_event.is_set():
                     final_reply = (content.strip() + "\n\n(Stopped by user.)") if content else "Stopped by user."
                     break
-                # Grounding safety net: if live LLM didn't emit tool_calls on an AstraCradle/system/usage prompt,
-                # run the real inspection tool server-side and synthesize from genuine output rather than hallucinating.
+                # Grounding safety net: if live LLM didn't emit tool_calls on an AstraCradle/system/usage/network/file prompt
+                # (or hallucinated a false "I don't have access" refusal), run the real OS tools server-side directly.
                 if (
                     not tool_calls
                     and _turn == 0
@@ -9077,28 +9135,61 @@ class HermesAgentManager:
                     and tools
                 ):
                     auto_calls: list[dict[str, Any]] = []
-                    low_p = clean_prompt.lower()
+                    low_p = effective_prompt.lower()
+                    seen_auto: set[str] = set()
+
+                    def _add_auto(tid: str, fn_name: str, fn_args: dict[str, Any]) -> None:
+                        if fn_name not in seen_auto:
+                            seen_auto.add(fn_name)
+                            auto_calls.append({"id": tid, "function": {"name": fn_name, "arguments": fn_args}})
+
                     if "astra_dev_self_build" in low_p or re.search(r"\b(?:astra|astracradle)\b", low_p) or any(k in low_p for k in ("codebase", "architecture")):
-                        auto_calls.append({"id": "auto_inspect", "function": {"name": "astra_dev_self_build", "arguments": {"action": "inspect"}}})
-                        auto_calls.append({"id": "auto_git", "function": {"name": "astra_git_sync", "arguments": {"action": "status"}}})
+                        _add_auto("auto_inspect", "astra_dev_self_build", {"action": "inspect"})
+                        _add_auto("auto_git", "astra_git_sync", {"action": "status"})
                     if "astra_process_lookup" in low_p or ("ollama" in low_p and "process" in low_p):
-                        auto_calls.append({"id": "auto_proc", "function": {"name": "astra_process_lookup", "arguments": {"query": "ollama"}}})
-                    if "astra_startup_audit" in low_p:
-                        auto_calls.append({"id": "auto_startup", "function": {"name": "astra_startup_audit", "arguments": {}}})
+                        _add_auto("auto_proc", "astra_process_lookup", {"query": "ollama"})
+                    if "astra_startup_audit" in low_p or any(k in low_p for k in ("startup", "autorun", "hogs", "bloat")):
+                        _add_auto("auto_startup", "astra_startup_audit", {})
+                        _add_auto("auto_procs", "astra_process_lookup", {"query": ""})
                     if "astra_journal_and_crashes" in low_p or "diagnostics" in low_p or "ui log" in low_p:
-                        auto_calls.append({"id": "auto_diag", "function": {"name": "astra_journal_and_crashes", "arguments": {"limit": 10}}})
-                    if "astra_system_status" in low_p or "astra_deep_scan" in low_p:
-                        auto_calls.append({"id": "auto_scan", "function": {"name": "astra_deep_scan", "arguments": {}}})
-                    if any(k in low_p for k in ("learned", "pc usage", "top apps", "remote task")):
-                        auto_calls.append({"id": "auto_usage", "function": {"name": "astra_pc_usage_summary", "arguments": {}}})
+                        _add_auto("auto_diag", "astra_journal_and_crashes", {"limit": 10})
+                    if "astra_system_status" in low_p or "astra_deep_scan" in low_p or any(k in low_p for k in ("diagnose", "bottleneck", "slow pc", "cpu/gpu/ram", "deep system scan")):
+                        _add_auto("auto_scan", "astra_deep_scan", {})
+                        _add_auto("auto_stat", "astra_system_status", {})
+                    if any(k in low_p for k in ("clean cache", "fix_safe", "fix slow", "dry_run=false")):
+                        _add_auto("auto_fix", "astra_fix_safe", {"dry_run": ("dry_run=false" not in low_p)})
+                    if any(k in low_p for k in ("wi-fi", "wifi", "channel", "wireless", "dns speed")):
+                        _add_auto("auto_wifi", "astra_wifi_check", {})
+                        if "optimize" in low_p:
+                            _add_auto("auto_wifi_opt", "astra_wifi_optimize", {})
+                    if any(k in low_p for k in ("remote task", "paired mobile", "tailscale", "astrabeam", "adb")):
+                        _add_auto("auto_rem", "astra_remote_tasks", {})
+                    if any(k in low_p for k in ("self-heal", "self heal", "rollback", "undo")):
+                        _add_auto("auto_heal", "astra_self_heal_repair", {})
+                        _add_auto("auto_rb", "astra_rollback_undo", {"action": "list"})
+                    if any(k in low_p for k in ("smart tv", "samsung", "sinkhole", "astrashield", "scan lan", "adblock")):
+                        _add_auto("auto_lan", "astra_lan_and_sinkhole", {"action": "scan_lan"})
+                    if any(k in low_p for k in ("learned", "pc usage", "top apps")):
+                        _add_auto("auto_usage", "astra_pc_usage_summary", {})
                     if any(k in low_p for k in ("catalog", "all files", "all drives", "full scan", "incoming files", "passively scan", "before they are turned on")):
-                        auto_calls.append({"id": "auto_fg", "function": {"name": "astra_file_guardian", "arguments": {"action": "start_full_catalog_and_guard"}}})
-                        auto_calls.append({"id": "auto_svc", "function": {"name": "astra_services_and_storage", "arguments": {}}})
+                        _add_auto("auto_fg", "astra_file_guardian", {"action": "start_full_catalog_and_guard"})
+                        _add_auto("auto_svc", "astra_services_and_storage", {})
+                    if not auto_calls and self._looks_like_false_refusal(content):
+                        _add_auto("auto_stat", "astra_system_status", {})
+                        _add_auto("auto_scan", "astra_deep_scan", {})
                     if auto_calls:
+                        if step_cb is not None:
+                            try:
+                                step_cb("⟳ Running live AstraCradle OS tools...")
+                            except Exception:
+                                pass
                         tool_calls = auto_calls
                         content = ""
                 if not tool_calls:
-                    final_reply = content or "(No text returned)"
+                    if executed_results and (not content or self._looks_like_false_refusal(content)):
+                        final_reply = self._format_tool_results_fallback(executed_results)
+                    else:
+                        final_reply = content or "(No text returned)"
                     break
 
                 messages.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
@@ -9127,6 +9218,7 @@ class HermesAgentManager:
                     if tname == "skill_save" and result.get("ok"):
                         skill_created = str(result.get("skill_path", ""))
                     tool_events.append({"tool": tname, "args": parsed_args, "ok": bool(result.get("ok"))})
+                    executed_results.append((tname, result))
                     messages.append(
                         {
                             "role": "tool",
