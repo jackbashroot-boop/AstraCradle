@@ -4,6 +4,7 @@ cd (dirname (status -f))
 
 set -l no_launch 0
 set -l desktop_icon 0
+set -l with_deps 0
 set -l modules_arg ""
 set -l pass_args
 for arg in $argv
@@ -11,6 +12,8 @@ for arg in $argv
         set no_launch 1
     else if test "$arg" = "--desktop-icon"
         set desktop_icon 1
+    else if test "$arg" = "--with-deps"
+        set with_deps 1
     else if string match -q -- "--modules=*" "$arg"
         set modules_arg (string replace -- "--modules=" "" "$arg")
     else
@@ -68,8 +71,21 @@ if not contains ~/.local/bin $PATH
     fish_add_path ~/.local/bin
 end
 
-echo "[5/6] Running full self-check, modular setup & App Menu setup (using Machine Update Memory)..."
+echo "[5/6] Running full self-check, dependency check, modular setup & App Menu setup (using Machine Update Memory)..."
 ./.venv/bin/python -m astracradle --self-check
+set -l auto_deps (./.venv/bin/python -c "import json,pathlib; p=pathlib.Path.home()/'.astracradle/state/config.json'; d=json.loads(p.read_text()) if p.exists() else {}; print('yes' if d.get('consent_auto_install_deps') else 'no')" 2>/dev/null)
+if test $with_deps -eq 1; or test "$auto_deps" = "yes"
+    echo "[Deps] Checking and installing any missing companion dependencies..."
+    ./.venv/bin/python -m astracradle --install-deps --yes; or true
+else if isatty stdin
+    set -l dep_missing (./.venv/bin/python -c "from astracradle.core.config import ConfigManager; from astracradle.core.journal import ForensicJournal; from astracradle.core.dependency_library import DependencyLibraryManager; cm=ConfigManager(); dl=DependencyLibraryManager(cm, ForensicJournal(cm)); print(sum(1 for s in dl.inspect_all() if not s.installed))" 2>/dev/null)
+    if test -n "$dep_missing"; and test "$dep_missing" != "0"
+        read -l -P "Found $dep_missing missing optional companion tool(s). Download & install them now? [Y/n] " dep_ans
+        if not string match -qr '^[Nn]' -- "$dep_ans"
+            ./.venv/bin/python -m astracradle --install-deps --yes; or true
+        end
+    end
+end
 if test -n "$modules_arg"
     ./.venv/bin/python -m astracradle --modules "$modules_arg"
 else

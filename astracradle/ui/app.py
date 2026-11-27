@@ -1378,6 +1378,7 @@ class AstraCradleApp(ctk.CTk):
         self.nav_buttons: dict[str, ctk.CTkButton] = {}
         nav_items = [
             ("dashboard", self.i18n.t("nav.dashboard", "Command Deck"), "Interactive snapshot of AstraCradle options, compact expandable diagnostics & thermals (Ctrl+1)."),
+            ("hermes", "Hermes OS AI", "Native Hermes AI agent: auto-matched GPU local model (Ollama), dynamic model scaling, free cloud APIs, persistent memory, self-learned SKILL.md & cron."),
             ("monitoring", "Live Monitoring", "Dedicated Live Monitoring category: full charts, detailed sensors, USB/BadUSB audit & conflicts."),
             ("playbook", self.i18n.t("nav.playbook", "Diagnostics & Playbook"), "Actionable findings with Confidence %, Safe Auto-Fix & copyable DIY steps (Ctrl+2)."),
             ("hunter", "AI & Process Hunter", "Spot idle AI chatbots (Ollama, LM Studio) & dormant helpers holding RAM (Ctrl+3)."),
