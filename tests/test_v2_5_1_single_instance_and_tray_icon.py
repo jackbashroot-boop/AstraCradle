@@ -3953,6 +3953,99 @@ def test_update_my_pc_selects_system_updates_and_handles_apply_or_level4() -> No
         assert "Level 4" in res["error"]
 
 
+def test_http400_context_overflow_auto_compaction_and_research_now_tools() -> None:
+    import http.server
+    import json
+    import tempfile
+    import threading
+    from pathlib import Path
+    from astracradle.core.config import AppConfig, ConfigManager
+    from astracradle.core.hermes_agent import HermesAgentManager
+    from astracradle.core.journal import ForensicJournal
+
+    attempts: list[int] = []
+
+    class _MockOpenAIHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            ln = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(ln)
+            attempts.append(len(raw))
+            if len(raw) > 2200:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps(
+                        {"error": "the prompt is longer than the context length currently available to the model; shorten the prompt"}
+                    ).encode("utf-8")
+                )
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps({"choices": [{"message": {"role": "assistant", "content": "Compacted and succeeded!"}}]}).encode("utf-8")
+            )
+
+        def log_message(self, format, *args):
+            return
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _MockOpenAIHandler)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            cm = ConfigManager(base_dir=Path(td) / "astra")
+            hm = HermesAgentManager(cm, ForensicJournal(cm))
+            cfg = AppConfig(
+                hermes_provider="openai_compat",
+                hermes_base_url=f"http://127.0.0.1:{port}/v1",
+                hermes_model="test-local",
+            )
+            hm.ensure_hermes_home(cfg)
+
+            # 1. Tool selection covers "research now" and overnight 1AM passive scan + pause_catalog
+            sel_res = {
+                x["function"]["name"]
+                for x in hm._select_tool_schemas(
+                    "I want you to research all the topics currently in the research now section and save what you think is needed.",
+                    hm._tool_schemas(),
+                )
+            }
+            assert "astra_knowledge_library" in sel_res
+            assert "web_search" in sel_res
+
+            sel_scan = {
+                x["function"]["name"]
+                for x in hm._select_tool_schemas(
+                    "Scan my pc overnight and stop scanning at 1AM and catalog all files passively.",
+                    hm._tool_schemas(),
+                )
+            }
+            assert {"astra_file_guardian", "cron_schedule", "astra_journal_and_crashes"}.issubset(sel_scan)
+
+            paused = hm.execute_tool("astra_file_guardian", {"action": "pause_catalog"}, cfg)
+            assert paused["ok"] is True and paused["catalog_enabled"] is False
+
+            # 2. HTTP 400 context-length error triggers automatic compaction & succeeds
+            spec = hm.resolve_provider_spec(cfg)
+            big_msgs = [
+                {"role": "system", "content": "S" * 4000},
+                {"role": "user", "content": "Old question " + ("X" * 3000)},
+                {"role": "assistant", "content": "Old answer " + ("Y" * 3000)},
+                {"role": "user", "content": "Research now please"},
+            ]
+            reply, calls = hm._call_llm(spec, "", big_msgs, hm._tool_schemas()[:10])
+            assert reply == "Compacted and succeeded!"
+            assert calls == []
+            assert len(attempts) >= 2 and attempts[-1] < attempts[0]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+
 
 
 

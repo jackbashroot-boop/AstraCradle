@@ -15,6 +15,8 @@ All notable updates and fixes to **AstraCradle** (`v2.5.1+`) are documented here
 - Polls automatically every 60s and triggers an **important alert toast + desktop tray notification** whenever any Bluetooth device battery drops below **20%** (with recharge hysteresis at 25%).
 - Displays live and tracked Bluetooth device battery badges in **Clean & Protect → Smart TV, Bluetooth & Network Devices** and `python3 -m astracradle --scan-tv`.
 
+- Added automatic HTTP 400 context-length overflow auto-compaction & progressive retry (for both OpenAI-compat/LM Studio and native Ollama) plus proactive chat history/tool-result budget capping so long chats never fail with context-length `Bad Request` errors.
+- Improved Stephen AI `"Research Now"` topic harvesting (`astra_knowledge_library` + `list_topics`/`prefetch`) and added `astra_file_guardian(action='pause_catalog')` + `cron_schedule` matching for overnight scans stopping at 1 AM.
 - Fixed `"Update my pc too"` tool selection in Stephen AI (`_select_tool_schemas` now includes `astra_system_updates` + `sudo_exec` for `"update"`/`"updates"`, `astra_system_updates(action='apply')` reports pending updates clearly below Level 4 or prompts for sudo with a 300s timeout at Level 4, and turn-0 grounding covers `"update my pc"`).
 
 ### Stephen AI Rename & Dedicated Bluetooth & Peripherals Category

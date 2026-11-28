@@ -5204,7 +5204,7 @@ class HermesAgentManager:
                 "type": "function",
                 "function": {
                     "name": "astra_knowledge_library",
-                    "description": "Search AstraCradle's local Skill & Knowledge Library (1-200 GB configurable cache), manage subscribed research topics (add/remove/list/harvest full docs), inspect stored items & remaining storage, or prune stale info.",
+                    "description": "Search AstraCradle's local Skill & Knowledge Library (1-200 GB configurable cache), manage or research subscribed topics (including the 'Research Now' section via action='list_topics' or action='prefetch' to harvest and save all topics), inspect stored items & remaining storage, or prune stale info.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -5375,6 +5375,7 @@ class HermesAgentManager:
                                 "type": "string",
                                 "enum": [
                                     "start_full_catalog_and_guard",
+                                    "pause_catalog",
                                     "scan_now_batch",
                                     "scan_incoming",
                                     "verify_file",
@@ -7041,6 +7042,13 @@ class HermesAgentManager:
                         "status": status_res,
                         "sudo_capability_note": sudo_note,
                     }
+                if act == "pause_catalog":
+                    config.file_guardian_catalog_enabled = False
+                    try:
+                        self.cfg_mgr.save(config)
+                    except Exception:
+                        pass
+                    return {"ok": True, "action": "pause_catalog", "catalog_enabled": False, "status": self.file_guardian.get_status()}
                 if act == "scan_now_batch":
                     return self.file_guardian.run_idle_catalog_batch(
                         max_files=int(args.get("max_files") or 800),
@@ -7773,9 +7781,10 @@ class HermesAgentManager:
             "astra_verify_work",
         }
 
-        if any(w in low for w in ("scan", "fix", "autofix", "heal", "clean", "ram", "cpu", "gpu", "thermal", "temp", "fan", "probalance", "process", "kill", "startup", "autorun", "rollback", "undo", "dependency", "dependencies", "audio", "pipewire", "display", "usb", "stutter", "escalate", "catalog", "drive", "drives", "incoming", "passive", "idle", "notify", "before", "turned on", "safe", "malware", "virus")):
+        if any(w in low for w in ("scan", "fix", "autofix", "heal", "clean", "ram", "cpu", "gpu", "thermal", "temp", "fan", "probalance", "process", "kill", "startup", "autorun", "rollback", "undo", "dependency", "dependencies", "audio", "pipewire", "display", "usb", "stutter", "escalate", "catalog", "drive", "drives", "incoming", "passive", "passively", "overnight", "1am", "1 am", "stop scanning", "slowly", "idle", "notify", "before", "turned on", "safe", "malware", "virus")):
             selected_names.update({
-                "astra_file_guardian", "astra_full_os_autofix", "astra_deep_scan", "astra_fix_safe", "astra_process_lookup", "astra_process_manage",
+                "astra_file_guardian", "cron_schedule", "astra_journal_and_crashes",
+                "astra_full_os_autofix", "astra_deep_scan", "astra_fix_safe", "astra_process_lookup", "astra_process_manage",
                 "astra_probalance_and_profile", "astra_startup_audit", "astra_self_heal_repair",
                 "astra_rollback_undo", "astra_dependencies", "astra_pc_usage_summary",
                 "astra_thermals_and_fans", "astra_av_and_peripherals", "shell_exec", "sudo_exec",
@@ -7792,9 +7801,9 @@ class HermesAgentManager:
                 "astra_dev_self_build", "astra_git_sync", "astra_journal_and_crashes",
                 "astra_pc_usage_summary", "shell_exec", "sudo_exec", "astra_rollback_undo",
             })
-        if any(w in low for w in ("learned", "usage", "apps", "games", "summary", "summarize", "web", "online", "docs", "research", "url", "skill", "memory", "remember", "cron", "schedule", "subagent", "sub-agent", "fish", "zsh", "bash", "from now on", "instead of", "prefer", "adapt", "always use", "standing rule")):
+        if any(w in low for w in ("learned", "usage", "apps", "games", "summary", "summarize", "web", "online", "docs", "research", "research now", "topic", "topics", "library", "harvest", "url", "skill", "memory", "remember", "cron", "schedule", "overnight", "1am", "1 am", "subagent", "sub-agent", "fish", "zsh", "bash", "from now on", "instead of", "prefer", "adapt", "always use", "standing rule")):
             selected_names.update({
-                "astra_adapt_preferences", "astra_pc_usage_summary", "web_search", "web_fetch", "memory_read", "memory_save", "memory_search",
+                "astra_knowledge_library", "astra_adapt_preferences", "astra_pc_usage_summary", "web_search", "web_fetch", "memory_read", "memory_save", "memory_search",
                 "skill_save", "skill_install_from_url", "cron_schedule", "delegate_subagent",
             })
 
@@ -8899,32 +8908,121 @@ class HermesAgentManager:
                 )
             return content, norm_calls
 
-        def _post_chat_openai(body_dict: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
-            # Convert Ollama-style "images": [...] into OpenAI multimodal content blocks if present
-            oa_msgs = []
-            for m in body_dict.get("messages") or []:
-                if m.get("images"):
-                    blocks: list[dict[str, Any]] = [{"type": "text", "text": str(m.get("content") or "")}]
-                    for b64 in m["images"]:
-                        blocks.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
-                    nm = dict(m)
-                    nm.pop("images", None)
-                    nm["content"] = blocks
-                    oa_msgs.append(nm)
-                else:
-                    oa_msgs.append(m)
-            oa_body = dict(body_dict)
-            oa_body["messages"] = oa_msgs
-            req = urllib.request.Request(
-                f"{base_url}/chat/completions",
-                data=json.dumps(oa_body).encode("utf-8"),
-                headers=headers,
-                method="POST",
+        def _is_context_length_error(err_txt: str) -> bool:
+            low = (err_txt or "").lower()
+            return any(
+                tok in low
+                for tok in (
+                    "context length",
+                    "context_length",
+                    "maximum context",
+                    "longer than the context",
+                    "prompt is longer",
+                    "too many tokens",
+                    "exceeds the context",
+                    "context window",
+                    "n_ctx",
+                )
             )
-            with urllib.request.urlopen(req, timeout=req_timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            choice = (data.get("choices") or [{}])[0]
-            return _extract_reply_and_tools(choice.get("message") or {})
+
+        def _shrink_body_for_context(body_dict: dict[str, Any], level: int) -> dict[str, Any]:
+            shrunk = dict(body_dict)
+            raw_msgs = list(body_dict.get("messages") or [])
+            sys_msgs = [dict(m) for m in raw_msgs if m.get("role") == "system"]
+            non_sys = [dict(m) for m in raw_msgs if m.get("role") != "system"]
+            if level == 1:
+                kept_sys = [{"role": "system", "content": str(sys_msgs[0].get("content") or "")[:2000]}] if sys_msgs else []
+                trimmed_ns: list[dict[str, Any]] = []
+                tail = non_sys[-6:]
+                # Never start on an orphaned 'tool' message
+                while tail and tail[0].get("role") == "tool":
+                    tail.pop(0)
+                for i, m in enumerate(tail):
+                    nm = dict(m)
+                    cap = 1600 if i >= len(tail) - 2 else 450
+                    if isinstance(nm.get("content"), str):
+                        nm["content"] = nm["content"][:cap]
+                    trimmed_ns.append(nm)
+                shrunk["messages"] = kept_sys + trimmed_ns
+                if shrunk.get("tools"):
+                    shrunk["tools"] = list(shrunk["tools"])[:8]
+            elif level == 2:
+                kept_sys = [{"role": "system", "content": str(sys_msgs[0].get("content") or "")[:1200]}] if sys_msgs else []
+                # Keep only from the last user message onward
+                last_u = 0
+                for idx_m, m in enumerate(non_sys):
+                    if m.get("role") == "user":
+                        last_u = idx_m
+                tail = []
+                for m in non_sys[last_u:]:
+                    nm = dict(m)
+                    if isinstance(nm.get("content"), str):
+                        nm["content"] = nm["content"][:700]
+                    tail.append(nm)
+                shrunk["messages"] = kept_sys + tail
+                if shrunk.get("tools"):
+                    shrunk["tools"] = list(shrunk["tools"])[:4]
+                if "max_tokens" in shrunk:
+                    shrunk["max_tokens"] = min(int(shrunk.get("max_tokens") or 1024), 1024)
+            else:
+                kept_sys = [{"role": "system", "content": "You are Stephen AI, an expert Linux/PC systems assistant. Answer clearly using facts and tools."}]
+                last_user_msg = next((dict(m) for m in reversed(non_sys) if m.get("role") == "user"), {"role": "user", "content": ""})
+                if isinstance(last_user_msg.get("content"), str):
+                    last_user_msg["content"] = last_user_msg["content"][:1200]
+                shrunk["messages"] = kept_sys + [last_user_msg]
+                shrunk.pop("tools", None)
+                if "max_tokens" in shrunk:
+                    shrunk["max_tokens"] = min(int(shrunk.get("max_tokens") or 768), 768)
+            return shrunk
+
+        def _post_chat_openai(body_dict: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+            def _send_once(candidate_dict: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+                # Convert Ollama-style "images": [...] into OpenAI multimodal content blocks if present
+                oa_msgs = []
+                for m in candidate_dict.get("messages") or []:
+                    if m.get("images"):
+                        blocks: list[dict[str, Any]] = [{"type": "text", "text": str(m.get("content") or "")}]
+                        for b64 in m["images"]:
+                            blocks.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
+                        nm = dict(m)
+                        nm.pop("images", None)
+                        nm["content"] = blocks
+                        oa_msgs.append(nm)
+                    else:
+                        oa_msgs.append(m)
+                oa_body = dict(candidate_dict)
+                oa_body["messages"] = oa_msgs
+                req = urllib.request.Request(
+                    f"{base_url}/chat/completions",
+                    data=json.dumps(oa_body).encode("utf-8"),
+                    headers=headers,
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=req_timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                choice = (data.get("choices") or [{}])[0]
+                return _extract_reply_and_tools(choice.get("message") or {})
+
+            for shrink_lvl in (0, 1, 2, 3):
+                cand = body_dict if shrink_lvl == 0 else _shrink_body_for_context(body_dict, shrink_lvl)
+                try:
+                    return _send_once(cand)
+                except urllib.error.HTTPError as exc:
+                    err_txt = ""
+                    try:
+                        err_txt = exc.read().decode("utf-8", errors="ignore")
+                    except Exception:
+                        err_txt = str(exc)
+                    if exc.code == 400 and _is_context_length_error(err_txt) and shrink_lvl < 3:
+                        continue
+                    raise urllib.error.HTTPError(
+                        exc.url,
+                        exc.code,
+                        f"{exc.reason} — {err_txt[:320]}",
+                        exc.headers,
+                        None,
+                    )
+            return "", []
 
         if spec["provider"] != "ollama":
             return _post_chat_openai(payload)
@@ -9093,6 +9191,21 @@ class HermesAgentManager:
                         except Exception:
                             err_txt = str(exc2)
                         low_err = err_txt.lower()
+                if exc.code == 400 and _is_context_length_error(err_txt):
+                    for shrink_lvl in (1, 2, 3):
+                        shrunk_ol = _shrink_body_for_context(try_payload, shrink_lvl)
+                        try:
+                            return _post_chat_ollama_native(shrunk_ol)
+                        except urllib.error.HTTPError as exc_ctx:
+                            exc = exc_ctx
+                            last_http_exc = exc_ctx
+                            try:
+                                err_txt = exc_ctx.read().decode("utf-8", errors="ignore")
+                            except Exception:
+                                err_txt = str(exc_ctx)
+                            low_err = err_txt.lower()
+                            if not (exc_ctx.code == 400 and _is_context_length_error(err_txt)):
+                                break
                 is_runner_crash = exc.code >= 500 and any(
                     tok in low_err
                     for tok in (
@@ -9179,15 +9292,18 @@ class HermesAgentManager:
         # Compact older history if long so context fits comfortably
         sys_prompt = self._build_compact_system_prompt(config) if use_compact else self._build_system_prompt(config)
         messages: list[dict[str, Any]] = [{"role": "system", "content": sys_prompt}]
-        if len(history) > 14:
-            older_summary = " | ".join(f"{m['role']}: {m['content'][:90]}" for m in history[:-10])
-            messages.append({"role": "system", "content": f"Earlier session summary: {older_summary[:1400]}"})
-            recent = history[-10:]
+        if len(history) > 8:
+            older_summary = " | ".join(f"{m['role']}: {m['content'][:80]}" for m in history[:-6])
+            messages.append({"role": "system", "content": f"Earlier session summary: {older_summary[:1000]}"})
+            recent = history[-6:]
         else:
             recent = history
-        for m in recent:
+        for idx_r, m in enumerate(recent):
             if m["role"] in ("user", "assistant"):
-                messages.append({"role": m["role"], "content": m["content"]})
+                txt_m = str(m["content"] or "")
+                if idx_r < len(recent) - 2 and len(txt_m) > 500:
+                    txt_m = txt_m[:500] + "..."
+                messages.append({"role": m["role"], "content": txt_m})
 
         # Attach base64 images AND extracted file/OCR context on the final user message
         if encoded_imgs or attachment_context:
@@ -9329,6 +9445,9 @@ class HermesAgentManager:
                         _add_auto("auto_upd", "astra_system_updates", {"action": "check"})
                     elif any(k in low_p for k in ("update my pc", "update pc", "update system", "upgrade my pc", "upgrade system", "install updates", "apply updates")):
                         _add_auto("auto_upd_apply", "astra_system_updates", {"action": "apply"})
+                    if "research now" in low_p or ("research" in low_p and "topic" in low_p):
+                        _add_auto("auto_topics", "astra_knowledge_library", {"action": "list_topics"})
+                        _add_auto("auto_prefetch", "astra_knowledge_library", {"action": "prefetch"})
                     if any(k in low_p for k in ("smart health", "failed systemd", "listening ports", "disk usage")):
                         _add_auto("auto_svc", "astra_services_and_storage", {})
                     if any(k in low_p for k in ("bluetooth", "battery percentage", "below 20%")):
@@ -9398,7 +9517,7 @@ class HermesAgentManager:
                             "role": "tool",
                             "tool_call_id": str(tc.get("id") or f"call_{len(tool_events)}"),
                             "name": tname,
-                            "content": json.dumps(result)[:3500],
+                            "content": json.dumps(result)[:2200],
                         }
                     )
                     # If astra_inspect_media extracted visual frames (image or video keyframes), inject them for vision models
